@@ -4,7 +4,7 @@ Episode data models for episodic memory ingestion.
 Defines the schema for failure/success episodes with multi-perspective reflections.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
@@ -69,7 +69,9 @@ class Reflection(BaseModel):
     )
 
     # Generation metadata
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
     llm_model: Optional[str] = Field(default=None, description="LLM model used")
 
 
@@ -140,7 +142,7 @@ class Episode(BaseModel):
     )
 
     # Storage metadata
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     retrieval_count: int = Field(default=0, ge=0, description="Number of times retrieved")
     last_retrieved_at: Optional[datetime] = Field(default=None)
 
@@ -206,4 +208,4 @@ class Episode(BaseModel):
     def increment_retrieval_count(self) -> None:
         """Increment retrieval count and update timestamp."""
         self.retrieval_count += 1
-        self.last_retrieved_at = datetime.utcnow()
+        self.last_retrieved_at = datetime.now(timezone.utc)

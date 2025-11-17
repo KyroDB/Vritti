@@ -160,6 +160,38 @@ class KyroDBRouter:
         )
         return (text_success, image_success)
 
+    async def search_text(
+        self,
+        query_embedding: list[float],
+        k: int,
+        namespace: str,
+        min_score: float = 0.6,
+    ) -> SearchResponse:
+        """
+        Search text instance for episodes.
+
+        Simple wrapper around text_client.search for retrieval pipeline.
+
+        Args:
+            query_embedding: Query embedding vector (384-dim text)
+            k: Number of results to return
+            namespace: Collection namespace
+            min_score: Minimum similarity score
+
+        Returns:
+            SearchResponse: Raw search results from text KyroDB instance
+
+        Raises:
+            KyroDBError: On search failure
+        """
+        return await self.text_client.search(
+            query_embedding=query_embedding,
+            k=k,
+            namespace=namespace,
+            min_score=min_score,
+            include_embeddings=False,  # Don't need embeddings in response
+        )
+
     async def search_episodes(
         self,
         query_embedding: list[float],

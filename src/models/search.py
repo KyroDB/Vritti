@@ -4,7 +4,7 @@ Search request/response models for episodic memory retrieval.
 Defines the API schema for searching failures, skills, and semantic rules.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
@@ -122,7 +122,9 @@ class SearchResponse(BaseModel):
     # Search metadata
     collection: str
     query_embedding_dimension: int
-    searched_at: datetime = Field(default_factory=datetime.utcnow)
+    searched_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     @property
     def avg_combined_score(self) -> float:

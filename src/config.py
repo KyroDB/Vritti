@@ -7,7 +7,7 @@ Uses Pydantic Settings for type-safe configuration with multiple sources:
 - Defaults (lowest priority)
 """
 
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -194,7 +194,7 @@ class Settings(BaseSettings):
 
 
 # Global settings instance (lazy-loaded)
-_settings: Settings | None = None
+_settings: Optional[Settings] = None
 
 
 def get_settings() -> Settings:

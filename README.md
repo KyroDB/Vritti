@@ -51,36 +51,49 @@ Application-layer episodic memory system built on top of [KyroDB](https://github
 git clone https://github.com/KyroDB/EpisodicMemory.git
 cd EpisodicMemory
 
+# Create virtual environment
+python3.11 -m venv venv
+source venv/bin/activate
+
 # Install dependencies
-poetry install
+pip install -r requirements.txt
 
 # Setup environment
 cp .env.example .env
-# Edit .env with KyroDB connection details
+# Edit .env with KyroDB connection details and OpenAI API key
 ```
 
 ### Running Locally
 
 ```bash
 # Terminal 1: Start KyroDB (text embeddings)
-cd ../ProjectKyro
+cd ../ProjectKyro/engine
 ./target/release/kyrodb_server --port 50051 --data-dir ./data/kyrodb_text
 
 # Terminal 2: Start KyroDB (image embeddings)
 ./target/release/kyrodb_server --port 50052 --data-dir ./data/kyrodb_images
 
 # Terminal 3: Start Episodic Memory service
-cd ../EpisodicMemory
-poetry run uvicorn src.main:app --reload --port 8000
+cd ../../EpisodicMemory
+./run_dev.sh
+# Or manually:
+# source venv/bin/activate
+# python -m uvicorn src.main:app --reload --port 8000
 ```
+
+Access the API:
+- **API Documentation**: http://localhost:8000/docs
+- **Health Check**: http://localhost:8000/health
+- **Statistics**: http://localhost:8000/stats
 
 ### API Usage
 
 ```python
 import requests
 
-# Capture an episode
-response = requests.post("http://localhost:8000/api/capture", json={
+# Capture an episode (failure)
+response = requests.post("http://localhost:8000/api/v1/capture", json={
+    "episode_type": "failure",
     "goal": "Deploy web application to production",
     "tool_chain": ["kubectl", "docker"],
     "actions_taken": [
@@ -88,41 +101,94 @@ response = requests.post("http://localhost:8000/api/capture", json={
         "Pushed to registry",
         "Applied Kubernetes manifest"
     ],
-    "error_trace": "ImagePullBackOff: failed to resolve image",
+    "error_trace": "ImagePullBackOff: failed to resolve image 'myapp:latest'",
+    "error_class": "resource_error",
     "code_state_diff": "# git diff output",
-    "screenshot_path": "./screenshots/deploy_error.png"
+    "screenshot_path": "./screenshots/deploy_error.png",
+    "environment_info": {
+        "os": "Darwin",
+        "kubectl_version": "1.28.0",
+        "cluster": "production"
+    },
+    "tags": ["production", "deployment", "critical"],
+    "severity": 1
 })
-episode_id = response.json()["episode_id"]
+print(f"Episode captured: {response.json()['episode_id']}")
 
 # Search for relevant failures
-response = requests.post("http://localhost:8000/api/search", json={
-    "goal": "Deploy app with kubectl",
-    "tool": "kubectl",
-    "current_state": {"cluster": "production", "namespace": "default"},
-    "k": 5
+response = requests.post("http://localhost:8000/api/v1/search", json={
+    "goal": "Deploy application with kubectl getting ImagePullBackOff",
+    "current_state": {
+        "tool": "kubectl",
+        "error_class": "ImagePullBackOff",
+        "environment": {"os": "Darwin", "kubectl_version": "1.28"},
+        "components": ["kubernetes", "docker"],
+        "goal_keywords": ["deploy", "production"]
+    },
+    "collection": "failures",
+    "k": 5,
+    "min_similarity": 0.6,
+    "precondition_threshold": 0.5,
+    "ranking_weights": {
+        "similarity_weight": 0.5,
+        "precondition_weight": 0.3,
+        "recency_weight": 0.1,
+        "usage_weight": 0.1
+    }
 })
-similar_failures = response.json()["results"]
+
+results = response.json()
+print(f"Found {len(results['results'])} relevant episodes")
+print(f"Search latency: {results['search_latency_ms']:.2f}ms")
+
+for result in results['results']:
+    print(f"Rank {result['rank']}: Episode {result['episode']['episode_id']}")
+    print(f"  Combined score: {result['scores']['combined']:.3f}")
+    print(f"  Explanation: {result['similarity_explanation']}")
 ```
 
 ## Project Status
 
-- **Phase 0 (Week 1)**: Repository setup & infrastructure ✅ **IN PROGRESS**
-- **Phase 1 (Week 2-3)**: Core ingestion pipeline
-- **Phase 2 (Week 4-5)**: Retrieval with preconditions
-- **Phase 3 (Week 6-7)**: Background hygiene (decay/promotion)
+- **Phase 0-1**: Core infrastructure ✅ **COMPLETED**
+  - Configuration management with Pydantic Settings
+  - Pydantic models for episodes and search
+  - KyroDB dual-instance client with retry logic
+  - Multi-modal embedding service (text + CLIP)
+  - PII redaction utilities
+  - Snowflake ID generation
+  - LLM reflection service with GPT-4
+
+- **Phase 1**: Ingestion & Retrieval Pipelines ✅ **COMPLETED**  - Episode ingestion with async reflection
+  - Precondition matching engine (heuristic-based)
+  - Weighted ranking system (similarity + precondition + recency + usage)
+  - Search orchestrator with latency breakdown
+  - FastAPI application with lifespan management
+
+- **Phase 2**: Testing & Validation 🔄 **IN PROGRESS**
+  - Integration tests
+  - Load testing
+  - Performance validation (<50ms P99 target)
+
+- **Phase 3 (Future)**: Background Hygiene
+  - Time-based decay and pruning
+  - Usage-based pattern promotion
+  - Episodic → Semantic memory clustering
 
 ## Development
 
 ```bash
 # Run tests
-poetry run pytest
+pytest tests/ -v
 
-# Type checking
-poetry run mypy src/
+# Run tests with coverage
+pytest tests/ --cov=src --cov-report=html
 
 # Format code
-poetry run black src/ tests/
-poetry run isort src/ tests/
+black src/ tests/
+ruff check src/ tests/
+
+# Type checking (optional)
+mypy src/ --ignore-missing-imports
 ```
 
 ## Contributing
