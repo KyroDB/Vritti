@@ -64,13 +64,13 @@ class TestIngestionPipeline:
         """Test PII redaction during ingestion."""
         # Create episode with PII
         episode_data = EpisodeCreate(
-            goal="Deploy application",
+            goal="Deploy application to production environment",
             tool_chain=["kubectl"],
-            actions_taken=["action1"],
+            actions_taken=["attempted deployment action"],
             error_trace=(
                 "Error connecting to database at user:password@10.0.1.100\n"
                 "Contact admin@example.com for help\n"
-                "API key: sk-1234567890abcdef1234567890abcdef12345678"
+                "API key: sk-1234567890abcdef1234567890abcdef1234567890abcdef"
             ),
             error_class="network_error",
         )

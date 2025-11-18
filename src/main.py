@@ -306,16 +306,9 @@ async def capture_episode(
         # Calculate latency
         latency_ms = (time.perf_counter() - start_time) * 1000
 
-        # Determine collection
-        collection = episode_data.episode_type.value + "s"
-        if collection == "failuress":
-            collection = "failures"
-        elif collection == "successs":
-            collection = "skills"
-
         return CaptureResponse(
             episode_id=episode.episode_id,
-            collection=collection,
+            collection="failures",  # Only failures collection is supported
             ingestion_latency_ms=latency_ms,
             text_stored=True,  # Always stored in text instance
             image_stored=episode_data.screenshot_path is not None,

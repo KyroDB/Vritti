@@ -1,7 +1,12 @@
 """
 Episode data models for episodic memory ingestion.
 
-Defines the schema for failure/success episodes with multi-perspective reflections.
+Defines the schema for failure episodes with multi-perspective reflections.
+
+Design Decision: This system stores ONLY failures in episodic memory.
+- Episodic memory is for learning from mistakes to avoid repeating them
+- Success patterns should be extracted and promoted to semantic rules (future phase)
+- This prevents memory bloat and keeps the system focused on its core value
 """
 
 from datetime import datetime, timezone
@@ -11,11 +16,15 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class EpisodeType(str, Enum):
-    """Type of episode being recorded."""
+    """
+    Type of episode being recorded.
+
+    Only FAILURE is supported. Episodic memory focuses on learning from mistakes.
+    Success patterns are better stored as generalized semantic rules rather than
+    individual episodes, preventing memory bloat.
+    """
 
     FAILURE = "failure"
-    SUCCESS = "success"
-    PARTIAL_SUCCESS = "partial_success"
 
 
 class ErrorClass(str, Enum):
@@ -107,11 +116,13 @@ class EpisodeCreate(BaseModel):
     # Visual context
     screenshot_path: Optional[str] = Field(default=None, description="Path to screenshot")
 
-    # Resolution (for success/partial_success)
+    # Resolution (learning from how the failure was fixed)
     resolution: Optional[str] = Field(
-        default=None, description="How the issue was resolved"
+        default=None, description="How the failure was eventually resolved (for learning)"
     )
-    time_to_resolve_seconds: Optional[int] = Field(default=None, ge=0)
+    time_to_resolve_seconds: Optional[int] = Field(
+        default=None, ge=0, description="Time taken to resolve the failure"
+    )
 
     # Metadata
     tags: list[str] = Field(default_factory=list, description="Custom tags")

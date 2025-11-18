@@ -1,7 +1,11 @@
 """
 Search request/response models for episodic memory retrieval.
 
-Defines the API schema for searching failures, skills, and semantic rules.
+Defines the API schema for searching failure episodes.
+
+Design Decision: Only "failures" collection is supported. This system does not
+store success episodes to prevent memory bloat and maintain focus on learning
+from mistakes.
 """
 
 from datetime import datetime, timezone
@@ -29,7 +33,7 @@ class RankingWeights(BaseModel):
 
 class SearchRequest(BaseModel):
     """
-    Search request for finding relevant episodes.
+    Search request for finding relevant failure episodes.
 
     Supports multi-modal queries and filtering.
     """
@@ -41,7 +45,10 @@ class SearchRequest(BaseModel):
     )
 
     # Filtering
-    collection: Literal["failures", "skills", "rules"] = Field(default="failures")
+    collection: Literal["failures"] = Field(
+        default="failures",
+        description="Collection to search (only 'failures' supported)",
+    )
     tool_filter: Optional[str] = Field(default=None, description="Filter by primary tool")
     min_timestamp: Optional[int] = Field(
         default=None, ge=0, description="Unix timestamp - only return episodes after this"

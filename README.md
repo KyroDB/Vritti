@@ -2,12 +2,14 @@
 
 Application-layer episodic memory system built on top of [KyroDB](https://github.com/KyroDB/KyroDB) - a high-performance vector database optimized for RAG workloads and AI agents.
 
+**Design Philosophy**: This system stores **ONLY failure episodes** to learn from mistakes and avoid repeating them. Success patterns should be extracted and promoted to semantic rules (future phase), not stored as individual episodes. This prevents memory bloat and keeps the system focused on its core value proposition.
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ Episodic Memory Service (Python FastAPI)                    │
-│ - Multi-modal ingestion (text/code/images)                 │
+│ - Multi-modal failure ingestion (text/code/images)         │
 │ - Precondition-aware retrieval                              │
 │ - Automated hygiene (decay & promotion)                     │
 └─────────────────────────────────────────────────────────────┘
@@ -23,17 +25,17 @@ Application-layer episodic memory system built on top of [KyroDB](https://github
 
 ## Features
 
-- **Multi-modal storage**: Text, code, and image embeddings
-- **Namespace-based collections**: failures, skills, semantic_rules
-- **Precondition matching**: LLM-powered relevance filtering
+- **Failure-focused learning**: Stores only failures to maximize learning value and minimize bloat
+- **Multi-modal storage**: Text, code, and image embeddings for comprehensive failure context
+- **Precondition matching**: Heuristic-based relevance filtering (no LLM calls in retrieval path)
 - **Temporal queries**: Filter by timestamp ranges
-- **Automated hygiene**: Time-based decay and usage-based pruning
-- **Pattern promotion**: Episodic → Semantic memory via clustering
+- **Weighted ranking**: Similarity + precondition + recency + usage scoring
+- **Automated hygiene** (future): Time-based decay and pattern promotion to semantic rules
 
 ## Performance Targets
 
 - **<50ms P99** retrieval latency
-- **10K-100K** episodes per collection
+- **10K-100K** failure episodes
 - **Multi-modal search** across text + images
 
 ## Quick Start
@@ -191,9 +193,6 @@ ruff check src/ tests/
 mypy src/ --ignore-missing-imports
 ```
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
