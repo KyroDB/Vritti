@@ -193,6 +193,9 @@ class TestSearchIsolation:
 
         response = await pipeline.search(request)
 
+        # Verify search completed successfully
+        assert response is not None
+
         # Verify search_text was called with customer_id
         call_args = mock_kyrodb_router.search_text.call_args
         assert call_args.kwargs["customer_id"] == "customer-a"

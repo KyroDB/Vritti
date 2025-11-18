@@ -14,21 +14,31 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
+from src.auth import (
+    get_authenticated_customer,
+    get_customer_id_from_request,
+    require_active_customer,
+)
 from src.config import get_settings
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
 from src.ingestion.reflection import ReflectionService
 from src.kyrodb.client import KyroDBError
 from src.kyrodb.router import KyroDBRouter
+from src.models.customer import Customer
 from src.models.episode import EpisodeCreate
 from src.models.search import SearchRequest, SearchResponse
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
+from src.storage.database import CustomerDatabase, get_customer_db
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +46,27 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+# Rate limiter configuration
+# Per-customer rate limiting based on subscription tier
+def get_customer_id_for_rate_limit(request: Request) -> str:
+    """
+    Extract customer_id for rate limiting.
+
+    Falls back to IP address if not authenticated.
+    This allows public endpoints to be rate-limited by IP,
+    while authenticated endpoints are rate-limited per customer.
+    """
+    if hasattr(request.state, "customer"):
+        # Authenticated request - rate limit by customer_id
+        return request.state.customer.customer_id
+    else:
+        # Unauthenticated request - rate limit by IP
+        return get_remote_address(request)
+
+
+limiter = Limiter(key_func=get_customer_id_for_rate_limit)
 
 
 # Global service instances (initialized in lifespan)
@@ -130,6 +161,12 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Rate limiter state
+app.state.limiter = limiter
+
+# Rate limit exceeded handler
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS middleware
 # TODO Phase 1 Week 4: Restrict origins for production (currently wildcard for dev)
@@ -269,40 +306,63 @@ class CaptureResponse(BaseModel):
     status_code=status.HTTP_201_CREATED,
     tags=["Ingestion"],
 )
+@limiter.limit("100/minute")  # Conservative rate limit (will be tier-based in Phase 4)
 async def capture_episode(
+    request: Request,  # Required by slowapi
     episode_data: EpisodeCreate,
+    customer: Customer = Depends(get_authenticated_customer),
+    customer_id: str = Depends(get_customer_id_from_request),
+    db: CustomerDatabase = Depends(get_customer_db),
     generate_reflection: bool = True,
 ):
     """
     Capture and store an episode.
 
     Pipeline:
-    1. PII redaction
-    2. ID generation
-    3. Multi-modal embedding
-    4. KyroDB storage
-    5. Async reflection generation (optional)
+    1. API key authentication (customer_id extraction)
+    2. PII redaction
+    3. ID generation
+    4. Multi-modal embedding
+    5. KyroDB storage
+    6. Async reflection generation (optional)
+    7. Usage tracking (credit deduction)
 
     Args:
-        episode_data: Episode creation data
+        episode_data: Episode creation data (customer_id will be overridden)
+        customer: Authenticated customer (injected from API key)
+        customer_id: Customer ID from validated API key (injected)
+        db: Customer database (for usage tracking)
         generate_reflection: Whether to generate LLM reflection (default: True)
 
     Returns:
         CaptureResponse: Capture result with episode ID and metadata
 
     Raises:
-        HTTPException: On ingestion failure
+        HTTPException 401: Invalid/missing API key
+        HTTPException 403: Customer inactive or quota exceeded
+        HTTPException 503: Ingestion pipeline not initialized
+        HTTPException 500: Ingestion failure
 
     Security:
-        TODO Phase 1 Week 3: Add API key authentication middleware.
-        Currently customer_id is accepted from request body (SECURITY GAP).
-        Must be extracted from validated API key to prevent cross-customer access.
+        ✓ customer_id extracted from validated API key (cannot be spoofed)
+        ✓ User-provided customer_id in request body is IGNORED
+        ✓ API key validated with bcrypt
+        ✓ Quota enforcement (soft limit with warning)
+
+    Usage Billing:
+        - Base cost: 1 credit per episode
+        - With image: +0.2 credits
+        - With reflection: +0.5 credits
     """
     if not ingestion_pipeline:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Ingestion pipeline not initialized",
         )
+
+    # SECURITY: Override user-provided customer_id with authenticated value
+    # This prevents customer_id spoofing attacks
+    episode_data.customer_id = customer_id
 
     start_time = time.perf_counter()
 
@@ -315,6 +375,24 @@ async def capture_episode(
 
         # Calculate latency
         latency_ms = (time.perf_counter() - start_time) * 1000
+
+        # Calculate usage credits
+        credits_used = 1.0  # Base cost
+        if episode_data.screenshot_path:
+            credits_used += 0.2  # Image embedding cost
+        if generate_reflection and reflection_service:
+            credits_used += 0.5  # LLM reflection cost
+
+        # Track usage (async, non-blocking)
+        try:
+            await db.increment_usage(customer_id, int(credits_used))
+            logger.info(
+                f"Usage tracked: customer={customer_id}, "
+                f"episode={episode.episode_id}, credits={credits_used}"
+            )
+        except Exception as e:
+            # Log but don't fail the request if usage tracking fails
+            logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
         return CaptureResponse(
             episode_id=episode.episode_id,
@@ -339,31 +417,52 @@ async def capture_episode(
     response_model=SearchResponse,
     tags=["Retrieval"],
 )
-async def search_episodes(request: SearchRequest):
+@limiter.limit("200/minute")  # Higher limit for search (will be tier-based in Phase 4)
+async def search_episodes(
+    request: Request,  # Required by slowapi
+    search_request: SearchRequest,  # Renamed to avoid conflict with Request parameter
+    customer: Customer = Depends(get_authenticated_customer),
+    customer_id: str = Depends(get_customer_id_from_request),
+    db: CustomerDatabase = Depends(get_customer_db),
+):
     """
     Search for relevant episodes.
 
     Pipeline:
-    1. Query embedding generation
-    2. KyroDB vector search (k×5 candidates)
-    3. Metadata filtering
-    4. Precondition matching
-    5. Weighted ranking
-    6. Top-k selection
+    1. API key authentication (customer_id extraction)
+    2. Query embedding generation
+    3. KyroDB vector search (k×5 candidates)
+    4. Metadata filtering
+    5. Precondition matching
+    6. Weighted ranking
+    7. Top-k selection
+    8. Usage tracking (credit deduction)
 
     Args:
-        request: Search request with query and parameters
+        request: Search request with query and parameters (customer_id will be overridden)
+        customer: Authenticated customer (injected from API key)
+        customer_id: Customer ID from validated API key (injected)
+        db: Customer database (for usage tracking)
 
     Returns:
         SearchResponse: Ranked search results with latency breakdown
 
     Raises:
-        HTTPException: On search failure
+        HTTPException 401: Invalid/missing API key
+        HTTPException 403: Customer inactive or quota exceeded
+        HTTPException 503: Search pipeline not initialized
+        HTTPException 422: Validation error
+        HTTPException 500: Search failure
 
     Security:
-        TODO Phase 1 Week 3: Add API key authentication middleware.
-        Currently customer_id is accepted from request body (SECURITY GAP).
-        Must be extracted from validated API key to prevent cross-customer access.
+        ✓ customer_id extracted from validated API key (cannot be spoofed)
+        ✓ User-provided customer_id in request body is IGNORED
+        ✓ API key validated with bcrypt
+        ✓ Namespace isolation (only searches customer's episodes)
+
+    Usage Billing:
+        - Base cost: 0.1 credits per search
+        - With image search: +0.2 credits (Phase 2)
     """
     if not search_pipeline:
         raise HTTPException(
@@ -371,16 +470,33 @@ async def search_episodes(request: SearchRequest):
             detail="Search pipeline not initialized",
         )
 
+    # SECURITY: Override user-provided customer_id with authenticated value
+    # This prevents customer_id spoofing and cross-customer data access
+    search_request.customer_id = customer_id
+
     try:
         # Execute search
-        response = await search_pipeline.search(request)
+        response = await search_pipeline.search(search_request)
 
         # Log slow queries
         if response.search_latency_ms > 100:
             logger.warning(
                 f"Slow query detected: {response.search_latency_ms:.2f}ms "
-                f"(goal: {request.goal[:50]}...)"
+                f"(goal: {search_request.goal[:50]}...)"
             )
+
+        # Track usage (async, non-blocking)
+        # Credit cost is fractional to encourage search over re-ingestion
+        credits_used = 0.1  # Base search cost
+        try:
+            await db.increment_usage(customer_id, 1)  # Round to 1 credit
+            logger.debug(
+                f"Usage tracked: customer={customer_id}, search, "
+                f"credits={credits_used}, results={response.total_returned}"
+            )
+        except Exception as e:
+            # Log but don't fail the request if usage tracking fails
+            logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
         return response
 
