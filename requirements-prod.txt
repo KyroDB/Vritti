@@ -20,6 +20,9 @@ Pillow==10.1.0
 # LLM client (for reflection generation)
 openai==1.3.0
 
+# Billing
+stripe==7.7.0
+
 # Customer database
 # Note: SQLite is built into Python, no package needed
 

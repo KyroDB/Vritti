@@ -262,6 +262,50 @@ class LoggingConfig(BaseSettings):
     )
 
 
+class StripeConfig(BaseSettings):
+    """Stripe billing integration configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="STRIPE_")
+
+    api_key: str | None = Field(
+        default=None, description="Stripe secret API key (sk_live_... or sk_test_...)"
+    )
+    webhook_secret: str | None = Field(
+        default=None, description="Stripe webhook signing secret (whsec_...)"
+    )
+    publishable_key: str | None = Field(
+        default=None, description="Stripe publishable key (pk_live_... or pk_test_...)"
+    )
+
+    # Subscription tier price IDs (created in Stripe dashboard)
+    price_id_starter: str | None = Field(
+        default=None, description="Stripe price ID for Starter tier"
+    )
+    price_id_pro: str | None = Field(default=None, description="Stripe price ID for Pro tier")
+    price_id_enterprise: str | None = Field(
+        default=None, description="Stripe price ID for Enterprise tier"
+    )
+
+    # Billing behavior
+    trial_period_days: int = Field(default=14, ge=0, le=90, description="Free trial period in days")
+    payment_grace_period_days: int = Field(
+        default=3, ge=0, le=30, description="Grace period after payment failure before suspension"
+    )
+
+    # Usage-based billing
+    enable_metered_billing: bool = Field(
+        default=False, description="Enable usage-based metered billing (credits)"
+    )
+    metered_price_id: str | None = Field(
+        default=None, description="Stripe price ID for metered usage (credits)"
+    )
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if Stripe is properly configured."""
+        return self.api_key is not None and self.webhook_secret is not None
+
+
 class Settings(BaseSettings):
     """Root configuration for Episodic Memory service."""
 
@@ -280,6 +324,7 @@ class Settings(BaseSettings):
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     cors: CORSConfig = Field(default_factory=CORSConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    stripe: StripeConfig = Field(default_factory=StripeConfig)
 
     def validate_configuration(self) -> None:
         """
@@ -301,6 +346,13 @@ class Settings(BaseSettings):
         if self.embedding.image_dimension not in {512, 768, 1024}:
             logging.warning(
                 f"Non-standard image embedding dimension: {self.embedding.image_dimension}"
+            )
+
+        # Check Stripe configuration
+        if not self.stripe.is_configured:
+            logging.warning(
+                "Stripe is not configured - billing features will be disabled. "
+                "Set STRIPE_API_KEY and STRIPE_WEBHOOK_SECRET to enable."
             )
 
 

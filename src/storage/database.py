@@ -106,10 +106,18 @@ class CustomerDatabase:
                     last_api_call_at TEXT,
                     stripe_customer_id TEXT UNIQUE,
                     stripe_subscription_id TEXT,
+                    stripe_payment_method_id TEXT,
+                    billing_cycle_start TEXT,
+                    billing_cycle_end TEXT,
+                    next_invoice_date TEXT,
+                    payment_failed INTEGER NOT NULL DEFAULT 0,
+                    payment_failed_at TEXT,
+                    trial_end_date TEXT,
 
                     CHECK (customer_id GLOB '[a-z0-9-]*'),
                     CHECK (credits_used_current_month >= 0),
-                    CHECK (monthly_credit_limit >= 0)
+                    CHECK (monthly_credit_limit >= 0),
+                    CHECK (payment_failed IN (0, 1))
                 )
             """
             )
@@ -292,6 +300,31 @@ class CustomerDatabase:
             ),
             stripe_customer_id=row["stripe_customer_id"],
             stripe_subscription_id=row["stripe_subscription_id"],
+            stripe_payment_method_id=row.get("stripe_payment_method_id"),
+            billing_cycle_start=(
+                datetime.fromisoformat(row["billing_cycle_start"])
+                if row.get("billing_cycle_start")
+                else None
+            ),
+            billing_cycle_end=(
+                datetime.fromisoformat(row["billing_cycle_end"])
+                if row.get("billing_cycle_end")
+                else None
+            ),
+            next_invoice_date=(
+                datetime.fromisoformat(row["next_invoice_date"])
+                if row.get("next_invoice_date")
+                else None
+            ),
+            payment_failed=bool(row.get("payment_failed", 0)),
+            payment_failed_at=(
+                datetime.fromisoformat(row["payment_failed_at"])
+                if row.get("payment_failed_at")
+                else None
+            ),
+            trial_end_date=(
+                datetime.fromisoformat(row["trial_end_date"]) if row.get("trial_end_date") else None
+            ),
         )
 
     async def update_customer(self, customer_id: str, update: CustomerUpdate) -> Customer | None:
@@ -412,6 +445,178 @@ class CustomerDatabase:
             resource_type="customer",
             resource_id=customer_id,
         )
+
+        return cursor.rowcount > 0
+
+    async def update_customer_stripe_id(
+        self, customer_id: str, stripe_customer_id: str, stripe_subscription_id: str | None = None
+    ) -> bool:
+        """
+        Update customer Stripe IDs.
+
+        Args:
+            customer_id: Customer to update
+            stripe_customer_id: Stripe customer ID (cus_xxx)
+            stripe_subscription_id: Stripe subscription ID (sub_xxx), optional
+
+        Returns:
+            bool: True if successful
+        """
+        conn = self._get_connection()
+        now = datetime.now(UTC).isoformat()
+
+        if stripe_subscription_id:
+            cursor = conn.execute(
+                """
+                UPDATE customers
+                SET stripe_customer_id = ?,
+                    stripe_subscription_id = ?,
+                    updated_at = ?
+                WHERE customer_id = ?
+                """,
+                (stripe_customer_id, stripe_subscription_id, now, customer_id),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE customers
+                SET stripe_customer_id = ?,
+                    updated_at = ?
+                WHERE customer_id = ?
+                """,
+                (stripe_customer_id, now, customer_id),
+            )
+        conn.commit()
+
+        await self._log_audit(
+            customer_id=customer_id,
+            action="UPDATE_STRIPE_ID",
+            resource_type="customer",
+            resource_id=customer_id,
+            details=f"stripe_customer_id={stripe_customer_id}",
+        )
+
+        return cursor.rowcount > 0
+
+    async def update_customer_payment_failed(
+        self, customer_id: str, failed: bool, failed_at: datetime | None
+    ) -> bool:
+        """
+        Update customer payment failure status.
+
+        Args:
+            customer_id: Customer to update
+            failed: True if payment failed
+            failed_at: Timestamp of failure (None to clear)
+
+        Returns:
+            bool: True if successful
+        """
+        conn = self._get_connection()
+        now = datetime.now(UTC).isoformat()
+
+        cursor = conn.execute(
+            """
+            UPDATE customers
+            SET payment_failed = ?,
+                payment_failed_at = ?,
+                updated_at = ?
+            WHERE customer_id = ?
+            """,
+            (
+                1 if failed else 0,
+                failed_at.isoformat() if failed_at else None,
+                now,
+                customer_id,
+            ),
+        )
+        conn.commit()
+
+        await self._log_audit(
+            customer_id=customer_id,
+            action="UPDATE_PAYMENT_STATUS",
+            resource_type="customer",
+            resource_id=customer_id,
+            details=f"payment_failed={failed}",
+        )
+
+        return cursor.rowcount > 0
+
+    async def update_customer_status(self, customer_id: str, status: CustomerStatus) -> bool:
+        """
+        Update customer status.
+
+        Args:
+            customer_id: Customer to update
+            status: New status (ACTIVE, SUSPENDED, DELETED)
+
+        Returns:
+            bool: True if successful
+        """
+        conn = self._get_connection()
+        now = datetime.now(UTC).isoformat()
+
+        cursor = conn.execute(
+            """
+            UPDATE customers
+            SET status = ?,
+                updated_at = ?
+            WHERE customer_id = ?
+            """,
+            (status.value, now, customer_id),
+        )
+        conn.commit()
+
+        await self._log_audit(
+            customer_id=customer_id,
+            action="UPDATE_STATUS",
+            resource_type="customer",
+            resource_id=customer_id,
+            details=f"status={status.value}",
+        )
+
+        return cursor.rowcount > 0
+
+    async def update_billing_cycle(
+        self,
+        customer_id: str,
+        billing_cycle_start: datetime,
+        billing_cycle_end: datetime,
+        next_invoice_date: datetime | None = None,
+    ) -> bool:
+        """
+        Update customer billing cycle dates.
+
+        Args:
+            customer_id: Customer to update
+            billing_cycle_start: Start of billing period
+            billing_cycle_end: End of billing period
+            next_invoice_date: Next invoice generation date
+
+        Returns:
+            bool: True if successful
+        """
+        conn = self._get_connection()
+        now = datetime.now(UTC).isoformat()
+
+        cursor = conn.execute(
+            """
+            UPDATE customers
+            SET billing_cycle_start = ?,
+                billing_cycle_end = ?,
+                next_invoice_date = ?,
+                updated_at = ?
+            WHERE customer_id = ?
+            """,
+            (
+                billing_cycle_start.isoformat(),
+                billing_cycle_end.isoformat(),
+                next_invoice_date.isoformat() if next_invoice_date else None,
+                now,
+                customer_id,
+            ),
+        )
+        conn.commit()
 
         return cursor.rowcount > 0
 

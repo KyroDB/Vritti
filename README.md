@@ -1,203 +1,152 @@
-# Episodic Memory for AI Agents
+# EpisodicMemory
 
-Application-layer episodic memory system built on top of [KyroDB](https://github.com/KyroDB/KyroDB) - a high-performance vector database optimized for RAG workloads and AI agents.
+Production-ready episodic memory system for AI coding assistants. Multi-tenant SaaS providing intelligent episode storage and retrieval with enterprise-grade observability and security.
 
-**Design Philosophy**: This system stores **ONLY failure episodes** to learn from mistakes and avoid repeating them. Success patterns should be extracted and promoted to semantic rules (future phase), not stored as individual episodes. This prevents memory bloat and keeps the system focused on its core value proposition.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-BSL-blue.svg)](LICENSE)
 
-## Architecture
+---
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Episodic Memory Service (Python FastAPI)                    │
-│ - Multi-modal failure ingestion (text/code/images)         │
-│ - Precondition-aware retrieval                              │
-│ - Automated hygiene (decay & promotion)                     │
-└─────────────────────────────────────────────────────────────┘
-                        ↓ (gRPC)
-┌─────────────────────────────────────────────────────────────┐
-│ KyroDB (2 instances)                                        │
-│ - Text/code embeddings (384-dim)                           │
-│ - Image embeddings (512-dim via CLIP)                      │
-│ - 3-tier caching (71.7% hit rate)                          │
-│ - <1ms P99 vector search                                    │
-└─────────────────────────────────────────────────────────────┘
-```
+## Overview
 
-## Features
+EpisodicMemory stores multi-modal episodes (text, code, images) and retrieves relevant context using semantic search, precondition matching, and intelligent ranking. Built on [KyroDB](https://github.com/KyroDB/KyroDB) for high-performance vector search.
 
-- **Failure-focused learning**: Stores only failures to maximize learning value and minimize bloat
-- **Multi-modal storage**: Text, code, and image embeddings for comprehensive failure context
-- **Precondition matching**: Heuristic-based relevance filtering (no LLM calls in retrieval path)
-- **Temporal queries**: Filter by timestamp ranges
-- **Weighted ranking**: Similarity + precondition + recency + usage scoring
-- **Automated hygiene** (future): Time-based decay and pattern promotion to semantic rules
+**Target Customers**: AI coding tool companies (Cursor, Replit), enterprise AI teams, developer platforms
 
-## Performance Targets
+**Business Model**: Freemium (100 episodes/month) → Pro ($29/month, 10K episodes) → Enterprise (custom)
 
-- **<50ms P99** retrieval latency
-- **10K-100K** failure episodes
-- **Multi-modal search** across text + images
+---
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.11+
-- KyroDB running (2 instances: text + images)
-- Redis (for Celery background jobs)
-
-### Installation
+### Local Development
 
 ```bash
-# Clone repository
-git clone https://github.com/KyroDB/EpisodicMemory.git
-cd EpisodicMemory
-
-# Create virtual environment
-python3.11 -m venv venv
-source venv/bin/activate
-
 # Install dependencies
 pip install -r requirements.txt
 
-# Setup environment
+# Configure
 cp .env.example .env
-# Edit .env with KyroDB connection details and OpenAI API key
+# Edit .env with KyroDB connection details
+
+# Run
+uvicorn src.main:app --reload --port 8000
 ```
 
-### Running Locally
+### Docker Compose
 
 ```bash
-# Terminal 1: Start KyroDB (text embeddings)
-cd ../ProjectKyro/engine
-./target/release/kyrodb_server --port 50051 --data-dir ./data/kyrodb_text
-
-# Terminal 2: Start KyroDB (image embeddings)
-./target/release/kyrodb_server --port 50052 --data-dir ./data/kyrodb_images
-
-# Terminal 3: Start Episodic Memory service
-cd ../../EpisodicMemory
-./run_dev.sh
-# Or manually:
-# source venv/bin/activate
-# python -m uvicorn src.main:app --reload --port 8000
+docker-compose up -d
 ```
 
-Access the API:
-- **API Documentation**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
-- **Statistics**: http://localhost:8000/stats
+Access:
+- API: http://localhost:8000
+- Docs: http://localhost:8000/docs
+- Metrics: http://localhost:8000/metrics
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000
 
-### API Usage
+---
+
+## Features
+
+**Core**: Multi-modal storage, semantic search (<50ms P99), precondition matching, intelligent ranking, temporal queries
+
+**Production**: Multi-tenancy, API key auth, rate limiting, Prometheus metrics, structured JSON logging, Kubernetes health checks, CI/CD, auto-scaling
+
+**Observability**: 25+ Prometheus metrics, structured logs with request context, Grafana dashboards, distributed tracing
+
+---
+
+## API Usage
 
 ```python
 import requests
 
-# Capture an episode (failure)
-response = requests.post("http://localhost:8000/api/v1/capture", json={
-    "episode_type": "failure",
-    "goal": "Deploy web application to production",
-    "tool_chain": ["kubectl", "docker"],
-    "actions_taken": [
-        "Built Docker image",
-        "Pushed to registry",
-        "Applied Kubernetes manifest"
-    ],
-    "error_trace": "ImagePullBackOff: failed to resolve image 'myapp:latest'",
-    "error_class": "resource_error",
-    "code_state_diff": "# git diff output",
-    "screenshot_path": "./screenshots/deploy_error.png",
-    "environment_info": {
-        "os": "Darwin",
-        "kubectl_version": "1.28.0",
-        "cluster": "production"
-    },
-    "tags": ["production", "deployment", "critical"],
-    "severity": 1
-})
-print(f"Episode captured: {response.json()['episode_id']}")
+# Capture episode
+response = requests.post("http://localhost:8000/api/v1/capture",
+    headers={"X-API-Key": "your_api_key"},
+    json={
+        "episode_type": "failure",
+        "goal": "Deploy application",
+        "error_trace": "ImagePullBackOff: failed to resolve image",
+        "error_class": "resource_error",
+        "tags": ["production", "deployment"]
+    })
 
-# Search for relevant failures
-response = requests.post("http://localhost:8000/api/v1/search", json={
-    "goal": "Deploy application with kubectl getting ImagePullBackOff",
-    "current_state": {
-        "tool": "kubectl",
-        "error_class": "ImagePullBackOff",
-        "environment": {"os": "Darwin", "kubectl_version": "1.28"},
-        "components": ["kubernetes", "docker"],
-        "goal_keywords": ["deploy", "production"]
-    },
-    "collection": "failures",
-    "k": 5,
-    "min_similarity": 0.6,
-    "precondition_threshold": 0.5,
-    "ranking_weights": {
-        "similarity_weight": 0.5,
-        "precondition_weight": 0.3,
-        "recency_weight": 0.1,
-        "usage_weight": 0.1
-    }
-})
-
-results = response.json()
-print(f"Found {len(results['results'])} relevant episodes")
-print(f"Search latency: {results['search_latency_ms']:.2f}ms")
-
-for result in results['results']:
-    print(f"Rank {result['rank']}: Episode {result['episode']['episode_id']}")
-    print(f"  Combined score: {result['scores']['combined']:.3f}")
-    print(f"  Explanation: {result['similarity_explanation']}")
+# Search episodes
+response = requests.post("http://localhost:8000/api/v1/search",
+    headers={"X-API-Key": "your_api_key"},
+    json={
+        "goal": "Deploy with kubectl",
+        "k": 5,
+        "min_similarity": 0.6
+    })
 ```
 
-## Project Status
+---
 
-- **Phase 0-1**: Core infrastructure ✅ **COMPLETED**
-  - Configuration management with Pydantic Settings
-  - Pydantic models for episodes and search
-  - KyroDB dual-instance client with retry logic
-  - Multi-modal embedding service (text + CLIP)
-  - PII redaction utilities
-  - Snowflake ID generation
-  - LLM reflection service with GPT-4
+## Deployment
 
-- **Phase 1**: Ingestion & Retrieval Pipelines ✅ **COMPLETED**  - Episode ingestion with async reflection
-  - Precondition matching engine (heuristic-based)
-  - Weighted ranking system (similarity + precondition + recency + usage)
-  - Search orchestrator with latency breakdown
-  - FastAPI application with lifespan management
+### Kubernetes
 
-- **Phase 2**: Testing & Validation 🔄 **IN PROGRESS**
-  - Integration tests
-  - Load testing
-  - Performance validation (<50ms P99 target)
+```bash
+# Build
+./scripts/build.sh --prod --tag v1.0.0 --push
 
-- **Phase 3 (Future)**: Background Hygiene
-  - Time-based decay and pruning
-  - Usage-based pattern promotion
-  - Episodic → Semantic memory clustering
+# Deploy
+kubectl apply -k k8s/staging/
+kubectl apply -k k8s/production/
+```
+
+### CI/CD
+
+Automated via GitHub Actions:
+- **Staging**: Auto-deploy on merge to `develop`
+- **Production**: Auto-deploy on tag `v*.*.*` (manual approval required)
+
+See [docs/CICD.md](docs/CICD.md) for details.
+
+---
 
 ## Development
 
 ```bash
 # Run tests
-pytest tests/ -v
+pytest tests/ -v --cov=src
 
-# Run tests with coverage
-pytest tests/ --cov=src --cov-report=html
-
-# Format code
+# Format
 black src/ tests/
-ruff check src/ tests/
+ruff check src/ tests/ --fix
 
-# Type checking (optional)
-mypy src/ --ignore-missing-imports
+# Deploy manually
+./scripts/deploy.sh --env staging --dry-run
 ```
 
+---
+
+## Documentation
+
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) - Deployment guide
+- [CICD.md](docs/CICD.md) - CI/CD pipeline
+- [BILLING.md](docs/BILLING.md) - Stripe billing integration
+- [STRUCTURED_LOGGING.md](docs/STRUCTURED_LOGGING.md) - Logging guide
+
+---
+
+## Status
+
+**Phase 1-4 Complete**: Multi-tenancy, auth, security, metrics, logging, health checks, containerization, CI/CD, Stripe billing
+
+**Phase 5-6 Planned**: Performance optimization, launch preparation
+
+---
 
 ## License
 
-BSL License - see [LICENSE](LICENSE) for details.
+Business Source License 1.1 - Free for non-production use. See [LICENSE](LICENSE).
 
-## Related Projects
+---
 
-- [KyroDB](https://github.com/KyroDB/KyroDB) - High-performance vector database
+**Built with**: FastAPI, KyroDB, Prometheus, Grafana, Kubernetes, Docker
