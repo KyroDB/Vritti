@@ -10,7 +10,7 @@ Provides:
 import hashlib
 import json
 import time
-from typing import Any, Optional
+from typing import Any
 
 
 class SnowflakeIDGenerator:
@@ -58,9 +58,7 @@ class SnowflakeIDGenerator:
             ValueError: If machine_id is out of range
         """
         if machine_id < 0 or machine_id > self.MAX_MACHINE_ID:
-            raise ValueError(
-                f"machine_id must be 0-{self.MAX_MACHINE_ID}, got {machine_id}"
-            )
+            raise ValueError(f"machine_id must be 0-{self.MAX_MACHINE_ID}, got {machine_id}")
 
         self.machine_id = machine_id
         self.sequence = 0
@@ -85,8 +83,7 @@ class SnowflakeIDGenerator:
         # Clock moved backward - should not happen in production
         if timestamp < self.last_timestamp:
             raise RuntimeError(
-                f"Clock moved backward! Last: {self.last_timestamp}, "
-                f"Current: {timestamp}"
+                f"Clock moved backward! Last: {self.last_timestamp}, " f"Current: {timestamp}"
             )
 
         # Same millisecond: increment sequence
@@ -134,7 +131,7 @@ class SnowflakeIDGenerator:
 
 
 # Global generator instance (machine_id=0 for single-machine setup)
-_id_generator: Optional[SnowflakeIDGenerator] = None
+_id_generator: SnowflakeIDGenerator | None = None
 
 
 def initialize_id_generator(machine_id: int = 0) -> None:
@@ -192,20 +189,16 @@ def hash_environment(environment_info: dict[str, Any]) -> str:
         "a7b3c9d4e5f6..."
     """
     # Normalize: sort keys for deterministic JSON serialization
-    normalized = json.dumps(environment_info, sort_keys=True, separators=(',', ':'))
+    normalized = json.dumps(environment_info, sort_keys=True, separators=(",", ":"))
 
     # Hash with SHA-256
     hasher = hashlib.sha256()
-    hasher.update(normalized.encode('utf-8'))
+    hasher.update(normalized.encode("utf-8"))
 
     return hasher.hexdigest()
 
 
-def hash_error_signature(
-    error_class: str,
-    tool: str,
-    environment_hash: str
-) -> str:
+def hash_error_signature(error_class: str, tool: str, environment_hash: str) -> str:
     """
     Generate signature for error deduplication.
 
@@ -229,7 +222,7 @@ def hash_error_signature(
     """
     signature = f"{error_class}|{tool}|{environment_hash}"
     hasher = hashlib.sha256()
-    hasher.update(signature.encode('utf-8'))
+    hasher.update(signature.encode("utf-8"))
 
     return hasher.hexdigest()
 
@@ -251,7 +244,7 @@ def hash_text_content(text: str) -> str:
         "c4d8e9a2b7f1..."
     """
     hasher = hashlib.sha256()
-    hasher.update(text.strip().encode('utf-8'))
+    hasher.update(text.strip().encode("utf-8"))
 
     return hasher.hexdigest()
 

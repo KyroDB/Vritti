@@ -14,14 +14,14 @@ from fastapi.testclient import TestClient
 
 from src.main import app
 from src.observability.metrics import (
-    track_request,
+    set_kyrodb_health,
     track_api_key_cache_hit,
     track_api_key_cache_miss,
-    track_ingestion_credits,
-    track_search_credits,
     track_error,
+    track_ingestion_credits,
+    track_request,
+    track_search_credits,
     update_customer_quota_usage,
-    set_kyrodb_health,
 )
 
 

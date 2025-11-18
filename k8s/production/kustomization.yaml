@@ -1,0 +1,65 @@
+# Kustomize configuration for production environment
+#  Production-specific overrides
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: episodic-memory-production
+
+commonLabels:
+  environment: production
+  app.kubernetes.io/part-of: episodic-memory
+
+resources:
+  - ../deployment.yaml
+  - ../service.yaml
+  - ../configmap.yaml
+  - ../hpa.yaml
+  - ../pdb.yaml
+
+images:
+  - name: episodic-memory
+    newName: docker.io/yourusername/episodic-memory
+    newTag: latest
+
+replicas:
+  - name: episodic-memory-api
+    count: 3
+
+configMapGenerator:
+  - name: episodic-memory-config
+    behavior: merge
+    literals:
+      - LOGGING_LEVEL=INFO
+      - LOGGING_ENVIRONMENT=production
+      - SERVICE_WORKERS=4
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 1Gi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 2000m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 4Gi
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - episodic-memory-api
+                topologyKey: kubernetes.io/hostname
+    target:
+      kind: Deployment
+      name: episodic-memory-api

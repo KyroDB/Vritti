@@ -19,60 +19,60 @@ class KyroDBServiceStub(object):
             channel: A grpc.Channel.
         """
         self.Insert = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/Insert',
-                request_serializer=kyrodb__pb2.InsertRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.InsertResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/Insert",
+            request_serializer=kyrodb__pb2.InsertRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.InsertResponse.FromString,
+        )
         self.BulkInsert = channel.stream_unary(
-                '/kyrodb.v1.KyroDBService/BulkInsert',
-                request_serializer=kyrodb__pb2.InsertRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.InsertResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/BulkInsert",
+            request_serializer=kyrodb__pb2.InsertRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.InsertResponse.FromString,
+        )
         self.Delete = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/Delete',
-                request_serializer=kyrodb__pb2.DeleteRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.DeleteResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/Delete",
+            request_serializer=kyrodb__pb2.DeleteRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.DeleteResponse.FromString,
+        )
         self.Query = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/Query',
-                request_serializer=kyrodb__pb2.QueryRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.QueryResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/Query",
+            request_serializer=kyrodb__pb2.QueryRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.QueryResponse.FromString,
+        )
         self.Search = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/Search',
-                request_serializer=kyrodb__pb2.SearchRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.SearchResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/Search",
+            request_serializer=kyrodb__pb2.SearchRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.SearchResponse.FromString,
+        )
         self.BulkSearch = channel.stream_stream(
-                '/kyrodb.v1.KyroDBService/BulkSearch',
-                request_serializer=kyrodb__pb2.SearchRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.SearchResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/BulkSearch",
+            request_serializer=kyrodb__pb2.SearchRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.SearchResponse.FromString,
+        )
         self.Health = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/Health',
-                request_serializer=kyrodb__pb2.HealthRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.HealthResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/Health",
+            request_serializer=kyrodb__pb2.HealthRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.HealthResponse.FromString,
+        )
         self.Metrics = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/Metrics',
-                request_serializer=kyrodb__pb2.MetricsRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.MetricsResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/Metrics",
+            request_serializer=kyrodb__pb2.MetricsRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.MetricsResponse.FromString,
+        )
         self.FlushHotTier = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/FlushHotTier',
-                request_serializer=kyrodb__pb2.FlushRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.FlushResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/FlushHotTier",
+            request_serializer=kyrodb__pb2.FlushRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.FlushResponse.FromString,
+        )
         self.CreateSnapshot = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/CreateSnapshot',
-                request_serializer=kyrodb__pb2.SnapshotRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.SnapshotResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/CreateSnapshot",
+            request_serializer=kyrodb__pb2.SnapshotRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.SnapshotResponse.FromString,
+        )
         self.GetConfig = channel.unary_unary(
-                '/kyrodb.v1.KyroDBService/GetConfig',
-                request_serializer=kyrodb__pb2.ConfigRequest.SerializeToString,
-                response_deserializer=kyrodb__pb2.ConfigResponse.FromString,
-                )
+            "/kyrodb.v1.KyroDBService/GetConfig",
+            request_serializer=kyrodb__pb2.ConfigRequest.SerializeToString,
+            response_deserializer=kyrodb__pb2.ConfigResponse.FromString,
+        )
 
 
 class KyroDBServiceServicer(object):
@@ -87,8 +87,8 @@ class KyroDBServiceServicer(object):
         Latency: ~100-200ns (hot tier write)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def BulkInsert(self, request_iterator, context):
         """Insert multiple documents in a streaming fashion
@@ -96,16 +96,16 @@ class KyroDBServiceServicer(object):
         Throughput: 50K-100K docs/sec
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def Delete(self, request, context):
         """Delete a document by ID
         Note: Soft delete in hot tier, physical delete on next compaction
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def Query(self, request, context):
         """============================================================================
@@ -117,8 +117,8 @@ class KyroDBServiceServicer(object):
         Query path: Cache → Hot Tier → HNSW
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def Search(self, request, context):
         """k-NN vector similarity search
@@ -126,16 +126,16 @@ class KyroDBServiceServicer(object):
         Returns top-k most similar documents
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def BulkSearch(self, request_iterator, context):
         """Bulk search: multiple queries in one request (streaming)
         Use for batch inference workloads
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def Health(self, request, context):
         """============================================================================
@@ -146,16 +146,16 @@ class KyroDBServiceServicer(object):
         Returns component-level health status
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def Metrics(self, request, context):
         """Metrics for monitoring and alerting
         Returns cache hit rates, latencies, throughput
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def FlushHotTier(self, request, context):
         """============================================================================
@@ -165,88 +165,87 @@ class KyroDBServiceServicer(object):
         Force flush hot tier to cold tier (for testing/backups)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def CreateSnapshot(self, request, context):
-        """Create snapshot for backup
-        """
+        """Create snapshot for backup"""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
     def GetConfig(self, request, context):
-        """Get engine configuration (read-only)
-        """
+        """Get engine configuration (read-only)"""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
 
 
 def add_KyroDBServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'Insert': grpc.unary_unary_rpc_method_handler(
-                    servicer.Insert,
-                    request_deserializer=kyrodb__pb2.InsertRequest.FromString,
-                    response_serializer=kyrodb__pb2.InsertResponse.SerializeToString,
-            ),
-            'BulkInsert': grpc.stream_unary_rpc_method_handler(
-                    servicer.BulkInsert,
-                    request_deserializer=kyrodb__pb2.InsertRequest.FromString,
-                    response_serializer=kyrodb__pb2.InsertResponse.SerializeToString,
-            ),
-            'Delete': grpc.unary_unary_rpc_method_handler(
-                    servicer.Delete,
-                    request_deserializer=kyrodb__pb2.DeleteRequest.FromString,
-                    response_serializer=kyrodb__pb2.DeleteResponse.SerializeToString,
-            ),
-            'Query': grpc.unary_unary_rpc_method_handler(
-                    servicer.Query,
-                    request_deserializer=kyrodb__pb2.QueryRequest.FromString,
-                    response_serializer=kyrodb__pb2.QueryResponse.SerializeToString,
-            ),
-            'Search': grpc.unary_unary_rpc_method_handler(
-                    servicer.Search,
-                    request_deserializer=kyrodb__pb2.SearchRequest.FromString,
-                    response_serializer=kyrodb__pb2.SearchResponse.SerializeToString,
-            ),
-            'BulkSearch': grpc.stream_stream_rpc_method_handler(
-                    servicer.BulkSearch,
-                    request_deserializer=kyrodb__pb2.SearchRequest.FromString,
-                    response_serializer=kyrodb__pb2.SearchResponse.SerializeToString,
-            ),
-            'Health': grpc.unary_unary_rpc_method_handler(
-                    servicer.Health,
-                    request_deserializer=kyrodb__pb2.HealthRequest.FromString,
-                    response_serializer=kyrodb__pb2.HealthResponse.SerializeToString,
-            ),
-            'Metrics': grpc.unary_unary_rpc_method_handler(
-                    servicer.Metrics,
-                    request_deserializer=kyrodb__pb2.MetricsRequest.FromString,
-                    response_serializer=kyrodb__pb2.MetricsResponse.SerializeToString,
-            ),
-            'FlushHotTier': grpc.unary_unary_rpc_method_handler(
-                    servicer.FlushHotTier,
-                    request_deserializer=kyrodb__pb2.FlushRequest.FromString,
-                    response_serializer=kyrodb__pb2.FlushResponse.SerializeToString,
-            ),
-            'CreateSnapshot': grpc.unary_unary_rpc_method_handler(
-                    servicer.CreateSnapshot,
-                    request_deserializer=kyrodb__pb2.SnapshotRequest.FromString,
-                    response_serializer=kyrodb__pb2.SnapshotResponse.SerializeToString,
-            ),
-            'GetConfig': grpc.unary_unary_rpc_method_handler(
-                    servicer.GetConfig,
-                    request_deserializer=kyrodb__pb2.ConfigRequest.FromString,
-                    response_serializer=kyrodb__pb2.ConfigResponse.SerializeToString,
-            ),
+        "Insert": grpc.unary_unary_rpc_method_handler(
+            servicer.Insert,
+            request_deserializer=kyrodb__pb2.InsertRequest.FromString,
+            response_serializer=kyrodb__pb2.InsertResponse.SerializeToString,
+        ),
+        "BulkInsert": grpc.stream_unary_rpc_method_handler(
+            servicer.BulkInsert,
+            request_deserializer=kyrodb__pb2.InsertRequest.FromString,
+            response_serializer=kyrodb__pb2.InsertResponse.SerializeToString,
+        ),
+        "Delete": grpc.unary_unary_rpc_method_handler(
+            servicer.Delete,
+            request_deserializer=kyrodb__pb2.DeleteRequest.FromString,
+            response_serializer=kyrodb__pb2.DeleteResponse.SerializeToString,
+        ),
+        "Query": grpc.unary_unary_rpc_method_handler(
+            servicer.Query,
+            request_deserializer=kyrodb__pb2.QueryRequest.FromString,
+            response_serializer=kyrodb__pb2.QueryResponse.SerializeToString,
+        ),
+        "Search": grpc.unary_unary_rpc_method_handler(
+            servicer.Search,
+            request_deserializer=kyrodb__pb2.SearchRequest.FromString,
+            response_serializer=kyrodb__pb2.SearchResponse.SerializeToString,
+        ),
+        "BulkSearch": grpc.stream_stream_rpc_method_handler(
+            servicer.BulkSearch,
+            request_deserializer=kyrodb__pb2.SearchRequest.FromString,
+            response_serializer=kyrodb__pb2.SearchResponse.SerializeToString,
+        ),
+        "Health": grpc.unary_unary_rpc_method_handler(
+            servicer.Health,
+            request_deserializer=kyrodb__pb2.HealthRequest.FromString,
+            response_serializer=kyrodb__pb2.HealthResponse.SerializeToString,
+        ),
+        "Metrics": grpc.unary_unary_rpc_method_handler(
+            servicer.Metrics,
+            request_deserializer=kyrodb__pb2.MetricsRequest.FromString,
+            response_serializer=kyrodb__pb2.MetricsResponse.SerializeToString,
+        ),
+        "FlushHotTier": grpc.unary_unary_rpc_method_handler(
+            servicer.FlushHotTier,
+            request_deserializer=kyrodb__pb2.FlushRequest.FromString,
+            response_serializer=kyrodb__pb2.FlushResponse.SerializeToString,
+        ),
+        "CreateSnapshot": grpc.unary_unary_rpc_method_handler(
+            servicer.CreateSnapshot,
+            request_deserializer=kyrodb__pb2.SnapshotRequest.FromString,
+            response_serializer=kyrodb__pb2.SnapshotResponse.SerializeToString,
+        ),
+        "GetConfig": grpc.unary_unary_rpc_method_handler(
+            servicer.GetConfig,
+            request_deserializer=kyrodb__pb2.ConfigRequest.FromString,
+            response_serializer=kyrodb__pb2.ConfigResponse.SerializeToString,
+        ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'kyrodb.v1.KyroDBService', rpc_method_handlers)
+        "kyrodb.v1.KyroDBService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class KyroDBService(object):
     """Core KyroDB service - all operations for vector storage and retrieval
     ============================================================================
@@ -255,188 +254,320 @@ class KyroDBService(object):
     """
 
     @staticmethod
-    def Insert(request,
+    def Insert(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/Insert',
+            "/kyrodb.v1.KyroDBService/Insert",
             kyrodb__pb2.InsertRequest.SerializeToString,
             kyrodb__pb2.InsertResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def BulkInsert(request_iterator,
+    def BulkInsert(
+        request_iterator,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.stream_unary(
+            request_iterator,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.stream_unary(request_iterator, target, '/kyrodb.v1.KyroDBService/BulkInsert',
+            "/kyrodb.v1.KyroDBService/BulkInsert",
             kyrodb__pb2.InsertRequest.SerializeToString,
             kyrodb__pb2.InsertResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def Delete(request,
+    def Delete(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/Delete',
+            "/kyrodb.v1.KyroDBService/Delete",
             kyrodb__pb2.DeleteRequest.SerializeToString,
             kyrodb__pb2.DeleteResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def Query(request,
+    def Query(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/Query',
+            "/kyrodb.v1.KyroDBService/Query",
             kyrodb__pb2.QueryRequest.SerializeToString,
             kyrodb__pb2.QueryResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def Search(request,
+    def Search(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/Search',
+            "/kyrodb.v1.KyroDBService/Search",
             kyrodb__pb2.SearchRequest.SerializeToString,
             kyrodb__pb2.SearchResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def BulkSearch(request_iterator,
+    def BulkSearch(
+        request_iterator,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.stream_stream(
+            request_iterator,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.stream_stream(request_iterator, target, '/kyrodb.v1.KyroDBService/BulkSearch',
+            "/kyrodb.v1.KyroDBService/BulkSearch",
             kyrodb__pb2.SearchRequest.SerializeToString,
             kyrodb__pb2.SearchResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def Health(request,
+    def Health(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/Health',
+            "/kyrodb.v1.KyroDBService/Health",
             kyrodb__pb2.HealthRequest.SerializeToString,
             kyrodb__pb2.HealthResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def Metrics(request,
+    def Metrics(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/Metrics',
+            "/kyrodb.v1.KyroDBService/Metrics",
             kyrodb__pb2.MetricsRequest.SerializeToString,
             kyrodb__pb2.MetricsResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def FlushHotTier(request,
+    def FlushHotTier(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/FlushHotTier',
+            "/kyrodb.v1.KyroDBService/FlushHotTier",
             kyrodb__pb2.FlushRequest.SerializeToString,
             kyrodb__pb2.FlushResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def CreateSnapshot(request,
+    def CreateSnapshot(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/CreateSnapshot',
+            "/kyrodb.v1.KyroDBService/CreateSnapshot",
             kyrodb__pb2.SnapshotRequest.SerializeToString,
             kyrodb__pb2.SnapshotResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
 
     @staticmethod
-    def GetConfig(request,
+    def GetConfig(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/kyrodb.v1.KyroDBService/GetConfig',
+            "/kyrodb.v1.KyroDBService/GetConfig",
             kyrodb__pb2.ConfigRequest.SerializeToString,
             kyrodb__pb2.ConfigResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )

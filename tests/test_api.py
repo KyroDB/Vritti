@@ -12,7 +12,7 @@ Tests:
 import pytest
 from fastapi.testclient import TestClient
 
-from src.models.episode import EpisodeCreate, EpisodeType, ErrorClass
+from src.models.episode import EpisodeCreate
 
 
 class TestHealthEndpoint:

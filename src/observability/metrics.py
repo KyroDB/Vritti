@@ -23,16 +23,13 @@ Integration:
 - Retention: 90 days (Prometheus config)
 """
 
-import time
-from typing import Optional
 from prometheus_client import (
-    Counter,
-    Histogram,
-    Gauge,
-    generate_latest,
     CONTENT_TYPE_LATEST,
-    CollectorRegistry,
     REGISTRY,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
 )
 
 # ============================================================================
@@ -96,13 +93,13 @@ api_key_validation_duration_seconds = Histogram(
     labelnames=["cache_hit"],
     buckets=(
         0.0001,  # 0.1ms (cache hit)
-        0.001,   # 1ms
-        0.010,   # 10ms
-        0.100,   # 100ms
-        0.200,   # 200ms
-        0.300,   # 300ms (bcrypt target)
-        0.500,   # 500ms
-        1.000,   # 1s
+        0.001,  # 1ms
+        0.010,  # 10ms
+        0.100,  # 100ms
+        0.200,  # 200ms
+        0.300,  # 300ms (bcrypt target)
+        0.500,  # 500ms
+        1.000,  # 1s
     ),
 )
 
@@ -116,15 +113,15 @@ kyrodb_operation_duration_seconds = Histogram(
     "KyroDB operation latency",
     labelnames=["operation", "instance", "success"],
     buckets=(
-        0.001,   # 1ms
-        0.005,   # 5ms
-        0.010,   # 10ms
-        0.025,   # 25ms
-        0.050,   # 50ms
-        0.100,   # 100ms
-        0.250,   # 250ms
-        0.500,   # 500ms
-        1.000,   # 1s (P99 target)
+        0.001,  # 1ms
+        0.005,  # 5ms
+        0.010,  # 10ms
+        0.025,  # 25ms
+        0.050,  # 50ms
+        0.100,  # 100ms
+        0.250,  # 250ms
+        0.500,  # 500ms
+        1.000,  # 1s (P99 target)
     ),
 )
 
@@ -210,13 +207,13 @@ embedding_generation_duration_seconds = Histogram(
     "Embedding generation latency",
     labelnames=["model_type"],  # text, image
     buckets=(
-        0.010,   # 10ms
-        0.025,   # 25ms
-        0.050,   # 50ms
-        0.100,   # 100ms
-        0.250,   # 250ms
-        0.500,   # 500ms
-        1.000,   # 1s
+        0.010,  # 10ms
+        0.025,  # 25ms
+        0.050,  # 50ms
+        0.100,  # 100ms
+        0.250,  # 250ms
+        0.500,  # 500ms
+        1.000,  # 1s
     ),
 )
 

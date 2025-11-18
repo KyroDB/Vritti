@@ -25,16 +25,15 @@ import sys
 import time
 import uuid
 from contextvars import ContextVar
-from typing import Any, Dict, Optional
 
 import structlog
 from structlog.types import EventDict, Processor
 
 # Context variables for request-scoped data
 # These propagate across async boundaries automatically
-request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
-customer_id_var: ContextVar[Optional[str]] = ContextVar("customer_id", default=None)
-trace_id_var: ContextVar[Optional[str]] = ContextVar("trace_id", default=None)
+request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+customer_id_var: ContextVar[str | None] = ContextVar("customer_id", default=None)
+trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
 
 
 # ============================================================================
@@ -72,9 +71,7 @@ def add_request_context(
     return event_dict
 
 
-def add_timestamp(
-    logger: logging.Logger, method_name: str, event_dict: EventDict
-) -> EventDict:
+def add_timestamp(logger: logging.Logger, method_name: str, event_dict: EventDict) -> EventDict:
     """
     Add ISO 8601 timestamp with microsecond precision.
 
@@ -84,9 +81,10 @@ def add_timestamp(
         - Uses perf_counter for high-resolution timestamps
         - Cached formatting for minimal overhead
     """
-    event_dict["timestamp"] = time.strftime(
-        "%Y-%m-%dT%H:%M:%S", time.gmtime()
-    ) + f".{int((time.time() % 1) * 1000000):06d}Z"
+    event_dict["timestamp"] = (
+        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        + f".{int((time.time() % 1) * 1000000):06d}Z"
+    )
     return event_dict
 
 
@@ -113,6 +111,7 @@ def add_service_metadata(
     # Import here to avoid circular dependency
     try:
         from src.config import get_settings
+
         settings = get_settings()
         event_dict["service"] = settings.logging.service_name
         event_dict["version"] = settings.logging.service_version
@@ -193,13 +192,10 @@ def add_exception_info(
     - Link to Sentry/Rollbar for full context
     """
     exc_info = event_dict.get("exc_info")
-    if exc_info:
-        if isinstance(exc_info, tuple) and len(exc_info) == 3:
-            exc_type, exc_value, exc_tb = exc_info
-            event_dict["exception_type"] = (
-                exc_type.__name__ if exc_type else "Unknown"
-            )
-            event_dict["exception_message"] = str(exc_value) if exc_value else ""
+    if exc_info and isinstance(exc_info, tuple) and len(exc_info) == 3:
+        exc_type, exc_value, exc_tb = exc_info
+        event_dict["exception_type"] = exc_type.__name__ if exc_type else "Unknown"
+        event_dict["exception_message"] = str(exc_value) if exc_value else ""
             # Traceback is already formatted by structlog.processors.format_exc_info
 
     return event_dict
@@ -347,9 +343,9 @@ class RequestContext:
 
     def __init__(
         self,
-        customer_id: Optional[str] = None,
-        trace_id: Optional[str] = None,
-        request_id: Optional[str] = None,
+        customer_id: str | None = None,
+        trace_id: str | None = None,
+        request_id: str | None = None,
     ):
         """
         Initialize request context.
@@ -463,16 +459,16 @@ def set_trace_id(trace_id: str) -> None:
     trace_id_var.set(trace_id)
 
 
-def get_request_id() -> Optional[str]:
+def get_request_id() -> str | None:
     """Get request ID from current context."""
     return request_id_var.get()
 
 
-def get_customer_id() -> Optional[str]:
+def get_customer_id() -> str | None:
     """Get customer ID from current context."""
     return customer_id_var.get()
 
 
-def get_trace_id() -> Optional[str]:
+def get_trace_id() -> str | None:
     """Get trace ID from current context."""
     return trace_id_var.get()

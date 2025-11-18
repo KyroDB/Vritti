@@ -10,25 +10,23 @@ Provides a clean async interface to KyroDB operations with:
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Optional
 
 import grpc
 from grpc import StatusCode
-from grpc.aio import insecure_channel, secure_channel, AioRpcError
+from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
 from src.kyrodb.kyrodb_pb2 import (
     DeleteRequest,
     DeleteResponse,
+    HealthRequest,
+    HealthResponse,
     InsertRequest,
     InsertResponse,
     QueryRequest,
     QueryResponse,
     SearchRequest,
     SearchResponse,
-    HealthRequest,
-    HealthResponse,
 )
 from src.kyrodb.kyrodb_pb2_grpc import KyroDBServiceStub
 
@@ -75,9 +73,9 @@ class KyroDBClient:
         max_retries: int = 3,
         retry_backoff_seconds: float = 0.5,
         enable_tls: bool = False,
-        tls_ca_cert_path: Optional[str] = None,
-        tls_client_cert_path: Optional[str] = None,
-        tls_client_key_path: Optional[str] = None,
+        tls_ca_cert_path: str | None = None,
+        tls_client_cert_path: str | None = None,
+        tls_client_key_path: str | None = None,
         tls_verify_server: bool = True,
     ):
         """
@@ -112,8 +110,8 @@ class KyroDBClient:
         self.tls_client_key_path = tls_client_key_path
         self.tls_verify_server = tls_verify_server
 
-        self._channel: Optional[grpc.aio.Channel] = None
-        self._stub: Optional[KyroDBServiceStub] = None
+        self._channel: grpc.aio.Channel | None = None
+        self._stub: KyroDBServiceStub | None = None
         self._connected = False
 
     def _create_tls_credentials(self) -> grpc.ChannelCredentials:
@@ -159,7 +157,7 @@ class KyroDBClient:
 
             certificate_chain = cert_path.read_bytes()
             private_key = key_path.read_bytes()
-            logger.info(f"Loaded client certificate and key for mutual TLS")
+            logger.info("Loaded client certificate and key for mutual TLS")
         elif self.tls_client_cert_path or self.tls_client_key_path:
             raise ValueError(
                 "Both tls_client_cert_path and tls_client_key_path must be provided for mutual TLS"
@@ -180,7 +178,7 @@ class KyroDBClient:
             # In production, always verify the server certificate
             credentials = grpc.composite_channel_credentials(
                 credentials,
-                grpc.metadata_call_credentials(lambda context, callback: callback([], None))
+                grpc.metadata_call_credentials(lambda context, callback: callback([], None)),
             )
 
         return credentials
@@ -287,9 +285,7 @@ class KyroDBClient:
 
         for attempt in range(self.max_retries):
             try:
-                response = await asyncio.wait_for(
-                    rpc_func(request), timeout=self.timeout_seconds
-                )
+                response = await asyncio.wait_for(rpc_func(request), timeout=self.timeout_seconds)
                 return response
 
             except AioRpcError as e:
@@ -336,7 +332,7 @@ class KyroDBClient:
         doc_id: int,
         embedding: list[float],
         namespace: str = "",
-        metadata: Optional[dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> InsertResponse:
         """
         Insert a document with embedding into KyroDB.
@@ -368,7 +364,7 @@ class KyroDBClient:
         namespace: str = "",
         min_score: float = -1.0,
         include_embeddings: bool = False,
-        metadata_filters: Optional[dict[str, str]] = None,
+        metadata_filters: dict[str, str] | None = None,
     ) -> SearchResponse:
         """
         k-NN vector similarity search.

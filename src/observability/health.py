@@ -41,9 +41,10 @@ readinessProbe:
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from src.observability.logging import get_logger
@@ -69,12 +70,12 @@ class ComponentHealth(BaseModel):
 
     name: str = Field(description="Component name")
     status: HealthStatus = Field(description="Component health status")
-    message: Optional[str] = Field(default=None, description="Status message")
-    latency_ms: Optional[float] = Field(
+    message: str | None = Field(default=None, description="Status message")
+    latency_ms: float | None = Field(
         default=None, description="Health check latency in milliseconds"
     )
     last_check: datetime = Field(description="Last health check timestamp")
-    metadata: Optional[Dict[str, Any]] = Field(
+    metadata: dict[str, Any] | None = Field(
         default=None, description="Additional component metadata"
     )
 
@@ -86,9 +87,7 @@ class HealthCheckResponse(BaseModel):
     timestamp: datetime = Field(description="Check timestamp")
     uptime_seconds: float = Field(description="Service uptime in seconds")
     version: str = Field(description="Service version")
-    components: List[ComponentHealth] = Field(
-        description="Individual component health statuses"
-    )
+    components: list[ComponentHealth] = Field(description="Individual component health statuses")
 
 
 class LivenessResponse(BaseModel):
@@ -104,9 +103,7 @@ class ReadinessResponse(BaseModel):
     status: HealthStatus = Field(description="Readiness status")
     timestamp: datetime = Field(description="Check timestamp")
     ready: bool = Field(description="Whether service is ready to accept traffic")
-    components: List[ComponentHealth] = Field(
-        description="Critical component health statuses"
-    )
+    components: list[ComponentHealth] = Field(description="Critical component health statuses")
 
 
 # ============================================================================
@@ -137,7 +134,7 @@ class HealthChecker:
         self.version = "0.1.0"  # TODO: Read from config
 
         # Cached health status (5-second TTL)
-        self._health_cache: Optional[HealthCheckResponse] = None
+        self._health_cache: HealthCheckResponse | None = None
         self._health_cache_time: float = 0.0
         self._health_cache_ttl: float = 5.0  # 5 seconds
 
@@ -167,7 +164,7 @@ class HealthChecker:
         """
         return LivenessResponse(
             status="alive",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
     async def check_readiness(
@@ -192,7 +189,7 @@ class HealthChecker:
             - Includes I/O operations
             - Cached for 5 seconds
         """
-        components: List[ComponentHealth] = []
+        components: list[ComponentHealth] = []
         overall_status = HealthStatus.HEALTHY
 
         # Check KyroDB connections
@@ -212,14 +209,15 @@ class HealthChecker:
 
             if db_health.status == HealthStatus.UNHEALTHY:
                 overall_status = HealthStatus.UNHEALTHY
-            elif db_health.status == HealthStatus.DEGRADED and overall_status != HealthStatus.UNHEALTHY:
+            elif (
+                db_health.status == HealthStatus.DEGRADED
+                and overall_status != HealthStatus.UNHEALTHY
+            ):
                 overall_status = HealthStatus.DEGRADED
 
         # Check embedding service (non-critical)
         if embedding_service:
-            embedding_health = await self._check_embedding_service_health(
-                embedding_service
-            )
+            embedding_health = await self._check_embedding_service_health(embedding_service)
             components.append(embedding_health)
             # Embedding service failure is not critical for readiness
 
@@ -228,7 +226,7 @@ class HealthChecker:
 
         return ReadinessResponse(
             status=overall_status,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             ready=ready,
             components=components,
         )
@@ -262,7 +260,7 @@ class HealthChecker:
         # Cache miss - perform checks
         logger.debug("Health check cache miss, performing full check")
 
-        components: List[ComponentHealth] = []
+        components: list[ComponentHealth] = []
         overall_status = HealthStatus.HEALTHY
 
         # Check KyroDB connections
@@ -285,9 +283,7 @@ class HealthChecker:
 
         # Check embedding service
         if embedding_service:
-            embedding_health = await self._check_embedding_service_health(
-                embedding_service
-            )
+            embedding_health = await self._check_embedding_service_health(embedding_service)
             components.append(embedding_health)
 
             if embedding_health.status == HealthStatus.UNHEALTHY:
@@ -295,16 +291,14 @@ class HealthChecker:
 
         # Check reflection service
         if reflection_service:
-            reflection_health = await self._check_reflection_service_health(
-                reflection_service
-            )
+            reflection_health = await self._check_reflection_service_health(reflection_service)
             components.append(reflection_health)
             # Reflection service is optional, failure is not critical
 
         # Build response
         response = HealthCheckResponse(
             status=overall_status,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             uptime_seconds=self.get_uptime_seconds(),
             version=self.version,
             components=components,
@@ -356,7 +350,7 @@ class HealthChecker:
                 status=status,
                 message=message,
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
                 metadata={
                     "text_healthy": text_healthy,
                     "image_healthy": image_healthy,
@@ -373,7 +367,7 @@ class HealthChecker:
                 status=HealthStatus.UNHEALTHY,
                 message=f"Health check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
     async def _check_database_health(self, customer_db) -> ComponentHealth:
@@ -401,7 +395,7 @@ class HealthChecker:
                 status=HealthStatus.HEALTHY,
                 message="Database responsive",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
         except Exception as e:
@@ -414,12 +408,10 @@ class HealthChecker:
                 status=HealthStatus.UNHEALTHY,
                 message=f"Database check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
-    async def _check_embedding_service_health(
-        self, embedding_service
-    ) -> ComponentHealth:
+    async def _check_embedding_service_health(self, embedding_service) -> ComponentHealth:
         """
         Check embedding service health.
 
@@ -432,8 +424,14 @@ class HealthChecker:
 
         try:
             # Check if models are loaded
-            text_model_loaded = hasattr(embedding_service, "text_model") and embedding_service.text_model is not None
-            image_model_loaded = hasattr(embedding_service, "image_model") and embedding_service.image_model is not None
+            text_model_loaded = (
+                hasattr(embedding_service, "text_model")
+                and embedding_service.text_model is not None
+            )
+            image_model_loaded = (
+                hasattr(embedding_service, "image_model")
+                and embedding_service.image_model is not None
+            )
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -452,7 +450,7 @@ class HealthChecker:
                 status=status,
                 message=message,
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
                 metadata={
                     "text_model_loaded": text_model_loaded,
                     "image_model_loaded": image_model_loaded,
@@ -467,12 +465,10 @@ class HealthChecker:
                 status=HealthStatus.DEGRADED,  # Non-critical
                 message=f"Health check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
-    async def _check_reflection_service_health(
-        self, reflection_service
-    ) -> ComponentHealth:
+    async def _check_reflection_service_health(self, reflection_service) -> ComponentHealth:
         """
         Check reflection service health.
 
@@ -485,7 +481,9 @@ class HealthChecker:
 
         try:
             # Check if API key is configured
-            api_key_configured = hasattr(reflection_service, "api_key") and bool(reflection_service.api_key)
+            api_key_configured = hasattr(reflection_service, "api_key") and bool(
+                reflection_service.api_key
+            )
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -501,7 +499,7 @@ class HealthChecker:
                 status=status,
                 message=message,
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
                 metadata={
                     "api_key_configured": api_key_configured,
                 },
@@ -515,7 +513,7 @@ class HealthChecker:
                 status=HealthStatus.DEGRADED,  # Non-critical
                 message=f"Health check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
 
@@ -524,7 +522,7 @@ class HealthChecker:
 # ============================================================================
 
 # Global health checker instance
-_health_checker: Optional[HealthChecker] = None
+_health_checker: HealthChecker | None = None
 
 
 def get_health_checker() -> HealthChecker:

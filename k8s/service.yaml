@@ -1,0 +1,28 @@
+# Kubernetes Service for EpisodicMemory API
+# Phase 3 Week 10 - Load balancer configuration
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: episodic-memory-api
+  labels:
+    app: episodic-memory-api
+    app.kubernetes.io/name: episodic-memory
+    app.kubernetes.io/component: api-server
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: episodic-memory-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800

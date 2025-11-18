@@ -13,13 +13,12 @@ Extracts:
 import asyncio
 import json
 import logging
-from typing import Optional
 
-from openai import AsyncOpenAI, APIError, RateLimitError, APIConnectionError
+from openai import APIConnectionError, APIError, AsyncOpenAI, RateLimitError
 from pydantic import ValidationError
 
 from src.config import LLMConfig
-from src.models.episode import Reflection, EpisodeCreate
+from src.models.episode import EpisodeCreate, Reflection
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +72,7 @@ Focus on actionable insights that help match future similar failures."""
             ValueError: If API key is missing
         """
         if not config.api_key:
-            logger.warning(
-                "OpenAI API key not configured - reflection generation disabled"
-            )
+            logger.warning("OpenAI API key not configured - reflection generation disabled")
             self.client = None
         else:
             self.client = AsyncOpenAI(
@@ -92,7 +89,7 @@ Focus on actionable insights that help match future similar failures."""
         self,
         episode: EpisodeCreate,
         max_retries: int = 3,
-    ) -> Optional[Reflection]:
+    ) -> Reflection | None:
         """
         Generate reflection for an episode using LLM.
 
@@ -136,10 +133,7 @@ Focus on actionable insights that help match future similar failures."""
                 reflection_data = json.loads(content)
 
                 # Validate and create Reflection object
-                reflection = Reflection(
-                    llm_model=self.config.model_name,
-                    **reflection_data
-                )
+                reflection = Reflection(llm_model=self.config.model_name, **reflection_data)
 
                 logger.info(
                     f"Reflection generated "
@@ -149,10 +143,10 @@ Focus on actionable insights that help match future similar failures."""
 
                 return reflection
 
-            except RateLimitError as e:
+            except RateLimitError:
                 # Retry with exponential backoff
                 if attempt < max_retries - 1:
-                    backoff = 2 ** attempt
+                    backoff = 2**attempt
                     logger.warning(
                         f"Rate limit hit, retrying in {backoff}s... "
                         f"(attempt {attempt + 1}/{max_retries})"
@@ -166,17 +160,14 @@ Focus on actionable insights that help match future similar failures."""
             except (APIConnectionError, APIError) as e:
                 # Transient errors: retry
                 if attempt < max_retries - 1:
-                    backoff = 1.0 * (2 ** attempt)
+                    backoff = 1.0 * (2**attempt)
                     logger.warning(
-                        f"API error ({e.__class__.__name__}), "
-                        f"retrying in {backoff}s..."
+                        f"API error ({e.__class__.__name__}), " f"retrying in {backoff}s..."
                     )
                     await asyncio.sleep(backoff)
                     continue
                 else:
-                    logger.error(
-                        f"API error after {max_retries} retries: {e}"
-                    )
+                    logger.error(f"API error after {max_retries} retries: {e}")
                     return self._create_fallback_reflection(episode)
 
             except (json.JSONDecodeError, ValidationError, KeyError) as e:
@@ -209,7 +200,7 @@ Focus on actionable insights that help match future similar failures."""
             f"**Goal**: {episode.goal}",
             f"\n**Tool Chain**: {' → '.join(episode.tool_chain)}",
             f"\n**Error Class**: {episode.error_class.value}",
-            f"\n**Actions Taken**:",
+            "\n**Actions Taken**:",
         ]
 
         for i, action in enumerate(episode.actions_taken, 1):
@@ -259,19 +250,18 @@ Focus on actionable insights that help match future similar failures."""
             f"Error class: {episode.error_class.value}",
         ]
 
-        if episode.environment_info:
-            if "os" in episode.environment_info:
-                preconditions.append(f"OS: {episode.environment_info['os']}")
+        if episode.environment_info and "os" in episode.environment_info:
+            preconditions.append(f"OS: {episode.environment_info['os']}")
 
         # Heuristic resolution
         resolution_strategy = (
-            episode.resolution
-            if episode.resolution
-            else "Manual investigation required"
+            episode.resolution if episode.resolution else "Manual investigation required"
         )
 
         # Heuristic environment factors
-        environment_factors = list(episode.environment_info.keys()) if episode.environment_info else []
+        environment_factors = (
+            list(episode.environment_info.keys()) if episode.environment_info else []
+        )
 
         # Heuristic affected components
         affected_components = episode.tool_chain.copy()
@@ -298,11 +288,7 @@ Focus on actionable insights that help match future similar failures."""
         Returns:
             dict: Usage stats (total_tokens, total_requests, avg_tokens)
         """
-        avg_tokens = (
-            self.total_tokens_used // self.total_requests
-            if self.total_requests > 0
-            else 0
-        )
+        avg_tokens = self.total_tokens_used // self.total_requests if self.total_requests > 0 else 0
 
         return {
             "total_tokens": self.total_tokens_used,

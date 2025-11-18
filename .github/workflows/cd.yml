@@ -1,0 +1,393 @@
+# CD Pipeline for EpisodicMemory
+# Phase 3 Week 10 - Automated deployment to staging and production
+#
+# Triggers:
+#   - Push to develop branch -> Deploy to staging
+#   - Tag push (v*.*.*) -> Deploy to production
+#
+# Jobs:
+#   1. Build: Build and push container image
+#   2. Scan: Security scan container image (Trivy)
+#   3. Deploy-Staging: Deploy to staging environment
+#   4. Deploy-Production: Deploy to production environment (manual approval)
+
+name: CD
+
+on:
+  push:
+    branches:
+      - develop
+    tags:
+      - 'v*.*.*'
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: episodic-memory
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================================================
+  # Build and Push Container Image
+  # ============================================================================
+  build:
+    name: Build Image
+    runs-on: ubuntu-latest
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Generate SBOM (Software Bill of Materials)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.meta.outputs.tags }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: 30
+
+  # ============================================================================
+  # Security Scan Container Image
+  # ============================================================================
+  scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.image_tag }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy vulnerability scanner (table output)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.image_tag }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-results
+          path: trivy-results.sarif
+          retention-days: 30
+
+  # ============================================================================
+  # Deploy to Staging Environment
+  # ============================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, scan]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging-api.episodicmemory.dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl context
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Update deployment image
+        run: |
+          kubectl set image deployment/episodic-memory-api \
+            api-server=${{ needs.build.outputs.image_tag }} \
+            --namespace=episodic-memory-staging \
+            --record
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/episodic-memory-api \
+            --namespace=episodic-memory-staging \
+            --timeout=5m
+
+      - name: Verify deployment health
+        run: |
+          # Get pod name
+          POD_NAME=$(kubectl get pods \
+            --namespace=episodic-memory-staging \
+            -l app=episodic-memory-api \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          # Port forward to pod
+          kubectl port-forward $POD_NAME 8000:8000 \
+            --namespace=episodic-memory-staging &
+          PF_PID=$!
+
+          # Wait for port forward
+          sleep 5
+
+          # Check health endpoints
+          curl -f http://localhost:8000/health/liveness || exit 1
+          curl -f http://localhost:8000/health/readiness || exit 1
+
+          # Cleanup
+          kill $PF_PID
+
+      - name: Run smoke tests
+        run: |
+          # Port forward for testing
+          kubectl port-forward deployment/episodic-memory-api 8000:8000 \
+            --namespace=episodic-memory-staging &
+          PF_PID=$!
+          sleep 5
+
+          # Basic API tests
+          curl -f http://localhost:8000/health || exit 1
+          curl -f http://localhost:8000/metrics || exit 1
+
+          kill $PF_PID
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          kubectl rollout undo deployment/episodic-memory-api \
+            --namespace=episodic-memory-staging
+
+          kubectl rollout status deployment/episodic-memory-api \
+            --namespace=episodic-memory-staging \
+            --timeout=5m
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "Staging deployment successful"
+          else
+            echo "Staging deployment failed"
+          fi
+
+  # ============================================================================
+  # Deploy to Production Environment
+  # ============================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, scan]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+      url: https://api.episodicmemory.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl context
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Pre-deployment backup
+        run: |
+          # Export current deployment config
+          kubectl get deployment episodic-memory-api \
+            --namespace=episodic-memory-production \
+            -o yaml > deployment-backup-$(date +%Y%m%d-%H%M%S).yaml
+
+      - name: Update deployment image
+        run: |
+          kubectl set image deployment/episodic-memory-api \
+            api-server=${{ needs.build.outputs.image_tag }} \
+            --namespace=episodic-memory-production \
+            --record
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/episodic-memory-api \
+            --namespace=episodic-memory-production \
+            --timeout=10m
+
+      - name: Verify deployment health
+        run: |
+          POD_NAME=$(kubectl get pods \
+            --namespace=episodic-memory-production \
+            -l app=episodic-memory-api \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          kubectl port-forward $POD_NAME 8000:8000 \
+            --namespace=episodic-memory-production &
+          PF_PID=$!
+          sleep 5
+
+          curl -f http://localhost:8000/health/liveness || exit 1
+          curl -f http://localhost:8000/health/readiness || exit 1
+
+          kill $PF_PID
+
+      - name: Run smoke tests
+        run: |
+          kubectl port-forward deployment/episodic-memory-api 8000:8000 \
+            --namespace=episodic-memory-production &
+          PF_PID=$!
+          sleep 5
+
+          curl -f http://localhost:8000/health || exit 1
+          curl -f http://localhost:8000/metrics || exit 1
+
+          kill $PF_PID
+
+      - name: Monitor error rate (5 minutes)
+        run: |
+          echo "Monitoring error rate for 5 minutes..."
+          sleep 300
+
+          # Query Prometheus for error rate
+          ERROR_RATE=$(curl -s 'http://prometheus:9090/api/v1/query?query=rate(http_requests_total{status=~"5.."}[5m])' \
+            | jq -r '.data.result[0].value[1] // 0')
+
+          # Fail if error rate > 1%
+          if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+            echo "Error rate too high: $ERROR_RATE"
+            exit 1
+          fi
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Production deployment failed, rolling back..."
+
+          kubectl rollout undo deployment/episodic-memory-api \
+            --namespace=episodic-memory-production
+
+          kubectl rollout status deployment/episodic-memory-api \
+            --namespace=episodic-memory-production \
+            --timeout=10m
+
+      - name: Upload deployment backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-backup
+          path: deployment-backup-*.yaml
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            sbom.spdx.json
+          body: |
+            Production deployment successful for ${{ github.ref_name }}
+
+            Image: ${{ needs.build.outputs.image_tag }}
+            Digest: ${{ needs.build.outputs.image_digest }}
+
+            Deployed to: https://api.episodicmemory.com
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "Production deployment successful: ${{ github.ref_name }}"
+          else
+            echo "Production deployment failed: ${{ github.ref_name }}"
+          fi
+
+  # ============================================================================
+  # Deployment Status Check
+  # ============================================================================
+  cd-passed:
+    name: CD Passed
+    runs-on: ubuntu-latest
+    needs: [build, scan, deploy-staging]
+    if: always() && github.ref == 'refs/heads/develop'
+
+    steps:
+      - name: Check all jobs status
+        run: |
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "Build job failed"
+            exit 1
+          fi
+          if [ "${{ needs.scan.result }}" != "success" ]; then
+            echo "Security scan failed"
+            exit 1
+          fi
+          if [ "${{ needs.deploy-staging.result }}" != "success" ]; then
+            echo "Staging deployment failed"
+            exit 1
+          fi
+          echo "All CD checks passed for staging!"

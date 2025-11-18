@@ -12,11 +12,9 @@ Implements end-to-end retrieval pipeline:
 Designed for <50ms P99 latency.
 """
 
-import asyncio
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
@@ -49,8 +47,8 @@ class SearchPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        precondition_matcher: Optional[PreconditionMatcher] = None,
-        ranker: Optional[EpisodeRanker] = None,
+        precondition_matcher: PreconditionMatcher | None = None,
+        ranker: EpisodeRanker | None = None,
     ):
         """
         Initialize search pipeline.
@@ -90,9 +88,7 @@ class SearchPipeline:
             # Stage 1: Generate query embedding (~5-10ms)
             stage_start = time.perf_counter()
             query_embedding = self.embedding_service.embed_text(request.goal)
-            latency_breakdown["embedding_ms"] = (
-                time.perf_counter() - stage_start
-            ) * 1000
+            latency_breakdown["embedding_ms"] = (time.perf_counter() - stage_start) * 1000
 
             # Stage 2: KyroDB search with expansion (~1-5ms)
             stage_start = time.perf_counter()
@@ -104,9 +100,7 @@ class SearchPipeline:
                 k=fetch_k,
                 min_similarity=request.min_similarity,
             )
-            latency_breakdown["search_ms"] = (
-                time.perf_counter() - stage_start
-            ) * 1000
+            latency_breakdown["search_ms"] = (time.perf_counter() - stage_start) * 1000
 
             total_candidates = len(candidates)
             logger.debug(f"Fetched {total_candidates} candidates from KyroDB")
@@ -114,9 +108,7 @@ class SearchPipeline:
             # Stage 3: Metadata filtering (~1-2ms)
             stage_start = time.perf_counter()
             filtered_candidates = self._apply_metadata_filters(candidates, request)
-            latency_breakdown["filtering_ms"] = (
-                time.perf_counter() - stage_start
-            ) * 1000
+            latency_breakdown["filtering_ms"] = (time.perf_counter() - stage_start) * 1000
 
             total_filtered = len(filtered_candidates)
             logger.debug(
@@ -126,19 +118,13 @@ class SearchPipeline:
 
             # Stage 4: Precondition matching (~5-15ms for 25 candidates)
             stage_start = time.perf_counter()
-            precondition_results = await self._check_preconditions(
-                filtered_candidates, request
-            )
-            latency_breakdown["precondition_ms"] = (
-                time.perf_counter() - stage_start
-            ) * 1000
+            precondition_results = await self._check_preconditions(filtered_candidates, request)
+            latency_breakdown["precondition_ms"] = (time.perf_counter() - stage_start) * 1000
 
             # Stage 5: Ranking (~1-2ms)
             stage_start = time.perf_counter()
             ranked_results = self._rank_results(precondition_results, request)
-            latency_breakdown["ranking_ms"] = (
-                time.perf_counter() - stage_start
-            ) * 1000
+            latency_breakdown["ranking_ms"] = (time.perf_counter() - stage_start) * 1000
 
             # Stage 6: Top-k selection
             final_results = ranked_results[: request.k]
@@ -160,7 +146,7 @@ class SearchPipeline:
                 breakdown=latency_breakdown,
                 collection=request.collection,
                 query_embedding_dimension=len(query_embedding),
-                searched_at=datetime.now(timezone.utc),
+                searched_at=datetime.now(UTC),
             )
 
             logger.info(
@@ -225,9 +211,7 @@ class SearchPipeline:
         for result in search_results.results:
             try:
                 # Deserialize episode from metadata
-                episode = Episode.from_metadata_dict(
-                    doc_id=result.doc_id, metadata=result.metadata
-                )
+                episode = Episode.from_metadata_dict(doc_id=result.doc_id, metadata=result.metadata)
                 similarity_score = result.score
 
                 candidates.append((episode, similarity_score))
@@ -275,26 +259,20 @@ class SearchPipeline:
 
         # Filter by timestamp range
         if request.min_timestamp is not None:
-            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=timezone.utc)
-            filtered = [
-                (ep, score) for ep, score in filtered if ep.created_at >= min_dt
-            ]
+            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=UTC)
+            filtered = [(ep, score) for ep, score in filtered if ep.created_at >= min_dt]
 
         if request.max_timestamp is not None:
-            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=timezone.utc)
-            filtered = [
-                (ep, score) for ep, score in filtered if ep.created_at <= max_dt
-            ]
+            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=UTC)
+            filtered = [(ep, score) for ep, score in filtered if ep.created_at <= max_dt]
 
         # Filter by tags (all required tags must be present)
         if request.tags:
-            required_tags = set(tag.lower() for tag in request.tags)
+            required_tags = {tag.lower() for tag in request.tags}
             filtered = [
                 (ep, score)
                 for ep, score in filtered
-                if required_tags.issubset(
-                    set(tag.lower() for tag in ep.create_data.tags)
-                )
+                if required_tags.issubset({tag.lower() for tag in ep.create_data.tags})
             ]
 
         return filtered
@@ -365,9 +343,7 @@ class SearchPipeline:
         episodes = [ep for ep, _, _, _ in precondition_results]
         similarity_scores = [sim for _, sim, _, _ in precondition_results]
         precondition_scores = [precond for _, _, precond, _ in precondition_results]
-        matched_preconditions_list = [
-            matched for _, _, _, matched in precondition_results
-        ]
+        matched_preconditions_list = [matched for _, _, _, matched in precondition_results]
 
         # Rank using weighted scoring
         ranked_results = self.ranker.rank_episodes(
@@ -376,7 +352,7 @@ class SearchPipeline:
             precondition_scores=precondition_scores,
             matched_preconditions_list=matched_preconditions_list,
             weights=request.ranking_weights,
-            current_time=datetime.now(timezone.utc),
+            current_time=datetime.now(UTC),
         )
 
         return ranked_results
@@ -389,9 +365,7 @@ class SearchPipeline:
             dict: Stats (total_searches, avg_latency_ms)
         """
         avg_latency = (
-            self.total_latency_ms / self.total_searches
-            if self.total_searches > 0
-            else 0.0
+            self.total_latency_ms / self.total_searches if self.total_searches > 0 else 0.0
         )
 
         return {

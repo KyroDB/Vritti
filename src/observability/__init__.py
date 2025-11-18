@@ -8,11 +8,11 @@ Components:
 """
 
 from src.observability.metrics import (
-    track_request,
     track_api_key_cache_hit,
     track_api_key_cache_miss,
-    track_kyrodb_operation,
     track_ingestion_credits,
+    track_kyrodb_operation,
+    track_request,
     track_search_credits,
 )
 

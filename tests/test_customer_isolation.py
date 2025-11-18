@@ -11,8 +11,9 @@ Verifies zero data leakage between customers by testing:
 These tests validate the "no leakage" security mandate.
 """
 
-import pytest
 from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService

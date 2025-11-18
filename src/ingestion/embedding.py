@@ -9,7 +9,6 @@ Handles:
 
 import logging
 from pathlib import Path
-from typing import Optional, Union
 
 import torch
 from PIL import Image
@@ -37,9 +36,9 @@ class EmbeddingService:
             config: Embedding configuration
         """
         self.config = config
-        self._text_model: Optional[SentenceTransformer] = None
-        self._clip_model: Optional[CLIPModel] = None
-        self._clip_processor: Optional[CLIPProcessor] = None
+        self._text_model: SentenceTransformer | None = None
+        self._clip_model: CLIPModel | None = None
+        self._clip_processor: CLIPProcessor | None = None
         self._device = self._get_device()
 
         logger.info(f"EmbeddingService initialized (device: {self._device})")
@@ -71,9 +70,7 @@ class EmbeddingService:
         """
         if self._text_model is None:
             logger.info(f"Loading text model: {self.config.text_model_name}")
-            self._text_model = SentenceTransformer(
-                self.config.text_model_name, device=self._device
-            )
+            self._text_model = SentenceTransformer(self.config.text_model_name, device=self._device)
             actual_dim = self._text_model.get_sentence_embedding_dimension()
 
             if actual_dim != self.config.text_dimension:
@@ -101,9 +98,7 @@ class EmbeddingService:
         if self._clip_model is None or self._clip_processor is None:
             logger.info(f"Loading CLIP model: {self.config.image_model_name}")
 
-            self._clip_processor = CLIPProcessor.from_pretrained(
-                self.config.image_model_name
-            )
+            self._clip_processor = CLIPProcessor.from_pretrained(self.config.image_model_name)
             self._clip_model = CLIPModel.from_pretrained(self.config.image_model_name)
             self._clip_model.to(self._device)
             self._clip_model.eval()  # Inference mode
@@ -192,7 +187,7 @@ class EmbeddingService:
         # Code is treated as text (sentence-transformers handles it well)
         return self.embed_text(code)
 
-    def embed_image(self, image_path: Union[str, Path]) -> list[float]:
+    def embed_image(self, image_path: str | Path) -> list[float]:
         """
         Generate image embedding using CLIP.
 
@@ -244,7 +239,7 @@ class EmbeddingService:
 
         return embedding
 
-    def embed_images_batch(self, image_paths: list[Union[str, Path]]) -> list[list[float]]:
+    def embed_images_batch(self, image_paths: list[str | Path]) -> list[list[float]]:
         """
         Generate embeddings for multiple images (batched).
 

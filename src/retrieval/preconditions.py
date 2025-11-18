@@ -14,7 +14,7 @@ Optimized for <10-15ms latency per candidate.
 
 import logging
 import re
-from typing import Any, Optional
+from typing import Any
 
 from src.models.episode import Episode
 from src.models.search import PreconditionCheckResult
@@ -108,9 +108,7 @@ class PreconditionMatcher:
             explanation=explanation,
         )
 
-    def _match_single_precondition(
-        self, precondition: str, current_state: dict[str, Any]
-    ) -> float:
+    def _match_single_precondition(self, precondition: str, current_state: dict[str, Any]) -> float:
         """
         Match a single precondition against current state.
 
@@ -180,9 +178,7 @@ class PreconditionMatcher:
                 return 0.5  # Can't determine version, neutral
 
         # Pattern 5: Component/service names
-        current_components = set(
-            c.lower() for c in current_state.get("components", [])
-        )
+        current_components = {c.lower() for c in current_state.get("components", [])}
 
         if current_components:
             # Check if any component mentioned in precondition
@@ -191,12 +187,10 @@ class PreconditionMatcher:
                     return 0.9
 
         # Pattern 6: Keyword matching in goal
-        goal_keywords = set(
-            kw.lower() for kw in current_state.get("goal_keywords", [])
-        )
+        goal_keywords = {kw.lower() for kw in current_state.get("goal_keywords", [])}
 
         if goal_keywords:
-            precond_words = set(re.findall(r'\w+', precond_lower))
+            precond_words = set(re.findall(r"\w+", precond_lower))
             overlap = goal_keywords & precond_words
 
             if overlap:
@@ -208,13 +202,13 @@ class PreconditionMatcher:
 
     def _extract_value_after_colon(self, text: str) -> str:
         """Extract value after colon in 'Key: Value' pattern."""
-        if ':' in text:
-            return text.split(':', 1)[1].strip().strip('"\'')
+        if ":" in text:
+            return text.split(":", 1)[1].strip().strip("\"'")
         return ""
 
-    def _extract_version(self, text: str) -> Optional[str]:
+    def _extract_version(self, text: str) -> str | None:
         """Extract version number from text (e.g., '1.28.0')."""
-        match = re.search(r'\d+\.\d+(?:\.\d+)?', text)
+        match = re.search(r"\d+\.\d+(?:\.\d+)?", text)
         return match.group(0) if match else None
 
     def _extract_versions_from_env(self, current_state: dict[str, Any]) -> list[str]:
@@ -233,8 +227,8 @@ class PreconditionMatcher:
     def _versions_compatible(self, ver1: str, ver2: str) -> bool:
         """Check if two versions are compatible (major.minor match)."""
         try:
-            parts1 = [int(x) for x in ver1.split('.')]
-            parts2 = [int(x) for x in ver2.split('.')]
+            parts1 = [int(x) for x in ver1.split(".")]
+            parts2 = [int(x) for x in ver2.split(".")]
 
             # Match major.minor (ignore patch)
             if len(parts1) >= 2 and len(parts2) >= 2:
@@ -246,7 +240,7 @@ class PreconditionMatcher:
 
 
 # Singleton instance
-_matcher: Optional[PreconditionMatcher] = None
+_matcher: PreconditionMatcher | None = None
 
 
 def get_precondition_matcher() -> PreconditionMatcher:

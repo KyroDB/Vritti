@@ -11,17 +11,17 @@ Performance:
 - Async-safe metric updates
 """
 
-import time
 import logging
-from typing import Callable
+import time
+from collections.abc import Callable
+
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
 
 from src.observability.metrics import (
-    track_request,
-    track_error,
     http_requests_active,
+    track_error,
+    track_request,
 )
 
 logger = logging.getLogger(__name__)

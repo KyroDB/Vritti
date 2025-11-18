@@ -11,12 +11,11 @@ Designed for <50ms P99 latency.
 
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -24,7 +23,6 @@ from slowapi.util import get_remote_address
 from src.auth import (
     get_authenticated_customer,
     get_customer_id_from_request,
-    require_active_customer,
 )
 from src.config import get_settings
 from src.ingestion.capture import IngestionPipeline
@@ -35,26 +33,25 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.customer import Customer
 from src.models.episode import EpisodeCreate
 from src.models.search import SearchRequest, SearchResponse
-from src.observability.metrics import (
-    generate_metrics,
-    track_ingestion_credits,
-    track_search_credits,
-    update_customer_quota_usage,
-    set_kyrodb_health,
-)
-from src.observability.middleware import PrometheusMiddleware, ErrorTrackingMiddleware
-from src.observability.logging import configure_logging, get_logger, RequestContext
-from src.observability.logging_middleware import (
-    StructuredLoggingMiddleware,
-    SlowRequestLogger,
-)
 from src.observability.health import (
-    get_health_checker,
     HealthCheckResponse,
     LivenessResponse,
     ReadinessResponse,
-    HealthStatus,
+    get_health_checker,
 )
+from src.observability.logging import configure_logging, get_logger
+from src.observability.logging_middleware import (
+    SlowRequestLogger,
+    StructuredLoggingMiddleware,
+)
+from src.observability.metrics import (
+    generate_metrics,
+    set_kyrodb_health,
+    track_ingestion_credits,
+    track_search_credits,
+    update_customer_quota_usage,
+)
+from src.observability.middleware import ErrorTrackingMiddleware, PrometheusMiddleware
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
 from src.storage.database import CustomerDatabase, get_customer_db
@@ -91,11 +88,11 @@ limiter = Limiter(key_func=get_customer_id_for_rate_limit)
 
 
 # Global service instances (initialized in lifespan)
-kyrodb_router: Optional[KyroDBRouter] = None
-embedding_service: Optional[EmbeddingService] = None
-reflection_service: Optional[ReflectionService] = None
-ingestion_pipeline: Optional[IngestionPipeline] = None
-search_pipeline: Optional[SearchPipeline] = None
+kyrodb_router: KyroDBRouter | None = None
+embedding_service: EmbeddingService | None = None
+reflection_service: ReflectionService | None = None
+ingestion_pipeline: IngestionPipeline | None = None
+search_pipeline: SearchPipeline | None = None
 
 
 @asynccontextmanager
@@ -274,6 +271,7 @@ async def validation_error_handler(request: Request, exc: ValueError):
 
 # Health check endpoints (Phase 2 Week 7)
 # Kubernetes-ready liveness, readiness, and comprehensive health checks
+
 
 @app.get(
     "/health/liveness",

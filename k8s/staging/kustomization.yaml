@@ -1,0 +1,53 @@
+# Kustomize configuration for staging environment
+#  Staging-specific overrides
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: episodic-memory-staging
+
+commonLabels:
+  environment: staging
+  app.kubernetes.io/part-of: episodic-memory
+
+resources:
+  - ../deployment.yaml
+  - ../service.yaml
+  - ../configmap.yaml
+  - ../hpa.yaml
+  - ../pdb.yaml
+
+images:
+  - name: episodic-memory
+    newName: docker.io/yourusername/episodic-memory
+    newTag: develop
+
+replicas:
+  - name: episodic-memory-api
+    count: 2
+
+configMapGenerator:
+  - name: episodic-memory-config
+    behavior: merge
+    literals:
+      - LOGGING_LEVEL=DEBUG
+      - LOGGING_ENVIRONMENT=staging
+      - SERVICE_WORKERS=2
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 250m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 1000m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 2Gi
+    target:
+      kind: Deployment
+      name: episodic-memory-api

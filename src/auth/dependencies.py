@@ -15,19 +15,17 @@ Performance:
 
 import logging
 import time
-from typing import Optional
-from datetime import datetime, timedelta
 
-from fastapi import Header, HTTPException, Request, status
 from cachetools import TTLCache
+from fastapi import Header, HTTPException, Request, status
 
 from src.models.customer import Customer
-from src.storage.database import CustomerDatabase, get_customer_db
 from src.observability.metrics import (
     track_api_key_cache_hit,
     track_api_key_cache_miss,
     track_api_key_validation,
 )
+from src.storage.database import get_customer_db
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +37,8 @@ API_KEY_CACHE = TTLCache(maxsize=1000, ttl=300)  # 5 minutes
 
 async def get_authenticated_customer(
     request: Request,
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
 ) -> Customer:
     """
     Validate API key and return authenticated customer.
@@ -139,14 +137,10 @@ async def get_authenticated_customer(
     validation_time_ms = validation_time_seconds * 1000
 
     # Track validation latency (Phase 2 Week 5)
-    track_api_key_validation(
-        duration_seconds=validation_time_seconds, cache_hit=False
-    )
+    track_api_key_validation(duration_seconds=validation_time_seconds, cache_hit=False)
 
     if customer is None:
-        logger.warning(
-            f"API key validation failed (validation time: {validation_time_ms:.2f}ms)"
-        )
+        logger.warning(f"API key validation failed (validation time: {validation_time_ms:.2f}ms)")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",

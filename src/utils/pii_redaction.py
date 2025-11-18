@@ -6,78 +6,67 @@ Uses regex patterns optimized for performance with compilation caching.
 """
 
 import re
-from typing import Pattern
+from re import Pattern
 
 # Compile patterns once at module load for performance
 _EMAIL_PATTERN: Pattern = re.compile(
-    r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-    re.IGNORECASE
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", re.IGNORECASE
 )
 
 _IPV4_PATTERN: Pattern = re.compile(
-    r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}'
-    r'(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
+    r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}"
+    r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
 )
 
-_IPV6_PATTERN: Pattern = re.compile(
-    r'\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b'
-)
+_IPV6_PATTERN: Pattern = re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b")
 
 # API keys, tokens, secrets (common patterns)
 _API_KEY_PATTERNS: list[Pattern] = [
     re.compile(r'(?i)api[_-]?key["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{20,})["\']?'),
     re.compile(r'(?i)secret[_-]?key["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{20,})["\']?'),
     re.compile(r'(?i)access[_-]?token["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_\-\.]{20,})["\']?'),
-    re.compile(r'(?i)bearer\s+([a-zA-Z0-9_\-\.]{20,})'),
-    re.compile(r'(?i)authorization:\s*bearer\s+([a-zA-Z0-9_\-\.]{20,})'),
+    re.compile(r"(?i)bearer\s+([a-zA-Z0-9_\-\.]{20,})"),
+    re.compile(r"(?i)authorization:\s*bearer\s+([a-zA-Z0-9_\-\.]{20,})"),
     # AWS
-    re.compile(r'AKIA[0-9A-Z]{16}'),  # AWS Access Key
-    re.compile(r'(?i)aws[_-]?secret[_-]?access[_-]?key["\']?\s*[:=]\s*["\']?([a-zA-Z0-9/+=]{40})["\']?'),
+    re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS Access Key
+    re.compile(
+        r'(?i)aws[_-]?secret[_-]?access[_-]?key["\']?\s*[:=]\s*["\']?([a-zA-Z0-9/+=]{40})["\']?'
+    ),
     # GitHub
-    re.compile(r'ghp_[a-zA-Z0-9]{36}'),  # GitHub Personal Access Token
-    re.compile(r'gho_[a-zA-Z0-9]{36}'),  # GitHub OAuth Token
-    re.compile(r'github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}'),
+    re.compile(r"ghp_[a-zA-Z0-9]{36}"),  # GitHub Personal Access Token
+    re.compile(r"gho_[a-zA-Z0-9]{36}"),  # GitHub OAuth Token
+    re.compile(r"github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}"),
     # OpenAI - match both standalone and in "API key: sk-..." format
-    re.compile(r'sk-[a-zA-Z0-9]{20,}'),  # OpenAI API Key (any length >=20)
+    re.compile(r"sk-[a-zA-Z0-9]{20,}"),  # OpenAI API Key (any length >=20)
 ]
 
 # URLs with auth credentials
 _URL_WITH_AUTH_PATTERN: Pattern = re.compile(
-    r'(https?://)[^:@\s]+:[^:@\s]+@([^\s]+)',
-    re.IGNORECASE
+    r"(https?://)[^:@\s]+:[^:@\s]+@([^\s]+)", re.IGNORECASE
 )
 
 # Private keys (PEM format)
 _PRIVATE_KEY_PATTERN: Pattern = re.compile(
-    r'-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----',
-    re.MULTILINE
+    r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----",
+    re.MULTILINE,
 )
 
 # SSH keys
-_SSH_KEY_PATTERN: Pattern = re.compile(
-    r'ssh-(?:rsa|dss|ed25519)\s+[A-Za-z0-9+/]+={0,2}(?:\s+\S+)?'
-)
+_SSH_KEY_PATTERN: Pattern = re.compile(r"ssh-(?:rsa|dss|ed25519)\s+[A-Za-z0-9+/]+={0,2}(?:\s+\S+)?")
 
 # Credit card numbers (basic pattern)
-_CREDIT_CARD_PATTERN: Pattern = re.compile(
-    r'\b(?:\d{4}[-\s]?){3}\d{4}\b'
-)
+_CREDIT_CARD_PATTERN: Pattern = re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b")
 
 # Social Security Numbers (US)
-_SSN_PATTERN: Pattern = re.compile(
-    r'\b\d{3}-\d{2}-\d{4}\b'
-)
+_SSN_PATTERN: Pattern = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 
 # Phone numbers (international format)
 _PHONE_PATTERN: Pattern = re.compile(
-    r'\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'
+    r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
 )
 
 # Filesystem paths that might contain usernames
-_HOME_PATH_PATTERN: Pattern = re.compile(
-    r'/(?:home|Users)/([^/\s]+)',
-    re.IGNORECASE
-)
+_HOME_PATH_PATTERN: Pattern = re.compile(r"/(?:home|Users)/([^/\s]+)", re.IGNORECASE)
 
 
 def redact_email(text: str, replacement: str = "[EMAIL]") -> str:
@@ -140,7 +129,7 @@ def redact_urls_with_auth(text: str) -> str:
     Returns:
         str: Text with URL credentials redacted
     """
-    return _URL_WITH_AUTH_PATTERN.sub(r'\1[REDACTED]@\2', text)
+    return _URL_WITH_AUTH_PATTERN.sub(r"\1[REDACTED]@\2", text)
 
 
 def redact_private_keys(text: str, replacement: str = "[PRIVATE_KEY]") -> str:
@@ -228,9 +217,10 @@ def redact_home_paths(text: str, replacement: str = "[USER]") -> str:
     Returns:
         str: Text with usernames in paths redacted
     """
+
     def replace_username(match):
-        prefix = match.group(0).split('/')[1]  # 'home' or 'Users'
-        return f'/{prefix}/{replacement}'
+        prefix = match.group(0).split("/")[1]  # 'home' or 'Users'
+        return f"/{prefix}/{replacement}"
 
     return _HOME_PATH_PATTERN.sub(replace_username, text)
 

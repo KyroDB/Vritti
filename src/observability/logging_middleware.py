@@ -15,7 +15,7 @@ Performance:
 
 import time
 import uuid
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -24,9 +24,6 @@ from starlette.types import ASGIApp
 from src.observability.logging import (
     RequestContext,
     get_logger,
-    set_request_id,
-    set_customer_id,
-    set_trace_id,
 )
 
 logger = get_logger(__name__)

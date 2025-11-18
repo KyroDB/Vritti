@@ -11,15 +11,12 @@ Security:
 """
 
 import logging
-from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel
 
 from src.models.customer import (
-    APIKey,
     APIKeyCreate,
-    Customer,
     CustomerCreate,
     CustomerUpdate,
 )
@@ -50,9 +47,9 @@ class APIKeyResponse(BaseModel):
     key_id: str
     customer_id: str
     key_prefix: str  # First 8 chars for display
-    name: Optional[str]
+    name: str | None
     created_at: str
-    expires_at: Optional[str]
+    expires_at: str | None
     is_active: bool
 
 

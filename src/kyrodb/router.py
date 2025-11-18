@@ -10,10 +10,9 @@ Namespace format: {customer_id}:failures (e.g., "acme-corp:failures")
 """
 
 import logging
-from typing import Optional
 
 from src.config import KyroDBConfig
-from src.kyrodb.client import KyroDBClient, KyroDBError
+from src.kyrodb.client import KyroDBClient
 from src.kyrodb.kyrodb_pb2 import SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -129,8 +128,8 @@ class KyroDBRouter:
         customer_id: str,
         collection: str,
         text_embedding: list[float],
-        image_embedding: Optional[list[float]] = None,
-        metadata: Optional[dict[str, str]] = None,
+        image_embedding: list[float] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> tuple[bool, bool]:
         """
         Insert episode into appropriate KyroDB instances with customer namespace.
@@ -175,8 +174,7 @@ class KyroDBRouter:
                 )
         except Exception as e:
             logger.error(
-                f"Text insertion error for episode {episode_id} "
-                f"(customer: {customer_id}): {e}"
+                f"Text insertion error for episode {episode_id} " f"(customer: {customer_id}): {e}"
             )
             raise
 
@@ -206,9 +204,7 @@ class KyroDBRouter:
                 # Don't fail the whole operation if image insert fails
                 image_success = False
 
-        logger.debug(
-            f"Episode {episode_id} inserted: text={text_success}, image={image_success}"
-        )
+        logger.debug(f"Episode {episode_id} inserted: text={text_success}, image={image_success}")
         return (text_success, image_success)
 
     async def search_text(
@@ -255,7 +251,7 @@ class KyroDBRouter:
         collection: str,
         k: int = 20,
         min_score: float = 0.6,
-        metadata_filters: Optional[dict[str, str]] = None,
+        metadata_filters: dict[str, str] | None = None,
         include_image_search: bool = False,
         image_weight: float = 0.3,
     ) -> SearchResponse:
@@ -316,9 +312,7 @@ class KyroDBRouter:
 
         # Delete from text instance
         try:
-            response = await self.text_client.delete(
-                doc_id=episode_id, namespace=collection
-            )
+            response = await self.text_client.delete(doc_id=episode_id, namespace=collection)
             text_deleted = response.success
         except Exception as e:
             logger.error(f"Text deletion failed for episode {episode_id}: {e}")
@@ -334,14 +328,12 @@ class KyroDBRouter:
                 logger.warning(f"Image deletion failed for episode {episode_id}: {e}")
                 image_deleted = False
 
-        logger.debug(
-            f"Episode {episode_id} deleted: text={text_deleted}, image={image_deleted}"
-        )
+        logger.debug(f"Episode {episode_id} deleted: text={text_deleted}, image={image_deleted}")
         return (text_deleted, image_deleted)
 
     async def get_episode(
         self, episode_id: int, collection: str, include_image: bool = False
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Retrieve episode by ID.
 
@@ -380,9 +372,7 @@ class KyroDBRouter:
                     )
                     episode_data["image_found"] = image_response.found
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to fetch image for episode {episode_id}: {e}"
-                    )
+                    logger.warning(f"Failed to fetch image for episode {episode_id}: {e}")
                     episode_data["image_found"] = False
 
             return episode_data

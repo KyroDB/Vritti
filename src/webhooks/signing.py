@@ -14,10 +14,8 @@ Use case:
 
 import hashlib
 import hmac
-import time
-from typing import Optional
-
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +51,14 @@ class WebhookSigner:
             - Rotate periodically (e.g., every 90 days)
         """
         if not secret or len(secret) < 32:
-            raise ValueError(
-                "Webhook secret must be at least 32 characters for security"
-            )
+            raise ValueError("Webhook secret must be at least 32 characters for security")
 
         self.secret = secret.encode("utf-8")
 
     def sign_payload(
         self,
         payload: str,
-        timestamp: Optional[int] = None,
+        timestamp: int | None = None,
     ) -> tuple[str, int]:
         """
         Sign webhook payload with HMAC-SHA256.
@@ -106,7 +102,7 @@ class WebhookSigner:
         payload: str,
         signature: str,
         timestamp: int,
-        tolerance_seconds: Optional[int] = None,
+        tolerance_seconds: int | None = None,
     ) -> bool:
         """
         Verify webhook signature.
@@ -146,16 +142,12 @@ class WebhookSigner:
         age_seconds = current_time - timestamp
 
         if age_seconds > tolerance_seconds:
-            logger.warning(
-                f"Signature expired: age={age_seconds}s, tolerance={tolerance_seconds}s"
-            )
+            logger.warning(f"Signature expired: age={age_seconds}s, tolerance={tolerance_seconds}s")
             return False
 
         if age_seconds < -tolerance_seconds:
             # Timestamp is in the future (clock skew or attack)
-            logger.warning(
-                f"Signature timestamp in future: skew={abs(age_seconds)}s"
-            )
+            logger.warning(f"Signature timestamp in future: skew={abs(age_seconds)}s")
             return False
 
         # Recompute signature for comparison
@@ -168,7 +160,7 @@ class WebhookSigner:
     def create_headers(
         self,
         payload: str,
-        timestamp: Optional[int] = None,
+        timestamp: int | None = None,
     ) -> dict[str, str]:
         """
         Create webhook headers with signature and timestamp.

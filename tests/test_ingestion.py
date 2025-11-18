@@ -10,13 +10,11 @@ Tests end-to-end ingestion flow:
 """
 
 import pytest
-from datetime import datetime, timezone
 
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.reflection import ReflectionService
 from src.kyrodb.router import KyroDBRouter
-from src.models.episode import EpisodeCreate, Episode
+from src.models.episode import Episode, EpisodeCreate
 
 
 class TestIngestionPipeline:
@@ -88,7 +86,10 @@ class TestIngestionPipeline:
         )
 
         # Verify PII was redacted
-        assert "[REDACTED]@10.0.1.100" in episode.create_data.error_trace or "[EMAIL]" in episode.create_data.error_trace
+        assert (
+            "[REDACTED]@10.0.1.100" in episode.create_data.error_trace
+            or "[EMAIL]" in episode.create_data.error_trace
+        )
         assert "[API_KEY]" in episode.create_data.error_trace
         assert "sk-1234567890" not in episode.create_data.error_trace
         assert "admin@example.com" not in episode.create_data.error_trace
@@ -146,7 +147,7 @@ class TestIngestionPipeline:
             reflection_service=None,
         )
 
-        episode = await pipeline.capture_episode(
+        _episode = await pipeline.capture_episode(
             episode_data=episode_data,
             generate_reflection=False,
         )
@@ -256,7 +257,7 @@ class TestBulkIngestion:
         # Assertions
         assert len(episodes) == 5
         assert all(isinstance(ep, Episode) for ep in episodes)
-        assert len(set(ep.episode_id for ep in episodes)) == 5  # All unique IDs
+        assert len({ep.episode_id for ep in episodes}) == 5  # All unique IDs
 
         # Verify stats
         stats = pipeline.get_stats()

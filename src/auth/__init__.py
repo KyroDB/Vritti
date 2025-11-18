@@ -9,8 +9,8 @@ Security:
 
 from src.auth.dependencies import (
     get_authenticated_customer,
-    require_active_customer,
     get_customer_id_from_request,
+    require_active_customer,
 )
 
 __all__ = [

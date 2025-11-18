@@ -1,0 +1,211 @@
+# CI Pipeline for EpisodicMemory
+# Phase 3 Week 10 - Automated testing and quality checks
+#
+# Triggers:
+#   - Push to any branch
+#   - Pull requests to main/develop
+#
+# Jobs:
+#   1. Lint: Code quality checks (ruff, black)
+#   2. Test: Run test suite
+#   3. Security: Dependency scanning
+
+name: CI
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================================================
+  # Code Quality Checks
+  # ============================================================================
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black ruff
+
+      - name: Check code formatting (black)
+        run: |
+          black --check src/ tests/
+        continue-on-error: false
+
+      - name: Lint with ruff
+        run: |
+          ruff check src/ tests/
+        continue-on-error: false
+
+  # ============================================================================
+  # Run Test Suite
+  # ============================================================================
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.11']  # Can add ['3.10', '3.11', '3.12'] for multi-version testing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short --cov=src --cov-report=xml --cov-report=term
+        env:
+          # Test environment variables
+          LOGGING_JSON_OUTPUT: 'false'
+          LOGGING_LEVEL: 'DEBUG'
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false  # Don't fail CI if codecov upload fails
+
+  # ============================================================================
+  # Security Scanning
+  # ============================================================================
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install safety bandit
+
+      - name: Check for known vulnerabilities (safety)
+        run: |
+          pip install -r requirements.txt
+          safety check --json || true
+        continue-on-error: true  # Don't fail CI on known vulnerabilities (review manually)
+
+      - name: Security linting (bandit)
+        run: |
+          bandit -r src/ -f json -o bandit-report.json || true
+          bandit -r src/ -f screen
+        continue-on-error: true
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+
+  # ============================================================================
+  # Build Check (verify Docker image builds)
+  # ============================================================================
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: episodic-memory:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test image health
+        run: |
+          # Build and run container for health check
+          docker build -t episodic-memory:test .
+
+          # Run container in background
+          docker run -d --name test-container \
+            -p 8000:8000 \
+            -e LOGGING_JSON_OUTPUT=false \
+            episodic-memory:test
+
+          # Wait for container to start
+          sleep 30
+
+          # Check health endpoint
+          curl -f http://localhost:8000/health/liveness || exit 1
+
+          # Cleanup
+          docker stop test-container
+          docker rm test-container
+
+  # ============================================================================
+  # Status Check (all jobs passed)
+  # ============================================================================
+  ci-passed:
+    name: CI Passed
+    runs-on: ubuntu-latest
+    needs: [lint, test, security, build-check]
+    if: always()
+
+    steps:
+      - name: Check all jobs status
+        run: |
+          if [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "Lint job failed"
+            exit 1
+          fi
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "Test job failed"
+            exit 1
+          fi
+          if [ "${{ needs.build-check.result }}" != "success" ]; then
+            echo "Build check failed"
+            exit 1
+          fi
+          echo "All CI checks passed!"

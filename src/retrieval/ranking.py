@@ -14,8 +14,7 @@ Optimized for <5ms latency per ranking operation.
 
 import logging
 import math
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from src.models.episode import Episode
 from src.models.search import RankingWeights, SearchResult
@@ -55,7 +54,7 @@ class EpisodeRanker:
         precondition_scores: list[float],
         matched_preconditions_list: list[list[str]],
         weights: RankingWeights,
-        current_time: Optional[datetime] = None,
+        current_time: datetime | None = None,
     ) -> list[SearchResult]:
         """
         Rank episodes by weighted multi-signal scoring.
@@ -87,7 +86,7 @@ class EpisodeRanker:
             ... )
         """
         if current_time is None:
-            current_time = datetime.now(timezone.utc)
+            current_time = datetime.now(UTC)
 
         # Validate input lengths
         expected_len = len(episodes)
@@ -105,13 +104,10 @@ class EpisodeRanker:
 
         # Compute recency and usage scores
         recency_scores = [
-            self._compute_recency_score(episode.created_at, current_time)
-            for episode in episodes
+            self._compute_recency_score(episode.created_at, current_time) for episode in episodes
         ]
 
-        usage_scores = [
-            self._compute_usage_score(episode.retrieval_count) for episode in episodes
-        ]
+        usage_scores = [self._compute_usage_score(episode.retrieval_count) for episode in episodes]
 
         # Compute final weighted scores and build results
         results = []
@@ -157,9 +153,7 @@ class EpisodeRanker:
 
         return results
 
-    def _compute_recency_score(
-        self, created_at: datetime, current_time: datetime
-    ) -> float:
+    def _compute_recency_score(self, created_at: datetime, current_time: datetime) -> float:
         """
         Compute recency score using exponential time decay.
 
@@ -180,9 +174,9 @@ class EpisodeRanker:
         """
         # Ensure both times are timezone-aware
         if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+            created_at = created_at.replace(tzinfo=UTC)
         if current_time.tzinfo is None:
-            current_time = current_time.replace(tzinfo=timezone.utc)
+            current_time = current_time.replace(tzinfo=UTC)
 
         # Calculate age in days
         age_seconds = (current_time - created_at).total_seconds()
@@ -190,9 +184,7 @@ class EpisodeRanker:
 
         # Handle future timestamps (clock skew)
         if age_days < 0:
-            logger.warning(
-                f"Episode created in future: {created_at} vs {current_time}"
-            )
+            logger.warning(f"Episode created in future: {created_at} vs {current_time}")
             return 1.0  # Treat as very recent
 
         # Exponential decay: score = e^(-decay_rate * age_days)
@@ -225,9 +217,7 @@ class EpisodeRanker:
 
         # Logarithmic scaling with soft cap
         # score = log10(1 + count) / log10(1 + max_count)
-        score = math.log10(1 + retrieval_count) / math.log10(
-            1 + self.USAGE_MAX_COUNT
-        )
+        score = math.log10(1 + retrieval_count) / math.log10(1 + self.USAGE_MAX_COUNT)
 
         # Clamp to [0, 1]
         return max(0.0, min(1.0, score))
@@ -288,7 +278,7 @@ class EpisodeRanker:
 
 
 # Singleton instance
-_ranker: Optional[EpisodeRanker] = None
+_ranker: EpisodeRanker | None = None
 
 
 def get_ranker() -> EpisodeRanker:

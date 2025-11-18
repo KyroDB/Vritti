@@ -9,25 +9,20 @@ Tests:
 - Operation context timing
 """
 
-import json
-import io
-import sys
-import logging
-from contextlib import redirect_stdout
 
 import pytest
 
 from src.observability.logging import (
-    configure_logging,
-    get_logger,
-    RequestContext,
     OperationContext,
-    set_request_id,
-    set_customer_id,
-    set_trace_id,
-    get_request_id,
+    RequestContext,
+    configure_logging,
     get_customer_id,
+    get_logger,
+    get_request_id,
     get_trace_id,
+    set_customer_id,
+    set_request_id,
+    set_trace_id,
 )
 
 
@@ -186,7 +181,7 @@ def test_exception_logging():
 
     try:
         raise ValueError("Test exception")
-    except Exception as e:
+    except Exception:
         # exc_info=True includes exception traceback
         logger.error("Operation failed", exc_info=True)
 

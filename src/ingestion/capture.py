@@ -13,14 +13,13 @@ Designed for <50ms P99 latency (excluding async reflection).
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
 from src.ingestion.reflection import ReflectionService
 from src.kyrodb.router import KyroDBRouter
-from src.models.episode import Episode, EpisodeCreate, Reflection
+from src.models.episode import Episode, EpisodeCreate
 from src.utils.identifiers import (
     generate_episode_id,
     hash_environment,
@@ -47,7 +46,7 @@ class IngestionPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        reflection_service: Optional[ReflectionService] = None,
+        reflection_service: ReflectionService | None = None,
     ):
         """
         Initialize ingestion pipeline.
@@ -109,15 +108,13 @@ class IngestionPipeline:
             episode_id = generate_episode_id()
 
             # Step 4: Generate embeddings (~10-40ms total)
-            text_embedding, image_embedding = await self._generate_embeddings(
-                episode_data
-            )
+            text_embedding, image_embedding = await self._generate_embeddings(episode_data)
 
             # Step 5: Create Episode object
             episode = Episode(
                 create_data=episode_data,
                 episode_id=episode_id,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 retrieval_count=0,
                 reflection=None,  # Will be generated async
             )
@@ -133,9 +130,7 @@ class IngestionPipeline:
 
             # Step 7: Queue async reflection generation (non-blocking)
             if generate_reflection and self.reflection_service:
-                asyncio.create_task(
-                    self._generate_and_update_reflection(episode_id, episode_data)
-                )
+                asyncio.create_task(self._generate_and_update_reflection(episode_id, episode_data))
 
             self.total_ingested += 1
             logger.info(
@@ -181,15 +176,14 @@ class IngestionPipeline:
 
         # Redact actions (may contain commands with credentials)
         episode_data.actions_taken = [
-            redact_all(action, redact_phones=False)
-            for action in episode_data.actions_taken
+            redact_all(action, redact_phones=False) for action in episode_data.actions_taken
         ]
 
         return episode_data
 
     async def _generate_embeddings(
         self, episode_data: EpisodeCreate
-    ) -> tuple[list[float], Optional[list[float]]]:
+    ) -> tuple[list[float], list[float] | None]:
         """
         Generate text and optional image embeddings.
 
@@ -213,14 +207,10 @@ class IngestionPipeline:
         image_embedding = None
         if episode_data.screenshot_path:
             try:
-                image_embedding = self.embedding_service.embed_image(
-                    episode_data.screenshot_path
-                )
+                image_embedding = self.embedding_service.embed_image(episode_data.screenshot_path)
                 logger.debug(f"Generated image embedding for {episode_data.screenshot_path}")
             except Exception as e:
-                logger.warning(
-                    f"Image embedding failed for {episode_data.screenshot_path}: {e}"
-                )
+                logger.warning(f"Image embedding failed for {episode_data.screenshot_path}: {e}")
                 # Continue without image embedding
 
         return text_embedding, image_embedding
@@ -229,7 +219,7 @@ class IngestionPipeline:
         self,
         episode: Episode,
         text_embedding: list[float],
-        image_embedding: Optional[list[float]],
+        image_embedding: list[float] | None,
         env_hash: str,
         error_sig: str,
     ) -> None:
@@ -249,9 +239,7 @@ class IngestionPipeline:
         """
         # Verify customer_id is set (security: prevent data leakage)
         if not episode.create_data.customer_id:
-            raise ValueError(
-                "customer_id is required - multi-tenancy violation detected"
-            )
+            raise ValueError("customer_id is required - multi-tenancy violation detected")
 
         # Determine base collection (only "failures" for now)
         collection = "failures"
@@ -275,9 +263,7 @@ class IngestionPipeline:
         )
 
         if not text_success:
-            raise RuntimeError(
-                f"Failed to store episode {episode.episode_id} in text instance"
-            )
+            raise RuntimeError(f"Failed to store episode {episode.episode_id} in text instance")
 
         logger.debug(
             f"Episode {episode.episode_id} stored in KyroDB "
@@ -301,9 +287,7 @@ class IngestionPipeline:
         try:
             logger.info(f"Generating reflection for episode {episode_id}...")
 
-            reflection = await self.reflection_service.generate_reflection(
-                episode_data
-            )
+            reflection = await self.reflection_service.generate_reflection(episode_data)
 
             if reflection:
                 # TODO: Update episode in KyroDB with reflection

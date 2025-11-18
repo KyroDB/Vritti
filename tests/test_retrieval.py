@@ -9,13 +9,14 @@ Tests end-to-end retrieval flow:
 - Weighted ranking
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
-from datetime import datetime, timezone, timedelta
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode, EpisodeCreate
-from src.models.search import SearchRequest, RankingWeights
+from src.models.search import RankingWeights, SearchRequest
 from src.retrieval.preconditions import PreconditionMatcher
 from src.retrieval.ranking import EpisodeRanker
 from src.retrieval.search import SearchPipeline
@@ -96,7 +97,7 @@ class TestPreconditionMatcher:
             create_data=episode_data,
             episode_id=123,
             reflection=None,  # No reflection
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             retrieval_count=0,
         )
 
@@ -167,10 +168,10 @@ class TestEpisodeRanker:
         ranker = EpisodeRanker()
 
         # Recent episode
-        recent_time = datetime.now(timezone.utc)
+        recent_time = datetime.now(UTC)
 
         # Old episode (90 days ago)
-        old_time = datetime.now(timezone.utc) - timedelta(days=90)
+        old_time = datetime.now(UTC) - timedelta(days=90)
 
         recent_score = ranker._compute_recency_score(recent_time, recent_time)
         old_score = ranker._compute_recency_score(old_time, recent_time)
@@ -192,7 +193,7 @@ class TestEpisodeRanker:
         assert score_10 > score_0
         assert score_100 > score_10
         assert score_1000 > score_100
-        
+
         # Verify scores are bounded
         assert 0.0 <= score_10 <= 1.0
         assert 0.0 <= score_100 <= 1.0
@@ -215,7 +216,7 @@ class TestEpisodeRanker:
             create_data=episode1_data,
             episode_id=1,
             reflection=None,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             retrieval_count=100,  # High usage
         )
 
@@ -231,7 +232,7 @@ class TestEpisodeRanker:
             create_data=episode2_data,
             episode_id=2,
             reflection=None,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             retrieval_count=5,  # Low usage
         )
 

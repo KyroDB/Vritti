@@ -13,15 +13,11 @@ Performance features:
 - Efficient queries with covering indexes
 """
 
-import asyncio
-import hashlib
 import logging
 import secrets
 import sqlite3
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import bcrypt
 
@@ -68,7 +64,7 @@ class CustomerDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Connection will be created lazily
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -95,7 +91,8 @@ class CustomerDatabase:
             conn.execute("PRAGMA journal_mode = WAL")
 
             # Create customers table
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS customers (
                     customer_id TEXT PRIMARY KEY,
                     organization_name TEXT NOT NULL,
@@ -114,10 +111,12 @@ class CustomerDatabase:
                     CHECK (credits_used_current_month >= 0),
                     CHECK (monthly_credit_limit >= 0)
                 )
-            """)
+            """
+            )
 
             # Create API keys table
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS api_keys (
                     key_id TEXT PRIMARY KEY,
                     customer_id TEXT NOT NULL,
@@ -133,10 +132,12 @@ class CustomerDatabase:
                         ON DELETE CASCADE,
                     CHECK (is_active IN (0, 1))
                 )
-            """)
+            """
+            )
 
             # Create audit log table (compliance: track all mutations)
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
@@ -150,30 +151,19 @@ class CustomerDatabase:
                     FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
                         ON DELETE SET NULL
                 )
-            """)
+            """
+            )
 
             # Performance indexes
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(status)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(status)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_api_keys_customer ON api_keys(customer_id)"
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_audit_customer ON audit_log(customer_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_customer ON audit_log(customer_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)")
 
             conn.commit()
             logger.info("Customer database initialized successfully")
@@ -193,9 +183,7 @@ class CustomerDatabase:
             self._conn.execute("PRAGMA foreign_keys = ON")
         return self._conn
 
-    async def create_customer(
-        self, customer_create: CustomerCreate
-    ) -> Optional[Customer]:
+    async def create_customer(self, customer_create: CustomerCreate) -> Customer | None:
         """
         Create new customer.
 
@@ -216,7 +204,7 @@ class CustomerDatabase:
         }
         quota = tier_quotas.get(customer_create.subscription_tier, 1000)
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         customer = Customer(
             customer_id=customer_create.customer_id,
@@ -226,8 +214,8 @@ class CustomerDatabase:
             status=CustomerStatus.ACTIVE,
             monthly_credit_limit=quota,
             credits_used_current_month=0,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         conn = self._get_connection()
@@ -267,13 +255,11 @@ class CustomerDatabase:
 
         except sqlite3.IntegrityError as e:
             if "UNIQUE constraint failed" in str(e):
-                logger.warning(
-                    f"Customer creation failed: {customer.customer_id} already exists"
-                )
+                logger.warning(f"Customer creation failed: {customer.customer_id} already exists")
                 return None
             raise
 
-    async def get_customer(self, customer_id: str) -> Optional[Customer]:
+    async def get_customer(self, customer_id: str) -> Customer | None:
         """
         Get customer by ID.
 
@@ -302,17 +288,13 @@ class CustomerDatabase:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             last_api_call_at=(
-                datetime.fromisoformat(row["last_api_call_at"])
-                if row["last_api_call_at"]
-                else None
+                datetime.fromisoformat(row["last_api_call_at"]) if row["last_api_call_at"] else None
             ),
             stripe_customer_id=row["stripe_customer_id"],
             stripe_subscription_id=row["stripe_subscription_id"],
         )
 
-    async def update_customer(
-        self, customer_id: str, update: CustomerUpdate
-    ) -> Optional[Customer]:
+    async def update_customer(self, customer_id: str, update: CustomerUpdate) -> Customer | None:
         """
         Update customer details.
 
@@ -348,7 +330,7 @@ class CustomerDatabase:
             return await self.get_customer(customer_id)
 
         updates.append("updated_at = ?")
-        params.append(datetime.now(timezone.utc).isoformat())
+        params.append(datetime.now(UTC).isoformat())
         params.append(customer_id)
 
         conn = self._get_connection()
@@ -383,7 +365,7 @@ class CustomerDatabase:
         Performance: Single UPDATE statement, no SELECT needed
         """
         conn = self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         cursor = conn.execute(
             """
@@ -410,7 +392,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         cursor = conn.execute(
             """
@@ -433,9 +415,7 @@ class CustomerDatabase:
 
         return cursor.rowcount > 0
 
-    async def create_api_key(
-        self, api_key_create: APIKeyCreate
-    ) -> tuple[str, APIKey]:
+    async def create_api_key(self, api_key_create: APIKeyCreate) -> tuple[str, APIKey]:
         """
         Create new API key for customer.
 
@@ -470,7 +450,7 @@ class CustomerDatabase:
         key_id = str(uuid.uuid4())
 
         # Calculate expiration
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = None
         if api_key_create.expires_in_days:
             expires_at = now + timedelta(days=api_key_create.expires_in_days)
@@ -520,7 +500,7 @@ class CustomerDatabase:
 
         return (plaintext_key, api_key)
 
-    async def validate_api_key(self, plaintext_key: str) -> Optional[Customer]:
+    async def validate_api_key(self, plaintext_key: str) -> Customer | None:
         """
         Validate API key and return associated customer.
 
@@ -559,27 +539,21 @@ class CustomerDatabase:
 
         for row in rows:
             # Constant-time comparison using bcrypt
-            if bcrypt.checkpw(
-                plaintext_key.encode(), row["key_hash"].encode()
-            ):
+            if bcrypt.checkpw(plaintext_key.encode(), row["key_hash"].encode()):
                 # Found matching key - check expiration
                 if row["expires_at"]:
                     expires_at = datetime.fromisoformat(row["expires_at"])
-                    if datetime.now(timezone.utc) > expires_at:
-                        logger.warning(
-                            f"API key expired: {row['key_id']}"
-                        )
+                    if datetime.now(UTC) > expires_at:
+                        logger.warning(f"API key expired: {row['key_id']}")
                         return None
 
                 # Check customer status
                 if row["status"] != CustomerStatus.ACTIVE.value:
-                    logger.warning(
-                        f"Customer not active: {row['customer_id']}"
-                    )
+                    logger.warning(f"Customer not active: {row['customer_id']}")
                     return None
 
                 # Update last_used_at
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 conn.execute(
                     "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
                     (now, row["key_id"]),
@@ -620,9 +594,7 @@ class CustomerDatabase:
             bool: True if revoked, False if not found
         """
         conn = self._get_connection()
-        cursor = conn.execute(
-            "UPDATE api_keys SET is_active = 0 WHERE key_id = ?", (key_id,)
-        )
+        cursor = conn.execute("UPDATE api_keys SET is_active = 0 WHERE key_id = ?", (key_id,))
         conn.commit()
 
         if cursor.rowcount > 0:
@@ -644,10 +616,10 @@ class CustomerDatabase:
         self,
         action: str,
         resource_type: str,
-        customer_id: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        details: Optional[str] = None,
-        ip_address: Optional[str] = None,
+        customer_id: str | None = None,
+        resource_id: str | None = None,
+        details: str | None = None,
+        ip_address: str | None = None,
     ) -> None:
         """
         Log audit event for compliance.
@@ -661,7 +633,7 @@ class CustomerDatabase:
             ip_address: IP address of request
         """
         conn = self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         conn.execute(
             """
@@ -682,7 +654,7 @@ class CustomerDatabase:
 
 
 # Global instance
-_db: Optional[CustomerDatabase] = None
+_db: CustomerDatabase | None = None
 
 
 async def get_customer_db() -> CustomerDatabase:

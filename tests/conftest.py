@@ -8,12 +8,11 @@ Provides shared fixtures for:
 - FastAPI test client
 """
 
-import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.config import (
@@ -26,8 +25,13 @@ from src.config import (
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.client import KyroDBClient
 from src.kyrodb.router import KyroDBRouter
-from src.models.episode import Episode, EpisodeCreate, EpisodeType, ErrorClass, Reflection
-from src.kyrodb import kyrodb_pb2
+from src.models.episode import (
+    Episode,
+    EpisodeCreate,
+    EpisodeType,
+    ErrorClass,
+    Reflection,
+)
 
 
 @pytest.fixture
@@ -129,7 +133,7 @@ def sample_episode(sample_episode_create: EpisodeCreate) -> Episode:
         create_data=sample_episode_create,
         episode_id=1234567890,
         reflection=reflection,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         retrieval_count=0,
     )
 
@@ -195,9 +199,7 @@ async def mock_kyrodb_router(mock_kyrodb_client: AsyncMock) -> KyroDBRouter:
     search_result = Mock()
     search_result.doc_id = 123
     search_result.score = 0.92
-    search_result.metadata = mock_kyrodb_client.search.return_value.results[
-        0
-    ].metadata
+    search_result.metadata = mock_kyrodb_client.search.return_value.results[0].metadata
 
     search_response = Mock()
     search_response.results = [search_result]
@@ -258,10 +260,9 @@ def app_client(
     mock_embedding_service: EmbeddingService,
 ):
     """Create FastAPI test client with mocked dependencies."""
-    from src.main import app
-
     # Patch global instances
     import src.main as main_module
+    from src.main import app
 
     main_module.kyrodb_router = mock_kyrodb_router
     main_module.embedding_service = mock_embedding_service
