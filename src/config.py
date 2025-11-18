@@ -233,6 +233,56 @@ class CORSConfig(BaseSettings):
         return [header.strip() for header in self.allowed_headers.split(",") if header.strip()]
 
 
+class LoggingConfig(BaseSettings):
+    """Structured logging configuration (Phase 2 Week 6)."""
+
+    model_config = SettingsConfigDict(env_prefix="LOGGING_")
+
+    # Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="INFO",
+        description="Minimum log level"
+    )
+
+    # Output format
+    json_output: bool = Field(
+        default=True,
+        description="Use JSON output (True for production, False for development)"
+    )
+
+    # Console colorization (only for non-JSON output)
+    colorized: bool = Field(
+        default=False,
+        description="Colorize console output (only for development)"
+    )
+
+    # Slow request logging thresholds
+    slow_request_warning_ms: float = Field(
+        default=100.0,
+        ge=0.0,
+        description="Log warning if request exceeds this latency (ms)"
+    )
+    slow_request_error_ms: float = Field(
+        default=500.0,
+        ge=0.0,
+        description="Log error if request exceeds this latency (ms)"
+    )
+
+    # Service metadata (injected into all logs)
+    service_name: str = Field(
+        default="episodic-memory",
+        description="Service name for log aggregation"
+    )
+    service_version: str = Field(
+        default="0.1.0",
+        description="Service version"
+    )
+    environment: Literal["development", "staging", "production"] = Field(
+        default="development",
+        description="Deployment environment"
+    )
+
+
 class Settings(BaseSettings):
     """Root configuration for Episodic Memory service."""
 
@@ -250,6 +300,7 @@ class Settings(BaseSettings):
     search: SearchConfig = Field(default_factory=SearchConfig)
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     cors: CORSConfig = Field(default_factory=CORSConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     def validate_configuration(self) -> None:
         """

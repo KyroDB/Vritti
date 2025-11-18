@@ -9,7 +9,6 @@ Provides REST API for:
 Designed for <50ms P99 latency.
 """
 
-import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -44,16 +43,23 @@ from src.observability.metrics import (
     set_kyrodb_health,
 )
 from src.observability.middleware import PrometheusMiddleware, ErrorTrackingMiddleware
+from src.observability.logging import configure_logging, get_logger, RequestContext
+from src.observability.logging_middleware import (
+    StructuredLoggingMiddleware,
+    SlowRequestLogger,
+)
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
 from src.storage.database import CustomerDatabase, get_customer_db
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+# Initialize structured logging (Phase 2 Week 6)
+settings = get_settings()
+configure_logging(
+    log_level=settings.logging.level,
+    json_output=settings.logging.json_output,
+    colorized=settings.logging.colorized,
 )
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Rate limiter configuration
@@ -197,43 +203,51 @@ app.add_middleware(
     max_age=settings.cors.max_age,
 )
 
-logger.info(f"CORS configured: origins={cors_origins}, credentials={settings.cors.allow_credentials}")
+logger.info(
+    "CORS configured",
+    origins=cors_origins,
+    credentials=settings.cors.allow_credentials,
+)
 
-# Observability middleware (Phase 2 Week 5)
-# Order matters: Prometheus middleware should be outermost to track full request lifecycle
+# Observability middleware (Phase 2 Week 5-6)
+# Order matters:
+# 1. StructuredLoggingMiddleware (outermost) - Sets request context
+# 2. SlowRequestLogger - Logs slow requests
+# 3. PrometheusMiddleware - Tracks metrics (needs request context)
+# 4. ErrorTrackingMiddleware - Classifies errors
 app.add_middleware(ErrorTrackingMiddleware)
 app.add_middleware(PrometheusMiddleware)
-logger.info("✓ Observability middleware registered (Prometheus + Error tracking)")
+app.add_middleware(
+    SlowRequestLogger,
+    warning_threshold_ms=settings.logging.slow_request_warning_ms,
+    error_threshold_ms=settings.logging.slow_request_error_ms,
+)
+app.add_middleware(StructuredLoggingMiddleware)
+logger.info(
+    "Observability middleware registered",
+    middlewares=[
+        "StructuredLoggingMiddleware",
+        "SlowRequestLogger",
+        "PrometheusMiddleware",
+        "ErrorTrackingMiddleware",
+    ],
+)
 
 # Include routers
 app.include_router(customers_router)
-
-
-# Request logging middleware
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all requests with latency tracking."""
-    start_time = time.perf_counter()
-
-    # Process request
-    response = await call_next(request)
-
-    # Log request details
-    latency_ms = (time.perf_counter() - start_time) * 1000
-    logger.info(
-        f"{request.method} {request.url.path} - "
-        f"Status: {response.status_code} - "
-        f"Latency: {latency_ms:.2f}ms"
-    )
-
-    return response
 
 
 # Exception handler for KyroDB errors
 @app.exception_handler(KyroDBError)
 async def kyrodb_error_handler(request: Request, exc: KyroDBError):
     """Handle KyroDB connection/operation errors."""
-    logger.error(f"KyroDB error on {request.url.path}: {exc}")
+    logger.error(
+        "KyroDB error occurred",
+        path=request.url.path,
+        method=request.method,
+        error=str(exc),
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": "Vector database temporarily unavailable", "error": str(exc)},
