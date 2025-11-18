@@ -116,17 +116,21 @@ class KyroDBRouter:
     async def insert_episode(
         self,
         episode_id: int,
+        customer_id: str,
         collection: str,
         text_embedding: list[float],
         image_embedding: Optional[list[float]] = None,
         metadata: Optional[dict[str, str]] = None,
     ) -> tuple[bool, bool]:
         """
-        Insert episode into appropriate KyroDB instances.
+        Insert episode into appropriate KyroDB instances with customer namespace.
+
+        Multi-tenancy: Uses customer-namespaced collection for data isolation.
 
         Args:
             episode_id: Unique episode ID (used as doc_id)
-            collection: Namespace ("failures", "skills", "rules")
+            customer_id: Customer ID for namespace isolation
+            collection: Base collection name ("failures")
             text_embedding: Text/code embedding (384-dim)
             image_embedding: Optional image embedding (512-dim)
             metadata: Episode metadata (stored in both instances)
@@ -135,8 +139,12 @@ class KyroDBRouter:
             tuple: (text_inserted, image_inserted)
 
         Raises:
+            ValueError: If customer_id is empty
             KyroDBError: If insertion fails critically
         """
+        # Generate customer-namespaced collection
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
         text_success = False
         image_success = False
 
@@ -145,36 +153,45 @@ class KyroDBRouter:
             response = await self.text_client.insert(
                 doc_id=episode_id,
                 embedding=text_embedding,
-                namespace=collection,
+                namespace=namespaced_collection,
                 metadata=metadata,
             )
             text_success = response.success
             if not text_success:
                 logger.error(
-                    f"Text insertion failed for episode {episode_id}: {response.error}"
+                    f"Text insertion failed for episode {episode_id} "
+                    f"(customer: {customer_id}, collection: {namespaced_collection}): "
+                    f"{response.error}"
                 )
         except Exception as e:
-            logger.error(f"Text insertion error for episode {episode_id}: {e}")
+            logger.error(
+                f"Text insertion error for episode {episode_id} "
+                f"(customer: {customer_id}): {e}"
+            )
             raise
 
         # Insert image embedding (optional)
         if image_embedding:
             try:
+                # Image instance uses separate namespace: {customer_id}:failures_images
+                image_namespace = f"{namespaced_collection}_images"
                 response = await self.image_client.insert(
                     doc_id=episode_id,
                     embedding=image_embedding,
-                    namespace=f"{collection}_images",  # Separate namespace
+                    namespace=image_namespace,
                     metadata=metadata,
                 )
                 image_success = response.success
                 if not image_success:
                     logger.warning(
-                        f"Image insertion failed for episode {episode_id}: {response.error}"
+                        f"Image insertion failed for episode {episode_id} "
+                        f"(customer: {customer_id}, namespace: {image_namespace}): "
+                        f"{response.error}"
                     )
             except Exception as e:
                 logger.warning(
-                    f"Image insertion error for episode {episode_id}: {e} "
-                    "(continuing with text-only)"
+                    f"Image insertion error for episode {episode_id} "
+                    f"(customer: {customer_id}): {e} (continuing with text-only)"
                 )
                 # Don't fail the whole operation if image insert fails
                 image_success = False
@@ -188,30 +205,36 @@ class KyroDBRouter:
         self,
         query_embedding: list[float],
         k: int,
-        namespace: str,
+        customer_id: str,
+        collection: str,
         min_score: float = 0.6,
     ) -> SearchResponse:
         """
-        Search text instance for episodes.
+        Search text instance for episodes with customer namespace isolation.
 
-        Simple wrapper around text_client.search for retrieval pipeline.
+        Multi-tenancy: Only searches within customer's namespaced collection.
 
         Args:
             query_embedding: Query embedding vector (384-dim text)
             k: Number of results to return
-            namespace: Collection namespace
+            customer_id: Customer ID for namespace isolation
+            collection: Base collection name ("failures")
             min_score: Minimum similarity score
 
         Returns:
             SearchResponse: Raw search results from text KyroDB instance
 
         Raises:
+            ValueError: If customer_id is empty
             KyroDBError: On search failure
         """
+        # Generate customer-namespaced collection
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
         return await self.text_client.search(
             query_embedding=query_embedding,
             k=k,
-            namespace=namespace,
+            namespace=namespaced_collection,
             min_score=min_score,
             include_embeddings=False,  # Don't need embeddings in response
         )

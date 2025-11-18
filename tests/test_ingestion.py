@@ -64,6 +64,7 @@ class TestIngestionPipeline:
         """Test PII redaction during ingestion."""
         # Create episode with PII
         episode_data = EpisodeCreate(
+            customer_id="test-customer",  # Multi-tenancy required
             goal="Deploy application to production environment",
             tool_chain=["kubectl"],
             actions_taken=["attempted deployment action"],
@@ -130,10 +131,11 @@ class TestIngestionPipeline:
     ):
         """Test multi-modal embedding generation with screenshot."""
         episode_data = EpisodeCreate(
-            goal="Deploy with screenshot",
+            customer_id="test-customer",  # Multi-tenancy required
+            goal="Deploy with screenshot attachment",
             tool_chain=["kubectl"],
             actions_taken=["action1"],
-            error_trace="Error occurred",
+            error_trace="Error occurred during deployment",
             error_class="unknown",
             screenshot_path="/tmp/test_screenshot.png",
         )

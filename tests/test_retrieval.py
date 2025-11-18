@@ -85,10 +85,11 @@ class TestPreconditionMatcher:
 
         # Create episode without reflection
         episode_data = EpisodeCreate(
-            goal="Test goal for episode",
+            customer_id="test-customer",  # Multi-tenancy required
+            goal="Test goal for episode without reflection",
             tool_chain=["test"],
             actions_taken=["test"],
-            error_trace="Error trace details",
+            error_trace="Error trace details for testing",
             error_class="unknown",
         )
         episode = Episode(
@@ -203,7 +204,8 @@ class TestEpisodeRanker:
 
         # Create 3 episodes with different scores
         episode1_data = EpisodeCreate(
-            goal="Episode 1 goal description",
+            customer_id="test-customer",  # Multi-tenancy required
+            goal="Episode 1 goal description for ranking test",
             tool_chain=["tool1"],
             actions_taken=["action"],
             error_trace="Error trace for episode 1",
@@ -218,7 +220,8 @@ class TestEpisodeRanker:
         )
 
         episode2_data = EpisodeCreate(
-            goal="Episode 2 goal description",
+            customer_id="test-customer",  # Multi-tenancy required
+            goal="Episode 2 goal description for ranking test",
             tool_chain=["tool2"],
             actions_taken=["action"],
             error_trace="Error trace for episode 2",
@@ -279,6 +282,7 @@ class TestSearchPipeline:
         )
 
         request = SearchRequest(
+            customer_id="test-customer",  # Multi-tenancy required
             goal="Deploy application with kubectl",
             current_state={
                 "tool": "kubectl",
@@ -311,6 +315,7 @@ class TestSearchPipeline:
         )
 
         request = SearchRequest(
+            customer_id="test-customer",  # Multi-tenancy required
             goal="Test query for latency",
             collection="failures",
             k=5,
@@ -340,7 +345,8 @@ class TestSearchPipeline:
 
         # Search with tool filter
         request = SearchRequest(
-            goal="Test query",
+            customer_id="test-customer",  # Multi-tenancy required
+            goal="Test query for metadata filtering",
             collection="failures",
             tool_filter="kubectl",
             k=5,
@@ -369,7 +375,8 @@ class TestSearchPipeline:
 
         # Perform search
         request = SearchRequest(
-            goal="Test query",
+            customer_id="test-customer",  # Multi-tenancy required
+            goal="Test query for statistics tracking",
             collection="failures",
             k=5,
         )

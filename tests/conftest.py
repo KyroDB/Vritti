@@ -60,8 +60,9 @@ def test_settings() -> Settings:
 
 @pytest.fixture
 def sample_episode_create() -> EpisodeCreate:
-    """Create sample episode creation data."""
+    """Create sample episode creation data with customer_id."""
     return EpisodeCreate(
+        customer_id="test-customer",  # Multi-tenancy: default test customer
         episode_type=EpisodeType.FAILURE,
         goal="Deploy web application to Kubernetes production cluster",
         tool_chain=["kubectl", "docker", "helm"],

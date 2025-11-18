@@ -28,6 +28,7 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.episode import EpisodeCreate
 from src.models.search import SearchRequest, SearchResponse
 from src.retrieval.search import SearchPipeline
+from src.routers import customers_router
 
 # Configure logging
 logging.basicConfig(
@@ -131,6 +132,7 @@ app = FastAPI(
 )
 
 # CORS middleware
+# TODO Phase 1 Week 4: Restrict origins for production (currently wildcard for dev)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure appropriately for production
@@ -138,6 +140,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(customers_router)
 
 
 # Request logging middleware
@@ -287,6 +292,11 @@ async def capture_episode(
 
     Raises:
         HTTPException: On ingestion failure
+
+    Security:
+        TODO Phase 1 Week 3: Add API key authentication middleware.
+        Currently customer_id is accepted from request body (SECURITY GAP).
+        Must be extracted from validated API key to prevent cross-customer access.
     """
     if not ingestion_pipeline:
         raise HTTPException(
@@ -349,6 +359,11 @@ async def search_episodes(request: SearchRequest):
 
     Raises:
         HTTPException: On search failure
+
+    Security:
+        TODO Phase 1 Week 3: Add API key authentication middleware.
+        Currently customer_id is accepted from request body (SECURITY GAP).
+        Must be extracted from validated API key to prevent cross-customer access.
     """
     if not search_pipeline:
         raise HTTPException(

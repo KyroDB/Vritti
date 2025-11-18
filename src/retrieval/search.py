@@ -99,6 +99,7 @@ class SearchPipeline:
             fetch_k = request.k * self.CANDIDATE_EXPANSION_FACTOR
             candidates = await self._fetch_candidates(
                 query_embedding=query_embedding,
+                customer_id=request.customer_id,
                 collection=request.collection,
                 k=fetch_k,
                 min_similarity=request.min_similarity,
@@ -181,27 +182,41 @@ class SearchPipeline:
     async def _fetch_candidates(
         self,
         query_embedding: list[float],
+        customer_id: str,
         collection: str,
         k: int,
         min_similarity: float,
     ) -> list[tuple[Episode, float]]:
         """
-        Fetch candidate episodes from KyroDB.
+        Fetch candidate episodes from KyroDB with customer namespace isolation.
+
+        Multi-tenancy: Only searches within customer's namespaced collection.
 
         Args:
             query_embedding: Query embedding vector
+            customer_id: Customer ID for namespace isolation
             collection: Collection name (failures, skills, rules)
             k: Number of candidates to fetch
             min_similarity: Minimum similarity threshold
 
         Returns:
             list[tuple[Episode, float]]: List of (episode, similarity_score) pairs
+
+        Raises:
+            ValueError: If customer_id is None or empty
         """
-        # Search text instance
+        # Security: Verify customer_id is provided (prevent data leakage)
+        if not customer_id:
+            raise ValueError(
+                "customer_id is required for search - multi-tenancy violation detected"
+            )
+
+        # Search text instance with customer namespace isolation
         search_results = await self.kyrodb_router.search_text(
             query_embedding=query_embedding,
             k=k,
-            namespace=collection,
+            customer_id=customer_id,
+            collection=collection,
             min_score=min_similarity,
         )
 

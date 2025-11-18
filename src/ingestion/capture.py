@@ -234,7 +234,7 @@ class IngestionPipeline:
         error_sig: str,
     ) -> None:
         """
-        Store episode in KyroDB instances.
+        Store episode in KyroDB instances with customer namespace isolation.
 
         Args:
             episode: Episode object
@@ -245,13 +245,16 @@ class IngestionPipeline:
 
         Raises:
             KyroDBError: If storage fails
+            ValueError: If customer_id is missing (multi-tenancy violation)
         """
-        # Determine collection based on episode type
-        collection = episode.create_data.episode_type.value + "s"  # "failures", "successes"
-        if collection == "failuress":
-            collection = "failures"  # Fix plural
-        elif collection == "successs":
-            collection = "skills"  # Success → skill
+        # Verify customer_id is set (security: prevent data leakage)
+        if not episode.create_data.customer_id:
+            raise ValueError(
+                "customer_id is required - multi-tenancy violation detected"
+            )
+
+        # Determine base collection (only "failures" for now)
+        collection = "failures"
 
         # Build metadata
         metadata = episode.to_metadata_dict()
@@ -260,9 +263,11 @@ class IngestionPipeline:
         metadata["environment_hash"] = env_hash
         metadata["error_signature"] = error_sig
 
-        # Store in KyroDB (both text and image instances)
+        # Store in KyroDB with customer-namespaced collection
+        # KyroDBRouter will handle namespace formatting: {customer_id}:failures
         text_success, image_success = await self.kyrodb_router.insert_episode(
             episode_id=episode.episode_id,
+            customer_id=episode.create_data.customer_id,
             collection=collection,
             text_embedding=text_embedding,
             image_embedding=image_embedding,
@@ -270,11 +275,15 @@ class IngestionPipeline:
         )
 
         if not text_success:
-            raise RuntimeError(f"Failed to store episode {episode.episode_id} in text instance")
+            raise RuntimeError(
+                f"Failed to store episode {episode.episode_id} in text instance"
+            )
 
         logger.debug(
             f"Episode {episode.episode_id} stored in KyroDB "
-            f"(text: {text_success}, image: {image_success})"
+            f"(customer: {episode.create_data.customer_id}, "
+            f"collection: {collection}, "
+            f"text: {text_success}, image: {image_success})"
         )
 
     async def _generate_and_update_reflection(
