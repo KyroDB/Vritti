@@ -71,8 +71,10 @@ htmlcov/
 # Distribution
 *.tar.gz
 *.whl  
-
+EPISODIC_MEMORY_IMPLEMENTATION.md
 
 
 PROGRESS.md
 .env.example
+.github/copilot-instructions.md
+CORE_IMPLEMENTATION_ROADMAP.md

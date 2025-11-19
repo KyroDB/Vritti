@@ -108,23 +108,169 @@ class EmbeddingConfig(BaseSettings):
 
 
 class LLMConfig(BaseSettings):
-    """LLM configuration for reflection generation."""
+    """
+    LLM configuration for multi-perspective reflection generation.
+
+    Supports three providers for consensus:
+    - OpenAI (GPT-4 Turbo)
+    - Anthropic (Claude 3.5 Sonnet)
+    - Google (Gemini 1.5 Pro)
+
+    Security: API keys are never logged or exposed in errors.
+    """
 
     model_config = SettingsConfigDict(env_prefix="LLM_")
 
-    api_key: str = Field(default="", description="OpenAI API key")
-    model_name: str = Field(default="gpt-4-turbo-preview")
-    max_tokens: int = Field(default=2000, ge=100, le=8000)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    timeout_seconds: int = Field(default=30, ge=1)
+    # OpenAI configuration
+    openai_api_key: str = Field(
+        default="",
+        description="OpenAI API key for GPT-4"
+    )
+    openai_model_name: str = Field(
+        default="gpt-4-turbo-preview",
+        description="OpenAI model identifier"
+    )
 
-    @field_validator("api_key")
+    # Anthropic configuration
+    anthropic_api_key: str = Field(
+        default="",
+        description="Anthropic API key for Claude"
+    )
+    anthropic_model_name: str = Field(
+        default="claude-3-5-sonnet-20241022",
+        description="Anthropic model identifier"
+    )
+
+    # Google configuration
+    google_api_key: str = Field(
+        default="",
+        description="Google API key for Gemini"
+    )
+    google_model_name: str = Field(
+        default="gemini-1.5-pro",
+        description="Google model identifier"
+    )
+
+    # Shared parameters
+    max_tokens: int = Field(
+        default=2000,
+        ge=100,
+        le=8000,
+        description="Maximum tokens for reflection generation"
+    )
+
+    temperature: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Temperature for reflection (lower = more consistent)"
+    )
+
+    timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=120,
+        description="Timeout for LLM API calls"
+    )
+
+    # Cost limits (security: prevent abuse)
+    max_cost_per_reflection_usd: float = Field(
+        default=1.0,
+        ge=0.01,
+        le=10.0,
+        description="Maximum allowed cost per reflection (abort if exceeded)"
+    )
+
+    # Retry configuration
+    max_retries: int = Field(
+        default=3,
+        ge=0,
+        le=5,
+        description="Maximum retries for transient failures"
+    )
+
+    retry_backoff_seconds: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=10.0,
+        description="Initial backoff for exponential retry"
+    )
+
+    # Backward compatibility (legacy single API key)
+    api_key: str = Field(
+        default="",
+        description="Legacy OpenAI API key (deprecated, use openai_api_key)"
+    )
+
+    @field_validator("openai_api_key", "anthropic_api_key", "google_api_key", "api_key")
     @classmethod
-    def validate_api_key(cls, v: str) -> str:
-        if not v or v == "your-openai-api-key-here":
-            # Don't fail, just warn - reflection will be disabled
+    def validate_api_key_security(cls, v: str, info) -> str:
+        """
+        Security: Validate API key format and prevent common mistakes.
+
+        Never expose API keys in logs or errors.
+        """
+        if not v:
+            # Empty is OK - reflection will be disabled for that provider
             return ""
+
+        # Check for placeholder values
+        placeholder_patterns = [
+            "your-api-key-here",
+            "sk-...",
+            "example",
+            "test",
+            "dummy"
+        ]
+
+        v_lower = v.lower()
+        if any(pattern in v_lower for pattern in placeholder_patterns):
+            import logging
+            field_name = info.field_name
+            logging.warning(
+                f"{field_name} appears to be a placeholder - reflection may be disabled"
+            )
+            return ""
+
+        # Basic length validation (real API keys are usually 40+ chars)
+        if len(v) < 20:
+            import logging
+            field_name = info.field_name
+            logging.warning(
+                f"{field_name} seems too short to be valid - reflection may fail"
+            )
+
         return v
+
+    @property
+    def has_any_api_key(self) -> bool:
+        """Check if at least one LLM provider is configured."""
+        return bool(
+            self.openai_api_key or
+            self.anthropic_api_key or
+            self.google_api_key or
+            self.api_key  # Legacy fallback
+        )
+
+    @property
+    def enabled_providers(self) -> list[str]:
+        """Get list of enabled LLM providers."""
+        providers = []
+        if self.openai_api_key or self.api_key:
+            providers.append("openai")
+        if self.anthropic_api_key:
+            providers.append("anthropic")
+        if self.google_api_key:
+            providers.append("google")
+        return providers
+
+    def model_post_init(self, __context):
+        """Post-initialization: handle legacy api_key."""
+        # If legacy api_key is set but openai_api_key is not, migrate
+        if self.api_key and not self.openai_api_key:
+            self.openai_api_key = self.api_key
+            import logging
+            logging.info("Migrated legacy api_key to openai_api_key")
 
 
 class HygieneConfig(BaseSettings):
