@@ -8,6 +8,7 @@ Security features:
 - Audit logging for all mutations
 
 Performance features:
+- Async operations with aiosqlite (non-blocking)
 - Indexes on customer_id, api_key_hash, email
 - Connection pooling ready
 - Efficient queries with covering indexes
@@ -15,10 +16,10 @@ Performance features:
 
 import logging
 import secrets
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import aiosqlite
 import bcrypt
 
 from src.models.customer import (
@@ -48,8 +49,9 @@ class CustomerDatabase:
     - Audit log for compliance
 
     Performance:
+    - Async operations with aiosqlite (non-blocking)
     - Indexes on all foreign keys and lookup columns
-    - Connection pooling (aiosqlite handles this)
+    - Connection pooling ready
     - Efficient upsert operations
     """
 
@@ -64,7 +66,7 @@ class CustomerDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Connection will be created lazily
-        self._conn: sqlite3.Connection | None = None
+        self._conn: aiosqlite.Connection | None = None
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -79,116 +81,126 @@ class CustomerDatabase:
 
         logger.info(f"Initializing customer database at {self.db_path}")
 
-        # Use synchronous connection for schema creation
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
+        # Use async connection for schema creation
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            conn.row_factory = aiosqlite.Row
 
-        try:
-            # Enable foreign key constraints (security: prevent orphaned records)
-            conn.execute("PRAGMA foreign_keys = ON")
+            try:
+                # Enable foreign key constraints (security: prevent orphaned records)
+                await conn.execute("PRAGMA foreign_keys = ON")
 
-            # Enable WAL mode for better concurrency (performance)
-            conn.execute("PRAGMA journal_mode = WAL")
+                # Enable WAL mode for better concurrency (performance)
+                await conn.execute("PRAGMA journal_mode = WAL")
 
-            # Create customers table
-            conn.execute(
+                # Create customers table
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS customers (
+                        customer_id TEXT PRIMARY KEY,
+                        organization_name TEXT NOT NULL,
+                        email TEXT NOT NULL UNIQUE,
+                        subscription_tier TEXT NOT NULL DEFAULT 'free',
+                        status TEXT NOT NULL DEFAULT 'active',
+                        monthly_credit_limit INTEGER NOT NULL DEFAULT 1000,
+                        credits_used_current_month INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_api_call_at TEXT,
+                        stripe_customer_id TEXT UNIQUE,
+                        stripe_subscription_id TEXT,
+                        stripe_payment_method_id TEXT,
+                        billing_cycle_start TEXT,
+                        billing_cycle_end TEXT,
+                        next_invoice_date TEXT,
+                        payment_failed INTEGER NOT NULL DEFAULT 0,
+                        payment_failed_at TEXT,
+                        trial_end_date TEXT,
+
+                        CHECK (customer_id GLOB '[a-z0-9-]*'),
+                        CHECK (credits_used_current_month >= 0),
+                        CHECK (monthly_credit_limit >= 0),
+                        CHECK (payment_failed IN (0, 1))
+                    )
                 """
-                CREATE TABLE IF NOT EXISTS customers (
-                    customer_id TEXT PRIMARY KEY,
-                    organization_name TEXT NOT NULL,
-                    email TEXT NOT NULL UNIQUE,
-                    subscription_tier TEXT NOT NULL DEFAULT 'free',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    monthly_credit_limit INTEGER NOT NULL DEFAULT 1000,
-                    credits_used_current_month INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_api_call_at TEXT,
-                    stripe_customer_id TEXT UNIQUE,
-                    stripe_subscription_id TEXT,
-                    stripe_payment_method_id TEXT,
-                    billing_cycle_start TEXT,
-                    billing_cycle_end TEXT,
-                    next_invoice_date TEXT,
-                    payment_failed INTEGER NOT NULL DEFAULT 0,
-                    payment_failed_at TEXT,
-                    trial_end_date TEXT,
-
-                    CHECK (customer_id GLOB '[a-z0-9-]*'),
-                    CHECK (credits_used_current_month >= 0),
-                    CHECK (monthly_credit_limit >= 0),
-                    CHECK (payment_failed IN (0, 1))
                 )
-            """
-            )
 
-            # Create API keys table
-            conn.execute(
+                # Create API keys table
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS api_keys (
+                        key_id TEXT PRIMARY KEY,
+                        customer_id TEXT NOT NULL,
+                        key_hash TEXT NOT NULL UNIQUE,
+                        key_prefix TEXT NOT NULL,
+                        name TEXT,
+                        created_at TEXT NOT NULL,
+                        last_used_at TEXT,
+                        expires_at TEXT,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+
+                        FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                            ON DELETE CASCADE,
+                        CHECK (is_active IN (0, 1))
+                    )
                 """
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    key_id TEXT PRIMARY KEY,
-                    customer_id TEXT NOT NULL,
-                    key_hash TEXT NOT NULL UNIQUE,
-                    key_prefix TEXT NOT NULL,
-                    name TEXT,
-                    created_at TEXT NOT NULL,
-                    last_used_at TEXT,
-                    expires_at TEXT,
-                    is_active INTEGER NOT NULL DEFAULT 1,
-
-                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
-                        ON DELETE CASCADE,
-                    CHECK (is_active IN (0, 1))
                 )
-            """
-            )
 
-            # Create audit log table (compliance: track all mutations)
-            conn.execute(
+                # Create audit log table (compliance: track all mutations)
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        customer_id TEXT,
+                        action TEXT NOT NULL,
+                        resource_type TEXT NOT NULL,
+                        resource_id TEXT,
+                        details TEXT,
+                        ip_address TEXT,
+
+                        FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                            ON DELETE SET NULL
+                    )
                 """
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    customer_id TEXT,
-                    action TEXT NOT NULL,
-                    resource_type TEXT NOT NULL,
-                    resource_id TEXT,
-                    details TEXT,
-                    ip_address TEXT,
-
-                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
-                        ON DELETE SET NULL
                 )
-            """
-            )
 
-            # Performance indexes
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(status)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_api_keys_customer ON api_keys(customer_id)"
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_customer ON audit_log(customer_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)")
+                # Performance indexes
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(status)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_api_keys_customer ON api_keys(customer_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_audit_customer ON audit_log(customer_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)"
+                )
 
-            conn.commit()
-            logger.info("Customer database initialized successfully")
-            self._initialized = True
+                await conn.commit()
+                logger.info("Customer database initialized successfully")
+                self._initialized = True
 
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            raise
-        finally:
-            conn.close()
+            except Exception as e:
+                logger.error(f"Failed to initialize database: {e}")
+                raise
 
-    def _get_connection(self) -> sqlite3.Connection:
+    async def _get_connection(self) -> aiosqlite.Connection:
         """Get database connection (creates if needed)."""
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn = await aiosqlite.connect(str(self.db_path))
+            self._conn.row_factory = aiosqlite.Row
+            await self._conn.execute("PRAGMA foreign_keys = ON")
         return self._conn
 
     async def create_customer(self, customer_create: CustomerCreate) -> Customer | None:
@@ -226,9 +238,9 @@ class CustomerDatabase:
             updated_at=datetime.now(UTC),
         )
 
-        conn = self._get_connection()
+        conn = await self._get_connection()
         try:
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT INTO customers (
                     customer_id, organization_name, email, subscription_tier,
@@ -248,7 +260,7 @@ class CustomerDatabase:
                     now,
                 ),
             )
-            conn.commit()
+            await conn.commit()
 
             # Audit log
             await self._log_audit(
@@ -261,7 +273,7 @@ class CustomerDatabase:
             logger.info(f"Created customer: {customer.customer_id}")
             return customer
 
-        except sqlite3.IntegrityError as e:
+        except aiosqlite.IntegrityError as e:
             if "UNIQUE constraint failed" in str(e):
                 logger.warning(f"Customer creation failed: {customer.customer_id} already exists")
                 return None
@@ -277,10 +289,9 @@ class CustomerDatabase:
         Returns:
             Customer or None if not found
         """
-        conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM customers WHERE customer_id = ?", (customer_id,)
-        ).fetchone()
+        conn = await self._get_connection()
+        cursor = await conn.execute("SELECT * FROM customers WHERE customer_id = ?", (customer_id,))
+        row = await cursor.fetchone()
 
         if not row:
             return None
@@ -366,11 +377,11 @@ class CustomerDatabase:
         params.append(datetime.now(UTC).isoformat())
         params.append(customer_id)
 
-        conn = self._get_connection()
+        conn = await self._get_connection()
         query = f"UPDATE customers SET {', '.join(updates)} WHERE customer_id = ?"
 
-        conn.execute(query, params)
-        conn.commit()
+        await conn.execute(query, params)
+        await conn.commit()
 
         # Audit log
         await self._log_audit(
@@ -397,10 +408,10 @@ class CustomerDatabase:
         Security: Atomic update prevents race conditions
         Performance: Single UPDATE statement, no SELECT needed
         """
-        conn = self._get_connection()
+        conn = await self._get_connection()
         now = datetime.now(UTC).isoformat()
 
-        cursor = conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE customers
             SET credits_used_current_month = credits_used_current_month + ?,
@@ -410,7 +421,7 @@ class CustomerDatabase:
             """,
             (credits, now, now, customer_id),
         )
-        conn.commit()
+        await conn.commit()
 
         return cursor.rowcount > 0
 
@@ -424,10 +435,10 @@ class CustomerDatabase:
         Returns:
             bool: True if successful
         """
-        conn = self._get_connection()
+        conn = await self._get_connection()
         now = datetime.now(UTC).isoformat()
 
-        cursor = conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE customers
             SET credits_used_current_month = 0,
@@ -436,7 +447,7 @@ class CustomerDatabase:
             """,
             (now, customer_id),
         )
-        conn.commit()
+        await conn.commit()
 
         # Audit log
         await self._log_audit(
@@ -462,11 +473,11 @@ class CustomerDatabase:
         Returns:
             bool: True if successful
         """
-        conn = self._get_connection()
+        conn = await self._get_connection()
         now = datetime.now(UTC).isoformat()
 
         if stripe_subscription_id:
-            cursor = conn.execute(
+            cursor = await conn.execute(
                 """
                 UPDATE customers
                 SET stripe_customer_id = ?,
@@ -477,7 +488,7 @@ class CustomerDatabase:
                 (stripe_customer_id, stripe_subscription_id, now, customer_id),
             )
         else:
-            cursor = conn.execute(
+            cursor = await conn.execute(
                 """
                 UPDATE customers
                 SET stripe_customer_id = ?,
@@ -486,7 +497,7 @@ class CustomerDatabase:
                 """,
                 (stripe_customer_id, now, customer_id),
             )
-        conn.commit()
+        await conn.commit()
 
         await self._log_audit(
             customer_id=customer_id,
@@ -512,10 +523,10 @@ class CustomerDatabase:
         Returns:
             bool: True if successful
         """
-        conn = self._get_connection()
+        conn = await self._get_connection()
         now = datetime.now(UTC).isoformat()
 
-        cursor = conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE customers
             SET payment_failed = ?,
@@ -530,7 +541,7 @@ class CustomerDatabase:
                 customer_id,
             ),
         )
-        conn.commit()
+        await conn.commit()
 
         await self._log_audit(
             customer_id=customer_id,
@@ -553,10 +564,10 @@ class CustomerDatabase:
         Returns:
             bool: True if successful
         """
-        conn = self._get_connection()
+        conn = await self._get_connection()
         now = datetime.now(UTC).isoformat()
 
-        cursor = conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE customers
             SET status = ?,
@@ -565,7 +576,7 @@ class CustomerDatabase:
             """,
             (status.value, now, customer_id),
         )
-        conn.commit()
+        await conn.commit()
 
         await self._log_audit(
             customer_id=customer_id,
@@ -596,10 +607,10 @@ class CustomerDatabase:
         Returns:
             bool: True if successful
         """
-        conn = self._get_connection()
+        conn = await self._get_connection()
         now = datetime.now(UTC).isoformat()
 
-        cursor = conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE customers
             SET billing_cycle_start = ?,
@@ -616,7 +627,7 @@ class CustomerDatabase:
                 customer_id,
             ),
         )
-        conn.commit()
+        await conn.commit()
 
         return cursor.rowcount > 0
 
@@ -671,8 +682,8 @@ class CustomerDatabase:
             is_active=True,
         )
 
-        conn = self._get_connection()
-        conn.execute(
+        conn = await self._get_connection()
+        await conn.execute(
             """
             INSERT INTO api_keys (
                 key_id, customer_id, key_hash, key_prefix, name,
@@ -690,7 +701,7 @@ class CustomerDatabase:
                 1,
             ),
         )
-        conn.commit()
+        await conn.commit()
 
         # Audit log (DO NOT log plaintext key)
         await self._log_audit(
@@ -728,19 +739,20 @@ class CustomerDatabase:
         if not plaintext_key.startswith("em_live_"):
             return None
 
-        conn = self._get_connection()
+        conn = await self._get_connection()
 
         # Get all active API keys (we need to hash-compare each one)
         # Note: This is a performance trade-off for security
         # Alternative: hash the key first and lookup by hash (but exposes timing attacks)
-        rows = conn.execute(
+        cursor = await conn.execute(
             """
             SELECT k.*, c.*
             FROM api_keys k
             JOIN customers c ON k.customer_id = c.customer_id
             WHERE k.is_active = 1
             """
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
 
         for row in rows:
             # Constant-time comparison using bcrypt
@@ -759,11 +771,11 @@ class CustomerDatabase:
 
                 # Update last_used_at
                 now = datetime.now(UTC).isoformat()
-                conn.execute(
+                await conn.execute(
                     "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
                     (now, row["key_id"]),
                 )
-                conn.commit()
+                await conn.commit()
 
                 # Return customer
                 return Customer(
@@ -798,15 +810,16 @@ class CustomerDatabase:
         Returns:
             bool: True if revoked, False if not found
         """
-        conn = self._get_connection()
-        cursor = conn.execute("UPDATE api_keys SET is_active = 0 WHERE key_id = ?", (key_id,))
-        conn.commit()
+        conn = await self._get_connection()
+        cursor = await conn.execute("UPDATE api_keys SET is_active = 0 WHERE key_id = ?", (key_id,))
+        await conn.commit()
 
         if cursor.rowcount > 0:
             # Get customer_id for audit log
-            row = conn.execute(
+            cursor2 = await conn.execute(
                 "SELECT customer_id FROM api_keys WHERE key_id = ?", (key_id,)
-            ).fetchone()
+            )
+            row = await cursor2.fetchone()
             if row:
                 await self._log_audit(
                     customer_id=row["customer_id"],
@@ -837,10 +850,10 @@ class CustomerDatabase:
             details: Additional details (JSON string)
             ip_address: IP address of request
         """
-        conn = self._get_connection()
+        conn = await self._get_connection()
         now = datetime.now(UTC).isoformat()
 
-        conn.execute(
+        await conn.execute(
             """
             INSERT INTO audit_log (
                 timestamp, customer_id, action, resource_type,
@@ -849,12 +862,12 @@ class CustomerDatabase:
             """,
             (now, customer_id, action, resource_type, resource_id, details, ip_address),
         )
-        conn.commit()
+        await conn.commit()
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close database connection."""
         if self._conn:
-            self._conn.close()
+            await self._conn.close()
             self._conn = None
 
 

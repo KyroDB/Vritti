@@ -3,7 +3,7 @@ KyroDB gRPC client wrapper with connection pooling and error handling.
 
 Provides a clean async interface to KyroDB operations with:
 - Automatic retry logic
-- Circuit breaker pattern
+- Circuit breaker pattern 
 - Connection pooling
 - Comprehensive error handling
 """
@@ -29,6 +29,7 @@ from src.kyrodb.kyrodb_pb2 import (
     SearchResponse,
 )
 from src.kyrodb.kyrodb_pb2_grpc import KyroDBServiceStub
+from src.resilience.circuit_breakers import with_kyrodb_circuit_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,7 @@ class KyroDBClient:
 
         raise KyroDBError(f"{operation} failed after {self.max_retries} retries")
 
+    @with_kyrodb_circuit_breaker
     async def insert(
         self,
         doc_id: int,
@@ -357,6 +359,7 @@ class KyroDBClient:
         )
         return await self._call_with_retry(self._stub.Insert, request, "Insert")
 
+    @with_kyrodb_circuit_breaker
     async def search(
         self,
         query_embedding: list[float],
@@ -433,6 +436,7 @@ class KyroDBClient:
         request = DeleteRequest(doc_id=doc_id, namespace=namespace)
         return await self._call_with_retry(self._stub.Delete, request, "Delete")
 
+    @with_kyrodb_circuit_breaker
     async def health_check(self) -> HealthResponse:
         """
         Check KyroDB health status.

@@ -52,6 +52,7 @@ from src.observability.metrics import (
     update_customer_quota_usage,
 )
 from src.observability.middleware import ErrorTrackingMiddleware, PrometheusMiddleware
+from src.observability.request_limits import RequestSizeLimitMiddleware
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
 from src.storage.database import CustomerDatabase, get_customer_db
@@ -124,6 +125,11 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing embedding service...")
         embedding_service = EmbeddingService(config=settings.embedding)
         logger.info("✓ Embedding service initialized")
+
+        # Warm up embedding models (prevents cold start on first request)
+        logger.info("Warming up embedding models...")
+        embedding_service.warmup()
+        logger.info("✓ Embedding models warmed up")
 
         # Initialize reflection service (optional)
         if settings.llm.api_key:
@@ -213,27 +219,33 @@ logger.info(
     credentials=settings.cors.allow_credentials,
 )
 
-# Observability middleware (Phase 2 Week 5-6)
-# Order matters:
-# 1. StructuredLoggingMiddleware (outermost) - Sets request context
-# 2. SlowRequestLogger - Logs slow requests
-# 3. PrometheusMiddleware - Tracks metrics (needs request context)
-# 4. ErrorTrackingMiddleware - Classifies errors
-app.add_middleware(ErrorTrackingMiddleware)
-app.add_middleware(PrometheusMiddleware)
+# Observability and security middleware (Phase 2 Week 5-6, Phase 5)
+# Order matters (processed in reverse order of registration):
+# 1. RequestSizeLimitMiddleware (innermost) - Rejects oversized requests first
+# 2. ErrorTrackingMiddleware - Classifies errors
+# 3. PrometheusMiddleware - Tracks metrics
+# 4. SlowRequestLogger - Logs slow requests
+# 5. StructuredLoggingMiddleware (outermost) - Sets request context
+app.add_middleware(StructuredLoggingMiddleware)
 app.add_middleware(
     SlowRequestLogger,
     warning_threshold_ms=settings.logging.slow_request_warning_ms,
     error_threshold_ms=settings.logging.slow_request_error_ms,
 )
-app.add_middleware(StructuredLoggingMiddleware)
+app.add_middleware(PrometheusMiddleware)
+app.add_middleware(ErrorTrackingMiddleware)
+app.add_middleware(
+    RequestSizeLimitMiddleware,
+    max_body_size=settings.service.max_request_body_size,
+)
 logger.info(
-    "Observability middleware registered",
+    "Observability and security middleware registered",
     middlewares=[
-        "StructuredLoggingMiddleware",
-        "SlowRequestLogger",
-        "PrometheusMiddleware",
+        "RequestSizeLimitMiddleware",
         "ErrorTrackingMiddleware",
+        "PrometheusMiddleware",
+        "SlowRequestLogger",
+        "StructuredLoggingMiddleware",
     ],
 )
 
@@ -335,7 +347,7 @@ async def readiness_probe(response: Response):
     health_checker = get_health_checker()
 
     # Get customer database
-    customer_db = get_customer_db()
+    customer_db = await get_customer_db()
 
     # Perform readiness check
     readiness = await health_checker.check_readiness(
@@ -400,7 +412,7 @@ async def comprehensive_health_check():
     health_checker = get_health_checker()
 
     # Get customer database
-    customer_db = get_customer_db()
+    customer_db = await get_customer_db()
 
     # Perform comprehensive health check
     health = await health_checker.check_health(

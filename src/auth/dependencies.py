@@ -127,7 +127,7 @@ async def get_authenticated_customer(
     logger.debug("API key cache miss - validating with database")
     track_api_key_cache_miss()
 
-    db = get_customer_db()
+    db = await get_customer_db()
 
     start_time = time.perf_counter()
 

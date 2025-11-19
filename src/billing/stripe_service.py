@@ -7,6 +7,8 @@ Features:
 - Usage-based metering (credits)
 - Invoice generation
 - Webhook event processing
+- Circuit breaker protection (Phase 5)
+- Retry logic with idempotency (Phase 5)
 """
 
 import logging
@@ -21,6 +23,7 @@ from src.models.customer import (
     CustomerStatus,
     SubscriptionTier,
 )
+from src.resilience.circuit_breakers import with_retry, with_stripe_circuit_breaker
 from src.storage.database import CustomerDatabase
 
 logger = logging.getLogger(__name__)
@@ -78,6 +81,10 @@ class StripeService:
         """Check if Stripe is properly configured."""
         return self.config.is_configured
 
+    @with_stripe_circuit_breaker
+    @with_retry(
+        max_attempts=3, exceptions=(stripe.error.APIConnectionError, stripe.error.RateLimitError)
+    )
     async def create_customer(self, customer: Customer) -> str:
         """
         Create Stripe customer.
@@ -95,9 +102,15 @@ class StripeService:
             raise StripeError("Stripe not configured")
 
         try:
+            # Idempotency key prevents duplicate customers on retry
+            idempotency_key = (
+                f"customer_{customer.customer_id}_{int(customer.created_at.timestamp())}"
+            )
+
             stripe_customer = stripe.Customer.create(
                 email=customer.email,
                 name=customer.organization_name,
+                idempotency_key=idempotency_key,
                 metadata={
                     "customer_id": customer.customer_id,
                     "subscription_tier": customer.subscription_tier.value,

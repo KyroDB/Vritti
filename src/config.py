@@ -178,6 +178,21 @@ class ServiceConfig(BaseSettings):
     reload: bool = Field(default=False)
     workers: int = Field(default=1, ge=1)
 
+    # Request size limits (DoS protection)
+    max_request_body_size: int = Field(
+        default=10 * 1024 * 1024,  # 10MB
+        ge=1024,
+        description="Maximum request body size in bytes (default: 10MB)",
+    )
+    max_file_upload_size: int = Field(
+        default=5 * 1024 * 1024,  # 5MB
+        ge=1024,
+        description="Maximum file upload size in bytes (default: 5MB)",
+    )
+    request_timeout_seconds: int = Field(
+        default=30, ge=1, le=300, description="Global request timeout in seconds"
+    )
+
     # Storage paths
     screenshot_storage_path: str = Field(default="./data/screenshots")
     archive_storage_path: str = Field(default="./data/archive")
