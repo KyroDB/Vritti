@@ -811,21 +811,156 @@ def update_promoted_skills_count(
 
 
 # ============================================================================
+# PHASE 5: TIERED REFLECTION METRICS
+# ============================================================================
+
+# Reflection cost by tier (Phase 5 - Cost Optimization)
+reflection_cost_by_tier_usd_total = Counter(
+    "episodic_memory_reflection_cost_by_tier_usd_total",
+    "Total reflection cost in USD per tier",
+    labelnames=["tier", "customer_id"],  # tier: cheap, cached, premium
+)
+
+# Reflection count by tier
+reflections_by_tier_total = Counter(
+    "episodic_memory_reflections_by_tier_total",
+    "Total reflections generated per tier",
+    labelnames=["tier", "customer_tier"],
+)
+
+# Tier quality scores (confidence distribution)
+reflection_tier_quality_score = Histogram(
+    "episodic_memory_reflection_tier_quality_score",
+    "Reflection confidence scores by tier",
+    labelnames=["tier"],
+    buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+
+# Tier selection decisions (auto-select tracking)
+tier_selection_total = Counter(
+    "episodic_memory_tier_selection_total",
+    "Tier selection decisions (auto vs override)",
+    labelnames=["tier", "selection_method"],  # selection_method: auto, override
+)
+
+# Quality fallback count (cheap -> premium due to low quality)
+tier_quality_fallback_total = Counter(
+    "episodic_memory_tier_quality_fallback_total",
+    "Cheap tier quality fallbacks to premium",
+    labelnames=["reason"],  # reason: low_confidence, no_preconditions, generic_response
+)
+
+# Cost savings gauge (vs all-premium baseline)
+reflection_cost_savings_usd = Gauge(
+    "episodic_memory_reflection_cost_savings_usd",
+    "Estimated cost savings vs all-premium baseline",
+)
+
+# Premium tier usage percentage (for budget monitoring)
+premium_tier_usage_percentage = Gauge(
+    "episodic_memory_premium_tier_usage_percentage",
+    "Percentage of reflections using premium tier",
+)
+
+
+# ============================================================================
+# PHASE 5: TIER METRIC TRACKING FUNCTIONS
+# ============================================================================
+
+
+def track_reflection_tier_cost(
+    tier: str,
+    customer_id: str,
+    cost_usd: float,
+) -> None:
+    """
+    Track reflection cost by tier (Phase 5).
+
+    Args:
+        tier: Reflection tier (cheap, cached, premium)
+        customer_id: Customer ID
+        cost_usd: Cost in USD
+    """
+    reflection_cost_by_tier_usd_total.labels(
+        tier=tier,
+        customer_id=customer_id,
+    ).inc(cost_usd)
+
+
+def track_reflection_tier_usage(
+    tier: str,
+    customer_tier: str,
+    quality_score: float,
+    selection_method: str = "auto",
+) -> None:
+    """
+    Track reflection tier usage and quality (Phase 5).
+
+    Args:
+        tier: Reflection tier used (cheap, cached, premium)
+        customer_tier: Subscription tier
+        quality_score: Confidence/quality score
+        selection_method: How tier was selected (auto, override)
+    """
+    reflections_by_tier_total.labels(
+        tier=tier,
+        customer_tier=customer_tier,
+    ).inc()
+
+    reflection_tier_quality_score.labels(
+        tier=tier,
+    ).observe(quality_score)
+
+    tier_selection_total.labels(
+        tier=tier,
+        selection_method=selection_method,
+    ).inc()
+
+
+def track_tier_quality_fallback(reason: str) -> None:
+    """
+    Track quality fallback from cheap to premium (Phase 5).
+
+    Args:
+        reason: Fallback reason (low_confidence, no_preconditions, generic_response)
+    """
+    tier_quality_fallback_total.labels(
+        reason=reason,
+    ).inc()
+
+
+def update_cost_savings(savings_usd: float) -> None:
+    """
+    Update cost savings gauge (Phase 5).
+
+    Args:
+        savings_usd: Total cost savings vs all-premium baseline
+    """
+    reflection_cost_savings_usd.set(savings_usd)
+
+
+def update_premium_tier_percentage(percentage: float) -> None:
+    """
+    Update premium tier usage percentage (Phase 5).
+
+    Args:
+        percentage: Percentage of reflections using premium (0.0-100.0)
+    """
+    premium_tier_usage_percentage.set(percentage)
+
+
+# ============================================================================
 # METRICS ENDPOINT
 # ============================================================================
 
 
+
 def generate_metrics() -> tuple[bytes, str]:
     """
-    Generate Prometheus metrics for scraping.
+    Generate Prometheus metrics in exposition format (bytes).
 
     Returns:
         tuple: (metrics_bytes, content_type)
-
-    Usage:
-        @app.get("/metrics")
-        async def metrics():
-            data, content_type = generate_metrics()
-            return Response(content=data, media_type=content_type)
     """
-    return generate_latest(REGISTRY), CONTENT_TYPE_LATEST
+    metrics_data = generate_latest(REGISTRY)
+    return metrics_data, CONTENT_TYPE_LATEST

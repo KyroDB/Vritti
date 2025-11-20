@@ -457,6 +457,76 @@ class LoggingConfig(BaseSettings):
     )
 
 
+
+
+class ReflectionConfig(BaseSettings):
+    """Reflection generation configuration (Phase 5 - Cost Optimization)."""
+
+    model_config = SettingsConfigDict(env_prefix="REFLECTION_")
+
+    # Tier defaults
+    default_tier: Literal["auto", "cheap", "premium"] = Field(
+        default="auto",
+        description="Default tier: auto (intelligent selection), cheap (force Gemini Flash), premium (force multi-perspective)"
+    )
+
+    # Premium triggers (error classes that force premium tier)
+    premium_error_classes: list[str] = Field(
+        default_factory=lambda: ["data_loss", "security_breach", "production_outage", "corruption"],
+        description="Error classes that force premium tier regardless of auto-selection"
+    )
+
+    # Quality gates
+    min_cheap_confidence: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence score for cheap tier (fallback to premium if lower)"
+    )
+
+    min_preconditions: int = Field(
+        default=1,
+        ge=0,
+        le=10,
+        description="Minimum number of preconditions required for cheap tier quality gate"
+    )
+
+    # Cost controls (circuit breakers)
+    max_cost_per_day_usd: float = Field(
+        default=50.0,
+        ge=1.0,
+        le=1000.0,
+        description="Maximum daily reflection cost in USD (circuit breaker - alerts when exceeded)"
+    )
+
+    max_premium_percentage: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description="Maximum percentage of reflections using premium tier (alerts if exceeded)"
+    )
+
+    # Feature flags
+    enable_quality_fallback: bool = Field(
+        default=True,
+        description="Enable automatic fallback from cheap to premium if quality gates fail"
+    )
+
+    enable_cost_tracking: bool = Field(
+        default=True,
+        description="Enable detailed cost tracking per tier"
+    )
+
+    @field_validator("default_tier")
+    @classmethod
+    def validate_default_tier(cls, v: str) -> str:
+        """Validate default tier is a valid option."""
+        valid_tiers = {"auto", "cheap", "premium"}
+        if v not in valid_tiers:
+            raise ValueError(f"default_tier must be one of: {', '.join(valid_tiers)}")
+        return v
+
+
 class StripeConfig(BaseSettings):
     """Stripe billing integration configuration."""
 
@@ -514,6 +584,7 @@ class Settings(BaseSettings):
     kyrodb: KyroDBConfig = Field(default_factory=KyroDBConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)  # NEW: Phase 5
     hygiene: HygieneConfig = Field(default_factory=HygieneConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     service: ServiceConfig = Field(default_factory=ServiceConfig)

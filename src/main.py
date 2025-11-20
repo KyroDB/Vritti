@@ -27,7 +27,7 @@ from src.auth import (
 from src.config import get_settings
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.multi_perspective_reflection import MultiPerspectiveReflectionService
+from src.ingestion.tiered_reflection import TieredReflectionService, get_tiered_reflection_service
 from src.gating.service import GatingService
 from src.kyrodb.client import KyroDBError
 from src.kyrodb.router import KyroDBRouter
@@ -94,7 +94,7 @@ limiter = Limiter(key_func=get_customer_id_for_rate_limit)
 # Global service instances (initialized in lifespan)
 kyrodb_router: Optional[KyroDBRouter] = None
 embedding_service: Optional[EmbeddingService] = None
-reflection_service: Optional[MultiPerspectiveReflectionService] = None
+reflection_service: Optional[TieredReflectionService] = None
 ingestion_pipeline: Optional[IngestionPipeline] = None
 search_pipeline: Optional[SearchPipeline] = None
 gating_service: Optional[GatingService] = None
@@ -135,12 +135,12 @@ async def lifespan(app: FastAPI):
         embedding_service.warmup()
         logger.info("✓ Embedding models warmed up")
 
-        # Initialize multi-perspective reflection service (Phase 1 Week 1-2)
+        # Initialize tiered reflection service (Phase 5)
         if settings.llm.has_any_api_key:
-            logger.info("Initializing multi-perspective LLM reflection service...")
-            reflection_service = MultiPerspectiveReflectionService(config=settings.llm)
+            logger.info("Initializing tiered LLM reflection service...")
+            reflection_service = get_tiered_reflection_service(config=settings.llm)
             logger.info(
-                f"✓ Multi-perspective reflection service initialized "
+                f"✓ Tiered reflection service initialized "
                 f"(providers: {settings.llm.enabled_providers})"
             )
         else:
@@ -585,6 +585,7 @@ async def capture_episode(
     customer_id: str = Depends(get_customer_id_from_request),
     db: CustomerDatabase = Depends(get_customer_db),
     generate_reflection: bool = True,
+    tier: Optional[str] = None,  # NEW: Optional tier override (cheap/cached/premium)
 ):
     """
     Capture and store an episode.
@@ -604,6 +605,7 @@ async def capture_episode(
         customer_id: Customer ID from validated API key (injected)
         db: Customer database (for usage tracking)
         generate_reflection: Whether to generate LLM reflection (default: True)
+        tier: Optional tier override (cheap/cached/premium), auto-selects if None
 
     Returns:
         CaptureResponse: Capture result with episode ID and metadata
@@ -635,13 +637,28 @@ async def capture_episode(
     # This prevents customer_id spoofing attacks
     episode_data.customer_id = customer_id
 
+    # NEW: Parse and validate tier override if provided
+    tier_enum = None
+    if tier:
+        try:
+            from src.models.episode import ReflectionTier
+            tier_enum = ReflectionTier(tier.lower())
+            logger.info(f"Tier override requested: {tier_enum.value}")
+        except ValueError:
+            logger.warning(f"Invalid tier requested: {tier}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid tier: {tier}. Must be one of: cheap, cached, premium"
+            )
+
     start_time = time.perf_counter()
 
     try:
-        # Capture episode
+        # Capture episode with optional tier override
         episode = await ingestion_pipeline.capture_episode(
             episode_data=episode_data,
             generate_reflection=generate_reflection and reflection_service is not None,
+            tier_override=tier_enum,  # NEW: Pass tier override
         )
 
         # Calculate latency

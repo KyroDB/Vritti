@@ -22,9 +22,9 @@ from datetime import timezone, datetime
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.multi_perspective_reflection import MultiPerspectiveReflectionService
+from src.ingestion.tiered_reflection import TieredReflectionService, get_tiered_reflection_service
 from src.kyrodb.router import KyroDBRouter
-from src.models.episode import Episode, EpisodeCreate
+from src.models.episode import Episode, EpisodeCreate, ReflectionTier
 from src.utils.identifiers import (
     generate_episode_id,
     hash_environment,
@@ -52,7 +52,7 @@ class IngestionPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        reflection_service: Optional[MultiPerspectiveReflectionService] = None,
+        reflection_service: Optional[TieredReflectionService] = None,
     ):
         """
         Initialize ingestion pipeline.
@@ -60,7 +60,7 @@ class IngestionPipeline:
         Args:
             kyrodb_router: KyroDB router for dual-instance storage
             embedding_service: Multi-modal embedding service
-            reflection_service: Optional multi-perspective LLM reflection service
+            reflection_service: Optional tiered LLM reflection service (Phase 5)
 
         Security:
             - All services initialized with validated configs
@@ -86,6 +86,7 @@ class IngestionPipeline:
         self,
         episode_data: EpisodeCreate,
         generate_reflection: bool = True,
+        tier_override: Optional[ReflectionTier] = None,
     ) -> Episode:
         """
         Capture and store an episode.
@@ -102,6 +103,7 @@ class IngestionPipeline:
         Args:
             episode_data: Episode creation data
             generate_reflection: Whether to generate reflection (async)
+            tier_override: Optional tier override (cheap/cached/premium), auto-selects if None
 
         Returns:
             Episode: Stored episode with ID
@@ -148,7 +150,13 @@ class IngestionPipeline:
 
             # Step 7: Queue async reflection generation (non-blocking)
             if generate_reflection and self.reflection_service:
-                asyncio.create_task(self._generate_and_update_reflection(episode_id, episode_data))
+                asyncio.create_task(
+                    self._generate_and_update_reflection(
+                        episode_id, 
+                        episode_data, 
+                        tier_override
+                    )
+                )
 
             self.total_ingested += 1
             logger.info(
@@ -291,10 +299,10 @@ class IngestionPipeline:
         )
 
     async def _generate_and_update_reflection(
-        self, episode_id: int, episode_data: EpisodeCreate
+        self, episode_id: int, episode_data: EpisodeCreate, tier_override: Optional[ReflectionTier] = None
     ) -> None:
         """
-        Generate multi-perspective reflection and persist to KyroDB.
+        Generate tiered reflection and persist to KyroDB.
 
         Security:
         - Episode data validated before LLM call
@@ -308,6 +316,7 @@ class IngestionPipeline:
         Args:
             episode_id: Episode ID to attach reflection to
             episode_data: Episode data for reflection generation
+            tier_override: Optional tier override for reflection generation
 
         Note:
             This method does not raise exceptions - all errors are logged.
@@ -316,14 +325,17 @@ class IngestionPipeline:
         try:
             import time
 
+            tier_name = tier_override.value if tier_override else "auto-select"
             logger.info(
-                f"Starting multi-perspective reflection generation for episode {episode_id}..."
+                f"Starting tiered reflection generation for episode {episode_id} "
+                f"(tier: {tier_name})..."
             )
             start_time = time.perf_counter()
 
-            # Generate multi-perspective reflection (3 models in parallel)
-            reflection = await self.reflection_service.generate_multi_perspective_reflection(
-                episode_data
+            # Generate reflection using tiered service with optional override
+            reflection = await self.reflection_service.generate_reflection(
+                episode_data,
+                tier=tier_override  # Auto-selects if None
             )
 
             generation_time = time.perf_counter() - start_time
@@ -345,6 +357,7 @@ class IngestionPipeline:
                 if success:
                     logger.info(
                         f"✓ Reflection generated and persisted for episode {episode_id}:\n"
+                        f"  Tier: {reflection.tier}\n"
                         f"  Model: {reflection.llm_model}\n"
                         f"  Consensus: {reflection.consensus.consensus_method if reflection.consensus else 'N/A'}\n"
                         f"  Confidence: {reflection.confidence_score:.2f}\n"
