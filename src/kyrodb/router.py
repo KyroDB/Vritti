@@ -47,6 +47,7 @@ class KyroDBRouter:
     Routes requests to text and image KyroDB instances.
 
     Provides a unified interface for multi-modal episodic memory storage.
+    # Phase 6: Clustering & Memory Hygiene Operations
     """
 
     def __init__(self, config: KyroDBConfig):

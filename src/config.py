@@ -271,6 +271,47 @@ class LLMConfig(BaseSettings):
             logging.info("Migrated legacy api_key to openai_api_key")
 
 
+class ReflectionConfig(BaseSettings):
+    """Reflection generation configuration (Phase 5 - Cost Optimization)."""
+
+    model_config = SettingsConfigDict(env_prefix="REFLECTION_")
+
+    default_tier: Literal["auto", "cheap", "premium"] = Field(default="auto")
+    premium_error_classes: list[str] = Field(
+        default_factory=lambda: ["data_loss", "security_breach", "production_outage", "corruption"]
+    )
+    min_cheap_confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+    min_preconditions: int = Field(default=1, ge=0, le=10)
+    max_cost_per_day_usd: float = Field(default=50.0, ge=1.0, le=1000.0)
+    max_premium_percentage: float = Field(default=0.15, ge=0.0, le=1.0)
+    enable_quality_fallback: bool = Field(default=True)
+    enable_cost_tracking: bool = Field(default=True)
+
+
+class ClusteringConfig(BaseSettings):
+    """Memory clustering and hygiene configuration (Phase 6)."""
+
+    model_config = SettingsConfigDict(env_prefix="CLUSTERING_")
+
+    # HDBSCAN parameters
+    min_cluster_size: int = Field(default=5, ge=3, le=20)
+    min_samples: int = Field(default=3, ge=2, le=10)
+    similarity_threshold: float = Field(default=0.85, ge=0.7, le=0.95)
+
+    # Reclustering
+    recluster_interval_days: int = Field(default=7, ge=1, le=30)
+    recluster_episode_threshold: int = Field(default=100, ge=50, le=500)
+
+    # Decay policy
+    archive_age_days: int = Field(default=180, ge=30, le=365)
+    delete_unused_days: int = Field(default=90, ge=30, le=180)
+
+    # Temporal weighting
+    decay_lambda: float = Field(default=0.0001, ge=0.00001, le=0.001)
+    decay_beta: float = Field(default=0.8, ge=0.5, le=1.2)
+    min_temporal_weight: float = Field(default=0.05, ge=0.01, le=0.2)
+
+
 class HygieneConfig(BaseSettings):
     """Hygiene policy configuration for decay and promotion."""
 
@@ -457,76 +498,6 @@ class LoggingConfig(BaseSettings):
     )
 
 
-
-
-class ReflectionConfig(BaseSettings):
-    """Reflection generation configuration (Phase 5 - Cost Optimization)."""
-
-    model_config = SettingsConfigDict(env_prefix="REFLECTION_")
-
-    # Tier defaults
-    default_tier: Literal["auto", "cheap", "premium"] = Field(
-        default="auto",
-        description="Default tier: auto (intelligent selection), cheap (force Gemini Flash), premium (force multi-perspective)"
-    )
-
-    # Premium triggers (error classes that force premium tier)
-    premium_error_classes: list[str] = Field(
-        default_factory=lambda: ["data_loss", "security_breach", "production_outage", "corruption"],
-        description="Error classes that force premium tier regardless of auto-selection"
-    )
-
-    # Quality gates
-    min_cheap_confidence: float = Field(
-        default=0.6,
-        ge=0.0,
-        le=1.0,
-        description="Minimum confidence score for cheap tier (fallback to premium if lower)"
-    )
-
-    min_preconditions: int = Field(
-        default=1,
-        ge=0,
-        le=10,
-        description="Minimum number of preconditions required for cheap tier quality gate"
-    )
-
-    # Cost controls (circuit breakers)
-    max_cost_per_day_usd: float = Field(
-        default=50.0,
-        ge=1.0,
-        le=1000.0,
-        description="Maximum daily reflection cost in USD (circuit breaker - alerts when exceeded)"
-    )
-
-    max_premium_percentage: float = Field(
-        default=0.15,
-        ge=0.0,
-        le=1.0,
-        description="Maximum percentage of reflections using premium tier (alerts if exceeded)"
-    )
-
-    # Feature flags
-    enable_quality_fallback: bool = Field(
-        default=True,
-        description="Enable automatic fallback from cheap to premium if quality gates fail"
-    )
-
-    enable_cost_tracking: bool = Field(
-        default=True,
-        description="Enable detailed cost tracking per tier"
-    )
-
-    @field_validator("default_tier")
-    @classmethod
-    def validate_default_tier(cls, v: str) -> str:
-        """Validate default tier is a valid option."""
-        valid_tiers = {"auto", "cheap", "premium"}
-        if v not in valid_tiers:
-            raise ValueError(f"default_tier must be one of: {', '.join(valid_tiers)}")
-        return v
-
-
 class StripeConfig(BaseSettings):
     """Stripe billing integration configuration."""
 
@@ -584,7 +555,8 @@ class Settings(BaseSettings):
     kyrodb: KyroDBConfig = Field(default_factory=KyroDBConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
-    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)  # NEW: Phase 5
+    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)  # Phase 5
+    clustering: ClusteringConfig = Field(default_factory=ClusteringConfig)  # Phase 6
     hygiene: HygieneConfig = Field(default_factory=HygieneConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     service: ServiceConfig = Field(default_factory=ServiceConfig)

@@ -41,6 +41,9 @@ from src.ingestion.multi_perspective_reflection import (
     MultiPerspectiveReflectionService,
     PromptInjectionDefense
 )
+from src.hygiene.clustering import EpisodeClusterer
+from src.hygiene.templates import TemplateGenerator
+from src.models.clustering import ClusterTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -339,18 +342,55 @@ class TieredReflectionService:
         "corruption",
     }
     
-    def __init__(self, config: LLMConfig):
+    def __init__(
+        self,
+        config: LLMConfig,
+        kyrodb_router: Optional[object] = None,  # KyroDBRouter
+        embedding_service: Optional[object] = None  # EmbeddingService
+    ):
         """
         Initialize tiered reflection service.
         
         Args:
             config: LLM configuration
+            kyrodb_router: Optional KyroDB router (for Phase 6 clustering)
+            embedding_service: Optional embedding service (for cluster matching)
         """
         self.config = config
         
         # Initialize services
         self.cheap_service = CheapReflectionService(config)
         self.premium_service = MultiPerspectiveReflectionService(config)
+        
+        # Phase 6: Clustering services (optional)
+        self.clusterer: Optional[EpisodeClusterer] = None
+        self.template_generator: Optional[TemplateGenerator] = None
+        self.embedding_service = embedding_service
+        
+        # Thread-local storage for cached cluster templates (prevents race conditions)
+        self._cached_template_local = threading.local()
+        
+        if kyrodb_router is not None:
+            try:
+                from src.config import settings
+                clustering_config = settings.clustering if hasattr(settings, 'clustering') else None
+                
+                if clustering_config:
+                    self.clusterer = EpisodeClusterer(
+                        kyrodb_router=kyrodb_router,
+                        min_cluster_size=clustering_config.min_cluster_size,
+                        min_samples=clustering_config.min_samples,
+                        metric='cosine'
+                    )
+                    self.template_generator = TemplateGenerator(
+                        kyrodb_router=kyrodb_router,
+                        reflection_service=self
+                    )
+                    logger.info("Clustering services initialized for cached tier")
+                else:
+                    logger.info("Clustering config not found, cached tier disabled")
+            except Exception as e:
+                logger.warning(f"Failed to initialize clustering services: {e}")
         
         # Cost tracking (thread-safe)
         self._stats_lock = threading.Lock()
@@ -390,9 +430,9 @@ class TieredReflectionService:
         """
         # Step 1: Select tier if not specified
         if tier is None:
-            tier = self._select_tier(episode)
+            tier = await self._select_tier(episode)
         
-        logger.info(f"Generating reflection with {tier.value} tier for episode")
+        logger.info(f"Generating reflection with {tier.value} tier")
         
         # Step 2: Generate based on tier
         try:
@@ -424,10 +464,41 @@ class TieredReflectionService:
             
             elif tier == ReflectionTier.CACHED:
                 # Phase 6: Cluster-based cached reflections
-                logger.warning("CACHED tier not yet implemented (Phase 6), falling back to CHEAP")
-                reflection = await self.cheap_service.generate_reflection(episode)
-                reflection.tier = ReflectionTier.CHEAP.value
-                tier = ReflectionTier.CHEAP
+                # Use thread-local storage to prevent race conditions
+                if self.template_generator and hasattr(self._cached_template_local, 'cluster_template'):
+                    cluster_template = self._cached_template_local.cluster_template
+                    
+                    # Generate episode-specific ID (temporary until persistence)
+                    # TODO: Replace with actual episode_id after database persistence
+                    import uuid
+                    temp_episode_id = abs(hash(str(uuid.uuid4()))) % (10 ** 8)
+                    
+                    reflection = await self.template_generator.get_cached_reflection(
+                        cluster_template=cluster_template,
+                        episode_id=temp_episode_id
+                    )
+                    
+                    # Clean up thread-local cache after use
+                    delattr(self._cached_template_local, 'cluster_template')
+                    
+                    # Quality validation for cached reflection
+                    if reflection.confidence_score < 0.6:
+                        logger.warning(
+                            f"Cached reflection quality too low (confidence={reflection.confidence_score:.2f}), "
+                            f"falling back to CHEAP tier"
+                        )
+                        reflection = await self.cheap_service.generate_reflection(episode)
+                        tier = ReflectionTier.CHEAP
+                    else:
+                        logger.info(
+                            f"Generated CACHED reflection from cluster {cluster_template.cluster_id} "
+                            f"(cost: $0, confidence: {reflection.confidence_score:.2f})"
+                        )
+                else:
+                    logger.warning("CACHED tier selected but no template available, falling back to CHEAP")
+                    reflection = await self.cheap_service.generate_reflection(episode)
+                    reflection.tier = ReflectionTier.CHEAP.value
+                    tier = ReflectionTier.CHEAP
             
             else:
                 # Unknown tier - fallback to cheap
@@ -449,14 +520,14 @@ class TieredReflectionService:
             # Last resort fallback
             return self.cheap_service._create_fallback_reflection(episode)
     
-    def _select_tier(self, episode: EpisodeCreate) -> ReflectionTier:
+    async def _select_tier(self, episode: EpisodeCreate) -> ReflectionTier:
         """
         Auto-select reflection tier based on episode characteristics.
         
-        Premium triggers (10% of episodes):
-        - Critical severity (data_loss, security_breach, production_outage)
-        - Novel error signature (not seen before)
-        - Retry after low confidence
+        Priority:
+        1. CACHED: Check if episode matches existing cluster (Phase 6)
+        2. PREMIUM: Critical errors, novel signatures
+        3. CHEAP: Everything else (default)
         
         Args:
             episode: Episode data
@@ -464,6 +535,31 @@ class TieredReflectionService:
         Returns:
             Selected tier
         """
+        # Phase 6: Check 0 - Cluster match for CACHED tier
+        if self.clusterer and self.embedding_service:
+            try:
+                # Get episode embedding
+                text_content = f"{episode.goal}\n\n{episode.error_trace}"
+                episode_embedding = self.embedding_service.embed_text(text_content)
+                
+                #Check for cluster match
+                cluster_template = await self.clusterer.find_matching_cluster(
+                    episode_embedding=episode_embedding,
+                    customer_id=episode.customer_id,
+                    similarity_threshold=0.85
+                )
+                
+                if cluster_template:
+                    logger.info(
+                        f"Selected CACHED tier (cluster {cluster_template.cluster_id}, "
+                        f"similarity: {cluster_template.avg_similarity:.2f})"
+                    )
+                    # Store template in thread-local storage (prevents race conditions)
+                    self._cached_template_local.cluster_template = cluster_template
+                    return ReflectionTier.CACHED
+            except Exception as e:
+                logger.warning(f"Cluster matching failed: {e}, falling back to normal tier selection")
+        
         # Check 1: Critical error class
         if episode.error_class.value in self.PREMIUM_ERROR_CLASSES:
             logger.info(f"Selected PREMIUM tier (critical error: {episode.error_class.value})")
@@ -581,29 +677,62 @@ _tiered_service: Optional[TieredReflectionService] = None
 _tiered_service_lock = threading.Lock()
 
 
-def get_tiered_reflection_service(config: Optional[LLMConfig] = None) -> TieredReflectionService:
+def get_tiered_reflection_service(
+    config: Optional[LLMConfig] = None,
+    kyrodb_router: Optional[object] = None,
+    embedding_service: Optional[object] = None
+) -> TieredReflectionService:
     """
-    Get singleton tiered reflection service (thread-safe).
+    Get global tiered reflection service (singleton).
+    
+    IMPORTANT: Clustering must be configured on first call. Parameters are ignored
+    on subsequent calls to maintain singleton integrity.
     
     Args:
-        config: LLM configuration (uses settings if None)
+        config: LLM configuration (defaults to settings.llm)
+        kyrodb_router: Optional KyroDB router for Phase 6 clustering (first call only)
+        embedding_service: Optional embedding service for cluster matching (first call only)
     
     Returns:
-        TieredReflectionService instance
+        TieredReflectionService: Singleton instance
+    
+    Thread Safety:
+        Uses double-check locking for thread-safe initialization.
     """
     global _tiered_service
     
-    # Double-check locking pattern for thread safety
-    if _tiered_service is None:
-        with _tiered_service_lock:
-            # Double-check inside lock
-            if _tiered_service is None:
-                if config is None:
-                    from src.config import get_settings
-                    settings = get_settings()
-                    config = settings.llm
-                
-                _tiered_service = TieredReflectionService(config)
-                logger.info("Created singleton tiered reflection service")
+    # Fast path: service already initialized
+    if _tiered_service is not None:
+        # Validate parameters match if provided (warn about ignored parameters)
+        if kyrodb_router is not None and _tiered_service.clusterer is None:
+            logger.warning(
+                "Singleton already initialized without clustering support. "
+                "kyrodb_router parameter ignored. Clustering features unavailable."
+            )
+        if embedding_service is not None and _tiered_service.embedding_service is None:
+            logger.warning(
+                "Singleton already initialized without embedding service. "
+                "embedding_service parameter ignored."
+            )
+        return _tiered_service
     
-    return _tiered_service
+    # Slow path: initialize service (thread-safe)
+    with _tiered_service_lock:
+        # Double-check after acquiring lock
+        if _tiered_service is not None:
+            return _tiered_service
+        
+        # Load config if not provided
+        if config is None:
+            from src.config import settings
+            config = settings.llm
+        
+        # Create service with Phase 6 clustering support
+        _tiered_service = TieredReflectionService(
+            config=config,
+            kyrodb_router=kyrodb_router,
+            embedding_service=embedding_service
+        )
+        
+        logger.info("Tiered reflection service singleton initialized")
+        return _tiered_service
