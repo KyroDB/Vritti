@@ -40,6 +40,14 @@ class ErrorClass(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ReflectionTier(str, Enum):
+    """Reflection generation tier for cost/quality tradeoffs."""
+    
+    CHEAP = "cheap"
+    CACHED = "cached"
+    PREMIUM = "premium"
+
+
 class LLMPerspective(BaseModel):
     """
     Single LLM's perspective on an episode.
@@ -315,6 +323,12 @@ class Reflection(BaseModel):
         default=0.0,
         ge=0.0,
         description="Time taken to generate reflection"
+    )
+    
+    # Tier tracking (Phase 5)
+    tier: Optional[ReflectionTier] = Field(
+        default=None,
+        description="Reflection tier used (cheap/cached/premium)"
     )
 
     @field_validator("preconditions", "environment_factors", "affected_components")
