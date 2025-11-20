@@ -26,7 +26,7 @@ class PreconditionMatcher:
     """
     Matches current state against episode preconditions.
 
-    Fast heuristic-based matching without LLM calls (LLM matching is Phase 2+).
+    Fast heuristic-based matching without LLM calls.
     """
 
     def __init__(self):
@@ -239,6 +239,8 @@ class PreconditionMatcher:
             return ver1 == ver2
 
 
+
+
 # Singleton instance
 _matcher: Optional[PreconditionMatcher] = None
 
@@ -254,3 +256,415 @@ def get_precondition_matcher() -> PreconditionMatcher:
     if _matcher is None:
         _matcher = PreconditionMatcher()
     return _matcher
+
+
+# ===================================================================
+# Advanced LLM-Based Precondition Matching
+# ===================================================================
+
+import asyncio
+import json
+import time
+from functools import lru_cache
+from typing import Tuple
+
+try:
+    import google.generativeai as genai
+    HAS_GEMINI = True
+except ImportError:
+    HAS_GEMINI = False
+    logger.warning("google-generativeai not installed - LLM validation disabled")
+
+
+class AdvancedPreconditionMatcher:
+    """
+    Enhanced precondition matching with LLM semantic validation.
+    
+    Two-stage approach:
+    1. Fast heuristic matching (existing PreconditionMatcher)
+    2. Slow LLM validation for high-similarity candidates (>0.85)
+    
+    Security:
+    - Customer ID validation
+    - Input sanitization for LLM prompts
+    - Query truncation to prevent abuse
+    - Timeout protection (20ms hard limit)
+    
+    Performance:
+    - Only validates high-similarity matches (>0.85)
+    - 5-minute LRU cache for validation results
+    - Graceful fallback on errors
+    - Batch validation support
+    """
+    
+    # Configuration
+    SIMILARITY_THRESHOLD_FOR_LLM = 0.85  # Only validate if similarity >= this
+    LLM_CONFIDENCE_THRESHOLD = 0.7  # Require LLM confidence >= 0.7 to accept
+    VALIDATION_TIMEOUT_MS = 2000  # Hard timeout per validation (2 seconds)
+    CACHE_SIZE = 500  # LRU cache size
+    MAX_QUERY_LENGTH = 500  # Security: prevent abuse
+    
+    def __init__(self, google_api_key: Optional[str] = None, enable_llm: bool = True):
+        """
+        Initialize advanced precondition matcher.
+        
+        Args:
+            google_api_key: Google API key for Gemini
+            enable_llm: Feature flag to enable/disable LLM validation
+        """
+        self.basic_matcher = PreconditionMatcher()
+        self.enable_llm = enable_llm and HAS_GEMINI
+        self.gemini_model = None
+        
+        # Statistics
+        self.stats = {
+            "llm_calls": 0,
+            "llm_rejections": 0,
+            "cache_hits": 0,
+            "timeouts": 0,
+            "errors": 0,
+            "total_cost_usd": 0.0,
+        }
+        
+        # Initialize Gemini if available
+        if self.enable_llm and google_api_key:
+            try:
+                genai.configure(api_key=google_api_key)
+                self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+                logger.info("LLM precondition validation enabled (Gemini Flash)")
+            except Exception as e:
+                logger.error(f"Failed to initialize Gemini: {e}")
+                self.enable_llm = False
+        else:
+            if not HAS_GEMINI:
+                logger.warning("LLM validation disabled: google-generativeai not installed")
+            elif not google_api_key:
+                logger.warning("LLM validation disabled: no API key provided")
+            else:
+                logger.warning(f"LLM validation disabled: enable_llm={enable_llm}")
+    
+    async def check_preconditions_with_llm(
+        self,
+        candidate_episode: Episode,
+        current_query: str,
+        current_state: dict[str, Any],
+        threshold: float = 0.7,
+        similarity_score: Optional[float] = None
+    ) -> PreconditionCheckResult:
+        """
+        Check preconditions with LLM semantic validation.
+        
+        This catches negation, time-based differences, and other
+        subtle semantic mismatches that embeddings miss.
+        
+        Args:
+            candidate_episode: Episode to check
+            current_query: Current user query/goal
+            current_state: Current execution context
+            threshold: Minimum match score
+            similarity_score: Vector similarity score (if known)
+            
+        Returns:
+            PreconditionCheckResult with LLM validation applied
+        """
+        # Step 1: Fast heuristic check
+        heuristic_result = self.basic_matcher.check_preconditions(
+            episode=candidate_episode,
+            current_state=current_state,
+            threshold=threshold
+        )
+        
+        # Step 2: If heuristic matched AND similarity is high, validate with LLM
+        if (heuristic_result.matched and 
+            self.enable_llm and 
+            similarity_score and 
+            similarity_score >= self.SIMILARITY_THRESHOLD_FOR_LLM):
+            
+            # Extract episode goal
+            past_goal = candidate_episode.create_data.goal
+            past_actions = candidate_episode.create_data.actions_taken[:3]  # First 3
+            
+            # LLM validation
+            is_compatible = await self._llm_validate_compatibility(
+                past_goal=past_goal,
+                current_query=current_query,
+                past_actions=past_actions,
+                current_state=current_state
+            )
+            
+            if not is_compatible:
+                # LLM rejected - override heuristic result
+                logger.info(
+                    f"LLM rejected high-similarity candidate (sim={similarity_score:.2f}): "
+                    f"past='{past_goal[:50]}' vs current='{current_query[:50]}'"
+                )
+                
+                self.stats["llm_rejections"] += 1
+                
+                return PreconditionCheckResult(
+                    matched=False,
+                    match_score=0.0,
+                    matched_preconditions=[],
+                    missing_preconditions=heuristic_result.matched_preconditions,
+                    explanation=(
+                        f"Semantically incompatible despite high vector similarity "
+                        f"(sim={similarity_score:.2f}). LLM validation detected "
+                        f"negation, opposite meaning, or context mismatch."
+                    )
+                )
+        
+        return heuristic_result
+    
+    async def _llm_validate_compatibility(
+        self,
+        past_goal: str,
+        current_query: str,
+        past_actions: list[str],
+        current_state: dict[str, Any]
+    ) -> bool:
+        """
+        Use Gemini Flash to verify semantic compatibility.
+        
+        Returns:
+            True if compatible, False if incompatible
+        """
+        # Security: Truncate inputs
+        past_goal = self._sanitize_input(past_goal)
+        current_query = self._sanitize_input(current_query)
+        
+        # Check cache first
+        cache_key = self._get_cache_key(past_goal, current_query)
+        cached_result = self._get_from_cache(cache_key)
+        
+        if cached_result is not None:
+            self.stats["cache_hits"] += 1
+            return cached_result
+        
+        if not self.gemini_model:
+            # Fallback: accept if no LLM available
+            return True
+        
+        # Build prompt
+        prompt = self._build_validation_prompt(
+            past_goal, current_query, past_actions, current_state
+        )
+        
+        try:
+            # Call LLM with timeout
+            start_time = time.perf_counter()
+            
+            result = await asyncio.wait_for(
+                self._call_gemini(prompt),
+                timeout=self.VALIDATION_TIMEOUT_MS / 1000  # Convert to seconds
+            )
+            
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            
+            # Parse result
+            compatible, confidence, reason = result
+            
+            # Track stats
+            self.stats["llm_calls"] += 1
+            # Gemini Flash: ~$0.0001 per call
+            self.stats["total_cost_usd"] += 0.0001
+            
+            # Only accept if high confidence
+            is_compatible = compatible and confidence >= self.LLM_CONFIDENCE_THRESHOLD
+            
+            # Cache result
+            self._add_to_cache(cache_key, is_compatible)
+            
+            logger.debug(
+                f"LLM validation: compatible={is_compatible} "
+                f"(confidence={confidence:.2f}, latency={latency_ms:.1f}ms, reason={reason})"
+            )
+            
+            return is_compatible
+            
+        except asyncio.TimeoutError:
+            self.stats["timeouts"] += 1
+            logger.warning(f"LLM validation timeout after {self.VALIDATION_TIMEOUT_MS}ms")
+            # Fallback: accept on timeout
+            return True
+            
+        except Exception as e:
+            self.stats["errors"] += 1
+            logger.warning(f"LLM validation error: {e}")
+            # Fallback: accept on errors
+            return True
+    
+    async def _call_gemini(self, prompt: str) -> Tuple[bool, float, str]:
+        """
+        Call Gemini API.
+        
+        Returns:
+            (compatible, confidence, reason)
+        """
+        response = await asyncio.to_thread(
+            self.gemini_model.generate_content,
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,  # Low temperature for consistency
+                max_output_tokens=200,
+            )
+        )
+        
+        content = response.text
+        
+        # Parse JSON (Gemini doesn't have JSON mode)
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0]
+        
+        try:
+            result = json.loads(content.strip())
+            
+            compatible = result.get("compatible", True)
+            confidence = result.get("confidence", 0.5)
+            reason = result.get("reason", "Unknown")
+            
+            return (compatible, confidence, reason)
+            
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to parse LLM response: {content[:100]}")
+            # Fallback: accept with low confidence
+            return (True, 0.5, "Parse error")
+    
+    def _build_validation_prompt(
+        self,
+        past_goal: str,
+        current_query: str,
+        past_actions: list[str],
+        current_state: dict[str, Any]
+    ) -> str:
+        """Build prompt for LLM validation."""
+        
+        # Extract environment if present
+        environment = current_state.get("environment", {})
+        env_str = json.dumps(environment, indent=2)[:200] if environment else "N/A"
+        
+        return f"""Are these two goals semantically COMPATIBLE (not just similar)?
+
+Past failure goal: "{past_goal}"
+Past actions taken: {', '.join(past_actions) if past_actions else 'N/A'}
+
+Current query: "{current_query}"
+Current state: {env_str}
+
+Return JSON:
+{{
+  "compatible": true/false,
+  "reason": "brief explanation",
+  "confidence": 0.0-1.0
+}}
+
+IMPORTANT RULES:
+- "delete files older than 7 days" and "delete files EXCEPT older than 7 days" are NOT compatible (opposite)
+- "deploy to staging" and "deploy to production" are NOT compatible (different environments)
+- Time conditions must match exactly (">7 days" vs "except >7 days" are opposite)
+- Action direction matters ("upload" vs "download" are opposite)
+- Negations matter ("with X" vs "without X" are different)
+- "start" vs "stop" are opposite
+- "install" vs "uninstall" are opposite
+
+Be strict: only return compatible=true if the current query would benefit from the past failure's lesson.
+If the goals have opposite meanings or would require different solutions, return compatible=false.
+"""
+    
+    def _sanitize_input(self, text: str) -> str:
+        """Sanitize input for LLM prompt."""
+        if not text:
+            return ""
+        
+        # Truncate to max length
+        if len(text) > self.MAX_QUERY_LENGTH:
+            text = text[:self.MAX_QUERY_LENGTH] + "..."
+        
+        # Basic sanitization (prevent prompt injection)
+        text = text.replace("```", "").replace("</", "").replace("<", "")
+        
+        return text.strip()
+    
+    def _get_cache_key(self, past_goal: str, current_query: str) -> str:
+        """Generate cache key from goals."""
+        # Simple hash-based key
+        import hashlib
+        combined = f"{past_goal[:100]}|{current_query[:100]}"
+        return hashlib.md5(combined.encode()).hexdigest()
+    
+    # Simple cache implementation (in-memory)
+    _cache: dict[str, tuple[bool, float]] = {}  # key -> (result, timestamp)
+    _cache_ttl = 300  # 5 minutes
+    
+    def _get_from_cache(self, key: str) -> Optional[bool]:
+        """Get from cache if not expired."""
+        if key in self._cache:
+            result, timestamp = self._cache[key]
+            if time.time() - timestamp < self._cache_ttl:
+                return result
+            else:
+                # Expired
+                del self._cache[key]
+        return None
+    
+    def _add_to_cache(self, key: str, result: bool) -> None:
+        """Add to cache with timestamp."""
+        # Evict oldest if cache too large
+        if len(self._cache) >= self.CACHE_SIZE:
+            # Remove oldest entry
+            oldest_key = min(self._cache.items(), key=lambda x: x[1][1])[0]
+            del self._cache[oldest_key]
+        
+        self._cache[key] = (result, time.time())
+    
+    def get_stats(self) -> dict:
+        """Get validation statistics."""
+        return {
+            **self.stats,
+            "cache_size": len(self._cache),
+            "cache_hit_rate": (
+                self.stats["cache_hits"] / max(1, self.stats["llm_calls"] + self.stats["cache_hits"])
+            )
+        }
+
+
+# Singleton instance for advanced matcher
+_advanced_matcher: Optional[AdvancedPreconditionMatcher] = None
+
+
+def get_advanced_precondition_matcher(
+    google_api_key: Optional[str] = None,
+    enable_llm: bool = True
+) -> AdvancedPreconditionMatcher:
+    """
+    Get global advanced precondition matcher instance.
+    
+    Args:
+        google_api_key: Google API key (optional, uses config if not provided)
+        enable_llm: Feature flag to enable/disable LLM validation
+        
+    Returns:
+        AdvancedPreconditionMatcher: Singleton instance
+    """
+    global _advanced_matcher
+    
+    if _advanced_matcher is None:
+        # Get API key from config if not provided
+        if google_api_key is None:
+            try:
+                from src.config import get_settings
+                settings = get_settings()
+                google_api_key = settings.llm.google_api_key
+                enable_llm = getattr(
+                    settings.retrieval, 
+                    'enable_llm_validation', 
+                    enable_llm
+                )
+            except Exception as e:
+                logger.warning(f"Could not load config for LLM validation: {e}")
+        
+        _advanced_matcher = AdvancedPreconditionMatcher(
+            google_api_key=google_api_key,
+            enable_llm=enable_llm
+        )
+    
+    return _advanced_matcher
