@@ -1,5 +1,5 @@
 # Kubernetes Service for EpisodicMemory API
-# Phase 3 Week 10 - Load balancer configuration
+# Load balancer configuration
 
 apiVersion: v1
 kind: Service

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deployment script for EpisodicMemory
-# Phase 3 Week 10 - Manual deployment automation
+# Manual deployment automation
 #
 # Usage:
 #   ./scripts/deploy.sh [OPTIONS]

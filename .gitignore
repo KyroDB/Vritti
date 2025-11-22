@@ -60,7 +60,7 @@ data/
 
 # Model cache (large files - sentence-transformers, CLIP)
 .cache/
-models/
+/models/
 *.pt
 *.pth
 *.safetensors

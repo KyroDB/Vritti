@@ -1,0 +1,231 @@
+"""
+Customer/tenant data models for multi-tenancy support.
+
+Each customer represents an organization/workspace using the episodic memory service.
+Customer IDs are used for namespace isolation in KyroDB and quota enforcement.
+"""
+
+import re
+from datetime import timezone, datetime
+from enum import Enum
+
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional
+
+
+class SubscriptionTier(str, Enum):
+    """Subscription tier for billing and quota management."""
+
+    FREE = "free"  # 1K credits/month
+    STARTER = "starter"  # 10K credits/month
+    PRO = "pro"  # 100K credits/month
+    ENTERPRISE = "enterprise"  # Unlimited
+
+
+class CustomerStatus(str, Enum):
+    """Customer account status."""
+
+    ACTIVE = "active"
+    SUSPENDED = "suspended"  # Payment failed or abuse
+    DELETED = "deleted"  # Soft delete - data retained for 30 days
+
+
+class Customer(BaseModel):
+    """
+    Customer (tenant) in multi-tenant system.
+
+    Each customer has isolated data namespace and usage quotas.
+    """
+
+    # Identity
+    customer_id: str = Field(
+        ...,
+        min_length=3,
+        max_length=50,
+        description="Unique customer identifier (slug format: lowercase, alphanumeric, hyphens)",
+    )
+    organization_name: str = Field(..., min_length=1, max_length=200)
+    email: str = Field(..., description="Primary contact email")
+
+    # Subscription
+    subscription_tier: SubscriptionTier = Field(default=SubscriptionTier.FREE)
+    status: CustomerStatus = Field(default=CustomerStatus.ACTIVE)
+
+    # Quotas
+    monthly_credit_limit: int = Field(default=1000, ge=0, description="Credit quota per month")
+    credits_used_current_month: int = Field(default=0, ge=0)
+
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_api_call_at: Optional[datetime] = Field(default=None)
+
+    # Stripe integration
+    stripe_customer_id: Optional[str] = Field(
+        default=None, description="Stripe customer ID (cus_xxx)"
+    )
+    stripe_subscription_id: Optional[str] = Field(
+        default=None, description="Stripe subscription ID (sub_xxx)"
+    )
+    stripe_payment_method_id: Optional[str] = Field(
+        default=None, description="Stripe payment method ID (pm_xxx)"
+    )
+
+    # Billing cycle tracking
+    billing_cycle_start: Optional[datetime] = Field(
+        default=None, description="Current billing period start"
+    )
+    billing_cycle_end: Optional[datetime] = Field(
+        default=None, description="Current billing period end"
+    )
+    next_invoice_date: Optional[datetime] = Field(
+        default=None, description="Next invoice generation date"
+    )
+
+    # Payment status
+    payment_failed: bool = Field(default=False, description="True if last payment attempt failed")
+    payment_failed_at: Optional[datetime] = Field(default=None)
+
+    # Trial period
+    trial_end_date: Optional[datetime] = Field(
+        default=None, description="End of trial period if applicable"
+    )
+
+    @field_validator("customer_id")
+    @classmethod
+    def validate_customer_id_format(cls, v: str) -> str:
+        """
+        Validate customer_id is slug format.
+
+        Must be lowercase, alphanumeric, hyphens only (safe for namespaces).
+        """
+        if not re.match(r"^[a-z0-9-]+$", v):
+            raise ValueError("customer_id must be lowercase alphanumeric with hyphens only")
+        if v.startswith("-") or v.endswith("-"):
+            raise ValueError("customer_id cannot start or end with hyphen")
+        if "--" in v:
+            raise ValueError("customer_id cannot contain consecutive hyphens")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, v: str) -> str:
+        """Basic email validation."""
+        if "@" not in v or "." not in v.split("@")[-1]:
+            raise ValueError("Invalid email format")
+        return v.lower()
+
+    def is_quota_exceeded(self) -> bool:
+        """Check if customer has exceeded monthly credit quota."""
+        return self.credits_used_current_month >= self.monthly_credit_limit
+
+    def can_use_credits(self, credits: int) -> bool:
+        """Check if customer can use specified credits without exceeding quota."""
+        return (
+            self.status == CustomerStatus.ACTIVE
+            and self.credits_used_current_month + credits <= self.monthly_credit_limit
+        )
+
+    def increment_usage(self, credits: int) -> None:
+        """Increment credits used for current month."""
+        self.credits_used_current_month += credits
+        self.last_api_call_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
+
+    def reset_monthly_usage(self) -> None:
+        """Reset monthly credit usage (called on billing cycle)."""
+        self.credits_used_current_month = 0
+        self.updated_at = datetime.now(timezone.utc)
+
+    def is_in_trial(self) -> bool:
+        """Check if customer is currently in trial period."""
+        if not self.trial_end_date:
+            return False
+        return datetime.now(timezone.utc) < self.trial_end_date
+
+    def has_valid_payment_method(self) -> bool:
+        """Check if customer has a valid payment method on file."""
+        return self.stripe_payment_method_id is not None and not self.payment_failed
+
+    def should_suspend(self) -> bool:
+        """Check if customer should be suspended due to payment failure or quota abuse."""
+        if self.payment_failed:
+            return True
+        if self.credits_used_current_month > self.monthly_credit_limit * 1.2:
+            return True
+        return False
+
+
+class CustomerCreate(BaseModel):
+    """Schema for creating a new customer."""
+
+    customer_id: str = Field(
+        ...,
+        min_length=3,
+        max_length=50,
+        description="Desired customer ID (must be unique)",
+    )
+    organization_name: str = Field(..., min_length=1, max_length=200)
+    email: str = Field(..., description="Primary contact email")
+    subscription_tier: SubscriptionTier = Field(default=SubscriptionTier.FREE)
+
+    @field_validator("customer_id")
+    @classmethod
+    def validate_customer_id_format(cls, v: str) -> str:
+        """Validate customer_id is slug format."""
+        if not re.match(r"^[a-z0-9-]+$", v):
+            raise ValueError("customer_id must be lowercase alphanumeric with hyphens only")
+        if v.startswith("-") or v.endswith("-"):
+            raise ValueError("customer_id cannot start or end with hyphen")
+        if "--" in v:
+            raise ValueError("customer_id cannot contain consecutive hyphens")
+        return v
+
+
+class CustomerUpdate(BaseModel):
+    """Schema for updating customer details."""
+
+    organization_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    email: Optional[str] = Field(default=None)
+    subscription_tier: Optional[SubscriptionTier] = Field(default=None)
+    status: Optional[CustomerStatus] = Field(default=None)
+    monthly_credit_limit: Optional[int] = Field(default=None, ge=0)
+
+
+class APIKey(BaseModel):
+    """
+    API key for customer authentication.
+
+    API keys are hashed before storage (bcrypt).
+    """
+
+    key_id: str = Field(..., description="Unique key identifier (UUID)")
+    customer_id: str = Field(..., description="Owner customer ID")
+    key_hash: str = Field(..., description="Bcrypt hash of API key")
+    key_prefix: str = Field(
+        ..., min_length=8, max_length=8, description="First 8 chars for display"
+    )
+    name: Optional[str] = Field(default=None, description="User-assigned key name")
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_used_at: Optional[datetime] = Field(default=None)
+    expires_at: Optional[datetime] = Field(default=None)
+    is_active: bool = Field(default=True)
+
+    def is_valid(self) -> bool:
+        """Check if API key is valid (active and not expired)."""
+        if not self.is_active:
+            return False
+        if self.expires_at and datetime.now(timezone.utc) > self.expires_at:
+            return False
+        return True
+
+
+class APIKeyCreate(BaseModel):
+    """Schema for creating new API key."""
+
+    customer_id: str
+    name: Optional[str] = Field(default=None, max_length=100)
+    expires_in_days: Optional[int] = Field(
+        default=None, ge=1, le=365, description="Key expiration (1-365 days)"
+    )
