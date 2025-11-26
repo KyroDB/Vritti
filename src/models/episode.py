@@ -213,10 +213,18 @@ class ReflectionConsensus(BaseModel):
     def validate_consensus_method(cls, v: str) -> str:
         """Security: Only allow known consensus methods."""
         allowed_methods = {
+            # Legacy string-equality methods
             "unanimous",
             "majority_vote",
             "weighted_average",
-            "fallback_heuristic"
+            "fallback_heuristic",
+            # Semantic similarity methods 
+            "single_model",
+            "semantic_unanimous",
+            "weighted_semantic_vote",
+            "highest_confidence_fallback",
+            "semantic_majority",
+            "weighted_semantic_majority",
         }
         if v not in allowed_methods:
             raise ValueError(f"Invalid consensus method: {v}")

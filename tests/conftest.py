@@ -57,8 +57,10 @@ def test_settings() -> Settings:
             device="cpu",  # Force CPU for tests
         ),
         llm=LLMConfig(
-            api_key="sk-test-key-12345",
-            openai_model_name="gpt-4",
+            openrouter_api_key="sk-test-key-12345",
+            consensus_model_1="test-model-1",
+            consensus_model_2="test-model-2",
+            cheap_model="test-cheap-model",
             temperature=0.7,
             max_tokens=1000,
         ),

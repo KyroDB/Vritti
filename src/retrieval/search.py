@@ -74,7 +74,7 @@ class SearchPipeline:
         if settings.search.enable_llm_validation and self.advanced_precondition_matcher is None:
             try:
                 self.advanced_precondition_matcher = get_advanced_precondition_matcher(
-                    google_api_key=settings.llm.google_api_key,
+                    openrouter_api_key=settings.llm.openrouter_api_key,
                     enable_llm=True
                 )
                 logger.info("LLM-based semantic validation enabled for search pipeline")

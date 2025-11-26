@@ -2,6 +2,7 @@
 Integration tests for Phase 4: Advanced Retrieval & Preconditions.
 
 Tests end-to-end search pipeline integration with LLM semantic validation.
+Uses OpenRouter API for LLM access.
 """
 
 import pytest
@@ -12,18 +13,6 @@ from src.retrieval.search import SearchPipeline
 from src.retrieval.preconditions import PreconditionMatcher, AdvancedPreconditionMatcher
 from src.models.episode import Episode, EpisodeCreate, ErrorClass, Reflection
 from src.models.search import SearchRequest, SearchResponse
-
-# Check if google-generativeai is available
-try:
-    import google.generativeai
-    HAS_GENAI = True
-except ImportError:
-    HAS_GENAI = False
-
-requires_genai = pytest.mark.skipif(
-    not HAS_GENAI,
-    reason="google-generativeai not installed - required for LLM integration tests"
-)
 
 
 class TestSearchPipelineBasic:
@@ -78,9 +67,8 @@ class TestSearchPipelineBasic:
         assert stats["llm_rejections"] == 0
 
 
-@requires_genai
 class TestSearchPipelineLLMIntegration:
-    """Test search pipeline with LLM validation enabled."""
+    """Test search pipeline with LLM validation enabled via OpenRouter."""
     
     @pytest.fixture
     def sample_episode(self):
@@ -129,95 +117,102 @@ class TestSearchPipelineLLMIntegration:
         service.embed_text = MagicMock(return_value=[0.1] * 384)
         return service
     
+    def _mock_openrouter_response(self, content: str):
+        """Create a mock httpx response for OpenRouter."""
+        response = MagicMock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": content}}]
+        }
+        response.raise_for_status = MagicMock()
+        return response
+    
     @pytest.mark.asyncio
     async def test_llm_rejects_semantic_negation(self, mock_kyrodb_with_results, mock_embedding_service):
         """Test that LLM validation rejects semantically opposite queries."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                # Setup mock LLM
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                # Create advanced matcher
-                advanced_matcher = AdvancedPreconditionMatcher(
-                    google_api_key="test_key",
-                    enable_llm=True
-                )
-                
-                # Mock LLM to reject semantic negation
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": false, "confidence": 0.95, "reason": "Opposite meaning due to EXCEPT"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                # Create pipeline with LLM validation
-                pipeline = SearchPipeline(
-                    kyrodb_router=mock_kyrodb_with_results,
-                    embedding_service=mock_embedding_service,
-                    advanced_precondition_matcher=advanced_matcher
-                )
-                
-                # Search with semantically opposite query
-                request = SearchRequest(
-                    goal="Delete files EXCEPT those older than 7 days",
-                    customer_id="test_customer",
-                    collection="failures",
-                    k=5
-                )
-                
-                response = await pipeline.search(request)
-                
-                # Should have no results (LLM rejected)
-                assert response.total_returned == 0
-                
-                # Check stats
-                stats = pipeline.get_stats()
-                assert stats["llm_validation_calls"] >= 1
-                assert stats["llm_rejections"] >= 1
+        # Create advanced matcher with OpenRouter
+        advanced_matcher = AdvancedPreconditionMatcher(
+            openrouter_api_key="test_key",
+            enable_llm=True
+        )
+        
+        # Mock OpenRouter to reject semantic negation
+        mock_response = self._mock_openrouter_response(
+            '{"compatible": false, "confidence": 0.95, "reason": "Opposite meaning due to EXCEPT"}'
+        )
+        
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value.post = AsyncMock(return_value=mock_response)
+            
+            # Create pipeline with LLM validation
+            pipeline = SearchPipeline(
+                kyrodb_router=mock_kyrodb_with_results,
+                embedding_service=mock_embedding_service,
+                advanced_precondition_matcher=advanced_matcher
+            )
+            
+            # Search with semantically opposite query
+            request = SearchRequest(
+                goal="Delete files EXCEPT those older than 7 days",
+                customer_id="test_customer",
+                collection="failures",
+                k=5
+            )
+            
+            response = await pipeline.search(request)
+            
+            # Should have no results (LLM rejected)
+            assert response.total_returned == 0
+            
+            # Check stats
+            stats = pipeline.get_stats()
+            assert stats["llm_validation_calls"] >= 1
+            assert stats["llm_rejections"] >= 1
     
     @pytest.mark.asyncio
     async def test_llm_accepts_compatible_query(self, mock_kyrodb_with_results, mock_embedding_service):
         """Test that LLM validation accepts compatible queries."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                # Setup mock LLM
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                # Create advanced matcher
-                advanced_matcher = AdvancedPreconditionMatcher(
-                    google_api_key="test_key",
-                    enable_llm=True
-                )
-                
-                # Mock LLM to accept compatible query
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": true, "confidence": 0.9, "reason": "Same goal"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                # Create pipeline with LLM validation
-                pipeline = SearchPipeline(
-                    kyrodb_router=mock_kyrodb_with_results,
-                    embedding_service=mock_embedding_service,
-                    advanced_precondition_matcher=advanced_matcher
-                )
-                
-                # Search with compatible query
-                request = SearchRequest(
-                    goal="Remove files older than 7 days",
-                    customer_id="test_customer",
-                    collection="failures",
-                    k=5
-                )
-                
-                response = await pipeline.search(request)
-                
-                # Should have results (LLM accepted)
-                assert response.total_returned >= 1
-                
-                # Check stats
-                stats = pipeline.get_stats()
-                assert stats["llm_validation_calls"] >= 1
-                assert stats["llm_rejections"] == 0
+        # Create advanced matcher with OpenRouter
+        advanced_matcher = AdvancedPreconditionMatcher(
+            openrouter_api_key="test_key",
+            enable_llm=True
+        )
+        
+        # Mock OpenRouter to accept compatible query
+        mock_response = self._mock_openrouter_response(
+            '{"compatible": true, "confidence": 0.9, "reason": "Same goal"}'
+        )
+        
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value.post = AsyncMock(return_value=mock_response)
+            
+            # Create pipeline with LLM validation
+            pipeline = SearchPipeline(
+                kyrodb_router=mock_kyrodb_with_results,
+                embedding_service=mock_embedding_service,
+                advanced_precondition_matcher=advanced_matcher
+            )
+            
+            # Search with compatible query
+            request = SearchRequest(
+                goal="Remove files older than 7 days",
+                customer_id="test_customer",
+                collection="failures",
+                k=5
+            )
+            
+            response = await pipeline.search(request)
+            
+            # Should have results (LLM accepted)
+            assert response.total_returned >= 1
+            
+            # Check stats
+            stats = pipeline.get_stats()
+            assert stats["llm_validation_calls"] >= 1
+            assert stats["llm_rejections"] == 0
 
 
 class TestTwoStageValidation:
@@ -308,35 +303,32 @@ class TestPerformanceMetrics:
         assert stats["avg_latency_ms"] > 0
         assert stats["llm_validation_calls"] == 0
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_stats_tracking_with_llm(self):
-        """Test stats tracking with LLM enabled."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai'):
-                router = MagicMock()
-                router.search_text = AsyncMock(return_value=MagicMock(results=[]))
-                
-                embedding = MagicMock()
-                embedding.embed_text = MagicMock(return_value=[0.1] * 384)
-                
-                advanced_matcher = AdvancedPreconditionMatcher(
-                    google_api_key="test",
-                    enable_llm=True
-                )
-                
-                pipeline = SearchPipeline(
-                    kyrodb_router=router,
-                    embedding_service=embedding,
-                    advanced_precondition_matcher=advanced_matcher
-                )
-                
-                stats = pipeline.get_stats()
-                
-                # Should include LLM metrics
-                assert "llm_cache_hits" in stats
-                assert "llm_cache_hit_rate" in stats
-                assert "llm_total_cost_usd" in stats
+        """Test stats tracking with LLM enabled via OpenRouter."""
+        router = MagicMock()
+        router.search_text = AsyncMock(return_value=MagicMock(results=[]))
+        
+        embedding = MagicMock()
+        embedding.embed_text = MagicMock(return_value=[0.1] * 384)
+        
+        advanced_matcher = AdvancedPreconditionMatcher(
+            openrouter_api_key="test",
+            enable_llm=True
+        )
+        
+        pipeline = SearchPipeline(
+            kyrodb_router=router,
+            embedding_service=embedding,
+            advanced_precondition_matcher=advanced_matcher
+        )
+        
+        stats = pipeline.get_stats()
+        
+        # Should include LLM metrics
+        assert "llm_cache_hits" in stats
+        assert "llm_cache_hit_rate" in stats
+        assert "llm_total_cost_usd" in stats
 
 
 class TestConfigurationIntegration:
@@ -360,29 +352,25 @@ class TestConfigurationIntegration:
             
             assert pipeline.advanced_precondition_matcher is None
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_llm_enabled_via_config(self):
         """Test that LLM validation can be enabled via configuration."""
         with patch('src.retrieval.search.get_settings') as mock_settings:
-            with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-                with patch('src.retrieval.preconditions.genai'):
-                    settings = MagicMock()
-                    settings.search.enable_llm_validation = True
-                    settings.llm.google_api_key = "test_key"
-                    mock_settings.return_value = settings
-                    
-                    router = MagicMock()
-                    embedding = MagicMock()
-                    
-                    # Should auto-initialize advanced matcher
-                    pipeline = SearchPipeline(
-                        kyrodb_router=router,
-                        embedding_service=embedding
-                    )
-                    
-                    # Verify LLM validation was enabled via configuration
-                    # Note: advanced_precondition_matcher may be None if initialization failed,
-                    # but we can verify the configuration was read correctly
-                    assert settings.search.enable_llm_validation is True
-                    assert settings.llm.google_api_key == "test_key"
+            settings = MagicMock()
+            settings.search.enable_llm_validation = True
+            settings.llm.openrouter_api_key = "test_key"
+            mock_settings.return_value = settings
+            
+            router = MagicMock()
+            embedding = MagicMock()
+            
+            # Should auto-initialize advanced matcher with OpenRouter
+            pipeline = SearchPipeline(
+                kyrodb_router=router,
+                embedding_service=embedding
+            )
+            
+            # Verify LLM validation was enabled via configuration
+            assert settings.search.enable_llm_validation is True
+            assert settings.llm.openrouter_api_key == "test_key"
+            assert pipeline.advanced_precondition_matcher is not None

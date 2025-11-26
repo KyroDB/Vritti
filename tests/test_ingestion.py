@@ -85,10 +85,11 @@ class TestIngestionPipeline:
             generate_reflection=False,
         )
 
-        # Verify PII was redacted
-        assert (
-            "[REDACTED]@10.0.1.100" in episode.create_data.error_trace
-            or "[EMAIL]" in episode.create_data.error_trace
+        # Verify PII was redacted using standard placeholder format
+        # Presidio NER uses [EMAIL_ADDRESS], regex fallback uses [EMAIL]
+        # See: src/utils/pii_redaction.py:redact_all() for the two-stage redaction
+        assert "[EMAIL_ADDRESS]" in episode.create_data.error_trace or "[EMAIL]" in episode.create_data.error_trace, (
+            f"Expected email PII placeholder in redacted trace, got: {episode.create_data.error_trace}"
         )
         assert "[API_KEY]" in episode.create_data.error_trace
         assert "sk-1234567890" not in episode.create_data.error_trace

@@ -37,7 +37,7 @@ class TestTieredIntegration:
             resolution_strategy="Test resolution",
             confidence_score=0.7,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash",
+            llm_model="openrouter-cheap-model",
             cost_usd=0.0003,
             tier=ReflectionTier.CHEAP.value
         )
@@ -94,7 +94,7 @@ class TestTieredIntegration:
             resolution_strategy="Test resolution",
             confidence_score=0.7,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash",
+            llm_model="openrouter-cheap-model",
             cost_usd=0.0003,
             tier=ReflectionTier.CHEAP.value
         )
@@ -214,7 +214,7 @@ class TestTieredIntegration:
             resolution_strategy="Test resolution",
             confidence_score=0.7,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash",
+            llm_model="openrouter-cheap-model",
             cost_usd=0.0003,
             tier=ReflectionTier.CHEAP.value
         )

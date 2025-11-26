@@ -302,13 +302,18 @@ class IngestionPipeline:
         self, episode_id: int, episode_data: EpisodeCreate, tier_override: Optional[ReflectionTier] = None
     ) -> None:
         """
-        Generate tiered reflection and persist to KyroDB.
+        Generate tiered reflection and persist to KyroDB with retry logic.
 
         Security:
         - Episode data validated before LLM call
         - All LLM outputs validated against schema
         - Customer ID verified before persistence
         - Cost limits enforced
+
+        Reliability:
+        - 3 retries with exponential backoff for persistence
+        - Dead-letter queue for failed reflections
+        - Prometheus metrics for monitoring
 
         This runs in the background after main ingestion completes,
         so it doesn't block the /capture API response.
@@ -341,22 +346,17 @@ class IngestionPipeline:
             generation_time = time.perf_counter() - start_time
 
             if reflection:
-                # CRITICAL: Persist reflection to KyroDB
-                # This fixes the bug where reflections were generated but discarded
-                logger.info(
-                    f"Persisting reflection to KyroDB for episode {episode_id}..."
-                )
-
-                success = await self.kyrodb_router.update_episode_reflection(
+                # Persist reflection with retry logic
+                success = await self._persist_reflection_with_retry(
                     episode_id=episode_id,
                     customer_id=episode_data.customer_id,
-                    collection="failures",
                     reflection=reflection,
+                    max_retries=3,
                 )
 
                 if success:
                     logger.info(
-                        f"✓ Reflection generated and persisted for episode {episode_id}:\n"
+                        f"Reflection generated and persisted for episode {episode_id}:\n"
                         f"  Tier: {reflection.tier}\n"
                         f"  Model: {reflection.llm_model}\n"
                         f"  Consensus: {reflection.consensus.consensus_method if reflection.consensus else 'N/A'}\n"
@@ -371,10 +371,16 @@ class IngestionPipeline:
 
                 else:
                     logger.error(
-                        f"✗ Reflection generation succeeded but persistence failed "
-                        f"for episode {episode_id}"
+                        f"Reflection generation succeeded but persistence failed "
+                        f"after all retries for episode {episode_id}"
                     )
-                    # Track failure metrics
+                    # Log to dead-letter queue for manual recovery
+                    await self._log_to_dead_letter_queue(
+                        episode_id=episode_id,
+                        customer_id=episode_data.customer_id,
+                        reflection=reflection,
+                        failure_reason="persistence_failed_after_retries",
+                    )
                     self._track_reflection_failure("persistence_failed")
 
             else:
@@ -390,6 +396,207 @@ class IngestionPipeline:
                 exc_info=True,
             )
             self._track_reflection_failure("exception")
+
+    async def _persist_reflection_with_retry(
+        self,
+        episode_id: int,
+        customer_id: str,
+        reflection: "Reflection",
+        max_retries: int = 3,
+    ) -> bool:
+        """
+        Persist reflection to KyroDB with exponential backoff retry.
+
+        Implements robust retry logic:
+        - 3 attempts with exponential backoff (1s, 2s, 4s)
+        - Logs each retry attempt
+        - Tracks retry metrics
+        - Returns False after all retries exhausted
+
+        Args:
+            episode_id: Episode ID to update
+            customer_id: Customer ID for namespace isolation
+            reflection: Generated reflection to persist
+            max_retries: Maximum number of retry attempts (default: 3)
+
+        Returns:
+            bool: True if persistence succeeded, False after all retries fail
+        """
+        import time
+
+        base_delay_seconds = 1.0  # Initial delay before first retry
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                logger.debug(
+                    f"Attempting reflection persistence for episode {episode_id} "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+
+                success = await self.kyrodb_router.update_episode_reflection(
+                    episode_id=episode_id,
+                    customer_id=customer_id,
+                    collection="failures",
+                    reflection=reflection,
+                )
+
+                if success:
+                    if attempt > 0:
+                        logger.info(
+                            f"Reflection persistence succeeded on retry {attempt + 1} "
+                            f"for episode {episode_id}"
+                        )
+                        # Track successful retry metric
+                        self._track_persistence_retry(
+                            episode_id=episode_id,
+                            attempt=attempt + 1,
+                            success=True,
+                        )
+                    return True
+
+                # Persistence returned False (not an exception)
+                logger.warning(
+                    f"Reflection persistence returned False for episode {episode_id} "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+
+            except Exception as e:
+                last_exception = e
+                logger.warning(
+                    f"Reflection persistence failed for episode {episode_id} "
+                    f"(attempt {attempt + 1}/{max_retries}): {e}"
+                )
+
+            # Track retry attempt metric
+            self._track_persistence_retry(
+                episode_id=episode_id,
+                attempt=attempt + 1,
+                success=False,
+            )
+
+            # Calculate backoff delay (exponential: 1s, 2s, 4s)
+            if attempt < max_retries - 1:
+                delay = base_delay_seconds * (2 ** attempt)
+                logger.debug(
+                    f"Waiting {delay:.1f}s before retry for episode {episode_id}"
+                )
+                await asyncio.sleep(delay)
+
+        # All retries exhausted
+        logger.error(
+            f"Reflection persistence exhausted all {max_retries} retries "
+            f"for episode {episode_id}"
+            + (f": {last_exception}" if last_exception else "")
+        )
+
+        return False
+
+    async def _log_to_dead_letter_queue(
+        self,
+        episode_id: int,
+        customer_id: str,
+        reflection: "Reflection",
+        failure_reason: str,
+    ) -> None:
+        """
+        Log failed reflection to dead-letter queue file for manual recovery.
+
+        Dead-letter queue file: data/failed_reflections.log
+        Format: JSON lines with timestamp, episode_id, customer_id, failure_reason, reflection
+
+        This enables manual recovery of reflections that failed persistence.
+
+        Args:
+            episode_id: Episode ID that failed
+            customer_id: Customer ID
+            reflection: Generated reflection that couldn't be persisted
+            failure_reason: Why persistence failed
+        """
+        import json
+        from pathlib import Path
+        from datetime import timezone, datetime
+
+        dead_letter_path = Path("data/failed_reflections.log")
+
+        try:
+            # Ensure data directory exists
+            dead_letter_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Serialize reflection to JSON-safe format
+            reflection_data = {
+                "root_cause": reflection.root_cause,
+                "preconditions": reflection.preconditions,
+                "resolution_strategy": reflection.resolution_strategy,
+                "environment_factors": reflection.environment_factors,
+                "affected_components": reflection.affected_components,
+                "generalization_score": reflection.generalization_score,
+                "confidence_score": reflection.confidence_score,
+                "llm_model": reflection.llm_model,
+                "generated_at": reflection.generated_at.isoformat(),
+                "cost_usd": reflection.cost_usd,
+                "generation_latency_ms": reflection.generation_latency_ms,
+                "tier": reflection.tier,
+            }
+
+            # Add consensus data if present
+            if reflection.consensus:
+                reflection_data["consensus"] = {
+                    "method": reflection.consensus.consensus_method,
+                    "confidence": reflection.consensus.consensus_confidence,
+                    "disagreement_points": reflection.consensus.disagreement_points,
+                }
+
+            # Create dead-letter entry
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "episode_id": episode_id,
+                "customer_id": customer_id,
+                "failure_reason": failure_reason,
+                "reflection": reflection_data,
+            }
+
+            # Append to dead-letter queue file (atomic append with newline)
+            with open(dead_letter_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+
+            logger.warning(
+                f"Logged failed reflection to dead-letter queue: episode {episode_id}, "
+                f"reason: {failure_reason}, path: {dead_letter_path}"
+            )
+
+            # Track dead-letter metric
+            from src.observability.metrics import track_dead_letter_queue
+            track_dead_letter_queue(
+                episode_id=episode_id,
+                customer_id=customer_id,
+                failure_reason=failure_reason,
+            )
+
+        except Exception as e:
+            # Don't fail if logging to dead-letter queue fails
+            logger.error(
+                f"Failed to log to dead-letter queue for episode {episode_id}: {e}",
+                exc_info=True,
+            )
+
+    def _track_persistence_retry(
+        self,
+        episode_id: int,
+        attempt: int,
+        success: bool,
+    ) -> None:
+        """Track reflection persistence retry metrics."""
+        try:
+            from src.observability.metrics import track_reflection_persistence_retry
+            track_reflection_persistence_retry(
+                episode_id=episode_id,
+                attempt=attempt,
+                success=success,
+            )
+        except ImportError:
+            # Metrics module may not have this function yet
+            logger.debug(f"Persistence retry: episode={episode_id}, attempt={attempt}, success={success}")
 
     def _track_reflection_success(
         self, reflection: "Reflection", generation_time: float

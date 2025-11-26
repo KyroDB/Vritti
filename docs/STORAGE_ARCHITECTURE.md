@@ -180,27 +180,26 @@ reflection: Reflection
 
 | Tier | Model | Cost | Usage | When Used |
 |------|-------|------|-------|-----------|
-| **CHEAP** | Gemini 1.5 Flash | $0.0003 | 90% | Normal errors |
+| **CHEAP** | OpenRouter (cheap model) | ~$0.0003 | 90% | Normal errors |
 | **CACHED** | Cluster template | $0.0000 | Future (Phase 6) | Seen before |
-| **PREMIUM** | Multi-perspective (3 LLMs) | $0.0960 | 10% | Critical errors |
+| **PREMIUM** | Multi-perspective (2 LLMs) | ~$0.0500 | 10% | Critical errors |
 
 **How It's Generated**:
 
 **Cheap Tier (90%)**:
 ```python
-# Single Gemini Flash call
-reflection = await gemini_flash.generate(episode)
+# Single OpenRouter call with cheap model
+reflection = await openrouter.generate(episode, model="cheap")
 # Quality validated: confidence >= 0.6
 # Auto-fallback to premium if quality too low
 ```
 
 **Premium Tier (10%)**:
 ```python
-# Parallel calls to 3 LLMs
+# Parallel calls to 2 LLMs via OpenRouter
 perspectives = await asyncio.gather(
-    gpt4.analyze(episode),
-    claude.analyze(episode),
-    gemini_pro.analyze(episode)
+    openrouter.analyze(episode, model="consensus_1"),
+    openrouter.analyze(episode, model="consensus_2"),
 )
 # Consensus algorithm reconciles differences
 reflection = build_consensus(perspectives)

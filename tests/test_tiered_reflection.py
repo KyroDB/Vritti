@@ -18,26 +18,12 @@ from src.ingestion.tiered_reflection import (
 from src.models.episode import EpisodeCreate, ErrorClass, Reflection, ReflectionTier
 from src.config import LLMConfig
 
-# Check if google-generativeai is available
-try:
-    import google.generativeai
-    HAS_GENAI = True
-except ImportError:
-   HAS_GENAI = False
-
-requires_genai = pytest.mark.skipif(
-    not HAS_GENAI,
-    reason="google-generativeai not installed - required for tier tests"
-)
-
 
 @pytest.fixture
 def llm_config():
     """Create test LLM configuration."""
     return LLMConfig(
-        google_api_key="test_google_key",
-        openai_api_key="test_openai_key",
-        anthropic_api_key="test_anthropic_key",
+        openrouter_api_key="test_openrouter_key",
         timeout_seconds=30,
         max_retries=2,
         temperature=0.3,
@@ -140,7 +126,12 @@ class TestTierSelection:
 class TestQualityValidation:
     """Test cheap reflection quality validation."""
     
-    def test_high_confidence_passes(self):
+    @pytest.fixture
+    def test_llm_config(self):
+        """Create test LLM config for this test class."""
+        return LLMConfig(openrouter_api_key="test_key")
+    
+    def test_high_confidence_passes(self, test_llm_config):
         """Reflections with confidence >= 0.6 should pass."""
         reflection = Reflection(
             root_cause="Insufficient memory allocation",
@@ -148,13 +139,13 @@ class TestQualityValidation:
             resolution_strategy="Increase memory limits in docker-compose.yml",
             confidence_score=0.7,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash"
+            llm_model="openrouter-cheap-model"
         )
         
-        service = TieredReflectionService(MagicMock())
+        service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is True
     
-    def test_low_confidence_fails(self):
+    def test_low_confidence_fails(self, test_llm_config):
         """Reflections with confidence < 0.6 should fail."""
         reflection = Reflection(
             root_cause="Unknown error",
@@ -162,13 +153,13 @@ class TestQualityValidation:
             resolution_strategy="Try something",
             confidence_score=0.5,  # Too low
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash"
+            llm_model="openrouter-cheap-model"
         )
         
-        service = TieredReflectionService(MagicMock())
+        service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
     
-    def test_empty_preconditions_fails(self):
+    def test_empty_preconditions_fails(self, test_llm_config):
         """Reflections with no preconditions should fail."""
         reflection = Reflection(
             root_cause="Meaningful cause",
@@ -176,13 +167,13 @@ class TestQualityValidation:
             resolution_strategy="Detailed resolution",
             confidence_score=0.8,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash"
+            llm_model="openrouter-cheap-model"
         )
         
-        service = TieredReflectionService(MagicMock())
+        service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
     
-    def test_generic_root_cause_fails(self):
+    def test_generic_root_cause_fails(self, test_llm_config):
         """Generic root causes should fail."""
         reflection = Reflection(
             root_cause="Unknown",  # Generic
@@ -190,13 +181,13 @@ class TestQualityValidation:
             resolution_strategy="Detailed resolution",
             confidence_score=0.8,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash"
+            llm_model="openrouter-cheap-model"
         )
         
-        service = TieredReflectionService(MagicMock())
+        service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
     
-    def test_generic_resolution_fails(self):
+    def test_generic_resolution_fails(self, test_llm_config):
         """Generic resolutions should fail validation."""
         reflection = Reflection(
             root_cause="Meaningful cause",
@@ -204,10 +195,10 @@ class TestQualityValidation:
             resolution_strategy="Manual investigation required",  # Generic
             confidence_score=0.8,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash"
+            llm_model="openrouter-cheap-model"
         )
         
-        service = TieredReflectionService(MagicMock())
+        service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
 
 
@@ -226,7 +217,7 @@ class TestCostTracking:
             resolution_strategy="Test resolution",
             confidence_score=0.7,
             generalization_score=0.5,
-            llm_model="gemini-1.5-flash",
+            llm_model="openrouter-cheap-model",
             cost_usd=0.0003,
             tier=ReflectionTier.CHEAP.value
         )
@@ -281,17 +272,14 @@ class TestCostTracking:
 class TestIntegration:
     """Integration tests for tiered reflection system."""
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_cheap_reflection_generation(self, llm_config, sample_episode):
-        """Test generating cheap reflection (mocked Gemini)."""
-        with patch('src.ingestion.tiered_reflection.genai') as mock_genai:
-            # Setup mock
-            mock_model = MagicMock()
-            mock_genai.GenerativeModel.return_value = mock_model
-            
-            mock_response = MagicMock()
-            mock_response.text = '''```json
+        """Test generating cheap reflection (mocked OpenRouter)."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{
+                "message": {
+                    "content": '''```json
             {
                 "root_cause": "Insufficient memory in container",
                 "preconditions": ["Using Docker", "Memory limit set"],
@@ -303,11 +291,18 @@ class TestIntegration:
                 "reasoning": "OOMKilled indicates memory exhaustion"
             }
             ```'''
-            mock_model.generate_content = MagicMock(return_value=mock_response)
+                }
+            }]
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value.post = AsyncMock(return_value=mock_response)
             
             # Create service
             cheap_service = CheapReflectionService(llm_config)
-            cheap_service.gemini_model = mock_model
             
             # Generate reflection
             reflection = await cheap_service.generate_reflection(sample_episode)
@@ -317,7 +312,7 @@ class TestIntegration:
             assert len(reflection.preconditions) >= 1
             assert reflection.confidence_score == 0.7
             assert reflection.tier == ReflectionTier.CHEAP.value
-            assert reflection.cost_usd == 0.0003
+            assert reflection.cost_usd == 0.0  # Free tier
     
     def test_singleton_service(self, llm_config):
         """Test that get_tiered_reflection_service returns singleton."""
@@ -339,8 +334,8 @@ async def test_quality_fallback_to_premium(llm_config, sample_episode):
         preconditions=[],  # Empty
         resolution_strategy="Check logs",  # Generic
         confidence_score=0.5,  # Low
-        generation_score=0.3,
-        llm_model="gemini-1.5-flash",
+        generalization_score=0.3,
+        llm_model="openrouter-cheap-model",
         cost_usd=0.0003,
         tier=ReflectionTier.CHEAP.value
     )

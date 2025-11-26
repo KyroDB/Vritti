@@ -16,15 +16,24 @@ Performance:
 - Parallel LLM calls (2 models in ~3-5 seconds)
 - Graceful degradation (works with 1/2 or 2/2 models)
 - Retry logic for transient failures
+
+Consensus Algorithm:
+- Semantic similarity (not string equality) for root cause comparison
+- Uses sentence-transformers embeddings with cosine similarity
+- Weighted voting based on model confidence scores
+- Threshold-based agreement detection (>0.85 = semantic match)
 """
 
 import asyncio
 import json
 import logging
 import time
+import threading
 from collections import Counter
 from datetime import timezone, datetime
 from typing import Optional
+
+import numpy as np
 
 try:
     from openai import AsyncOpenAI
@@ -32,6 +41,13 @@ try:
 except Exception:
     OPENAI_AVAILABLE = False
     AsyncOpenAI = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    SentenceTransformer = None
 
 from pydantic import ValidationError
 
@@ -161,7 +177,17 @@ class MultiPerspectiveReflectionService:
     - Cost tracking and limits enforced
     - No user data in system prompts
     - Timeout enforcement on all API calls
+
+    Consensus Algorithm:
+    - Uses semantic similarity (embedding cosine distance) instead of string equality
+    - Root causes are considered "matching" if cosine similarity > 0.85
+    - Confidence-weighted voting when similarity is between 0.70-0.85
+    - Falls back to highest-confidence model when similarity < 0.70
     """
+
+    # Semantic similarity thresholds for consensus
+    SEMANTIC_MATCH_THRESHOLD = 0.85  # Strong semantic agreement
+    SEMANTIC_PARTIAL_THRESHOLD = 0.70  # Partial agreement (weighted voting)
 
     SYSTEM_PROMPT = """You are an expert AI assistant analyzing software development failures.
 
@@ -186,6 +212,10 @@ IMPORTANT RULES:
 - Keep reasoning under 200 words
 
 Return ONLY valid JSON, no markdown."""
+
+    # Singleton embedding model for semantic similarity (lazy-loaded, thread-safe)
+    _embedding_model = None  # SentenceTransformer instance
+    _embedding_lock = threading.Lock()
 
     def __init__(self, config: LLMConfig):
         """
@@ -223,10 +253,10 @@ Return ONLY valid JSON, no markdown."""
             else:
                 logger.warning("OpenRouter not configured (no API key)")
 
-        # Fallback: Direct OpenAI client (legacy)
-        if config.openai_api_key and OPENAI_AVAILABLE and not config.use_openrouter:
+        # Fallback: Direct OpenAI client (legacy via api_key field)
+        if config.api_key and OPENAI_AVAILABLE and not config.use_openrouter:
             self.openai_client = AsyncOpenAI(
-                api_key=config.openai_api_key,
+                api_key=config.api_key,
                 timeout=config.timeout_seconds,
                 max_retries=0,
             )
@@ -237,10 +267,11 @@ Return ONLY valid JSON, no markdown."""
         if not config.has_any_api_key:
             raise ValueError(
                 "At least one LLM API key must be configured "
-                "(openrouter_api_key or openai_api_key)"
+                "(openrouter_api_key or api_key)"
             )
 
-        # Cost tracking
+        # Cost tracking (thread-safe)
+        self._stats_lock = threading.Lock()
         self.total_cost_usd = 0.0
         self.total_requests = 0
         self.requests_by_model = Counter()
@@ -338,10 +369,11 @@ Return ONLY valid JSON, no markdown."""
 
             cost_usd = 0.0  # Free tier
 
-            self.total_cost_usd += cost_usd
-            self.total_requests += 1
-            for perspective in perspectives:
-                self.requests_by_model[perspective.model_name] += 1
+            with self._stats_lock:
+                self.total_cost_usd += cost_usd
+                self.total_requests += 1
+                for perspective in perspectives:
+                    self.requests_by_model[perspective.model_name] += 1
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -402,8 +434,9 @@ Return ONLY valid JSON, no markdown."""
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
-            self.total_requests += 1
-            self.requests_by_model[perspective.model_name] += 1
+            with self._stats_lock:
+                self.total_requests += 1
+                self.requests_by_model[perspective.model_name] += 1
 
             reflection = Reflection(
                 consensus=None,
@@ -602,76 +635,377 @@ Return ONLY valid JSON, no markdown."""
         self, perspectives: list[LLMPerspective]
     ) -> ReflectionConsensus:
         """
-        Reconcile multiple perspectives using Self-Contrast/Mirror approach.
+        Reconcile multiple perspectives using semantic similarity consensus.
 
         Algorithm:
-        1. Compare root causes
-        2. Find majority opinion (or highest confidence if no majority)
-        3. Merge preconditions (union)
-        4. Select best resolution (highest confidence)
-        5. Calculate consensus confidence
+        1. Compute pairwise semantic similarity of root causes using embeddings
+        2. If similarity > 0.85: unanimous semantic agreement
+        3. If similarity 0.70-0.85: weighted voting by confidence scores
+        4. If similarity < 0.70: use highest confidence model (no consensus)
+        5. Merge preconditions (union with deduplication)
+        6. Select best resolution (highest weighted score)
+
+        Args:
+            perspectives: List of LLM perspectives to reconcile
+
+        Returns:
+            ReflectionConsensus with agreed values and confidence
+
+        Raises:
+            ValueError: If perspectives list is empty
         """
         if not perspectives:
             raise ValueError("Cannot reconcile empty perspectives")
 
-        # Extract root causes
+        # Single perspective: no consensus needed
+        if len(perspectives) == 1:
+            p = perspectives[0]
+            return ReflectionConsensus(
+                perspectives=perspectives,
+                consensus_method="single_model",
+                agreed_root_cause=p.root_cause,
+                agreed_preconditions=p.preconditions,
+                agreed_resolution=p.resolution_strategy,
+                consensus_confidence=p.confidence_score * 0.8,  # Discount for single model
+                disagreement_points=[],
+                generated_at=datetime.now(timezone.utc),
+            )
+
+        # Compute semantic similarity matrix for root causes
         root_causes = [p.root_cause for p in perspectives]
+        similarity_matrix = self._compute_semantic_similarity_matrix(root_causes)
 
-        # Check for unanimous agreement
-        if len(set(root_causes)) == 1:
-            consensus_method = "unanimous"
-            agreed_root_cause = root_causes[0]
-            consensus_confidence = 1.0
-            disagreement_points = []
+        # For 2 perspectives, get the single pairwise similarity
+        if len(perspectives) == 2:
+            similarity = similarity_matrix[0, 1]
+            return self._reconcile_two_perspectives(perspectives, similarity)
 
-        # Check for majority (works for 2+ perspectives)
-        else:
-            counter = Counter(root_causes)
-            most_common_root, count = counter.most_common(1)[0]
+        # For 3+ perspectives, use cluster-based consensus
+        return self._reconcile_multiple_perspectives(perspectives, similarity_matrix)
 
-            if count >= len(perspectives) / 2:  # Majority
-                consensus_method = "majority_vote"
-                agreed_root_cause = most_common_root
-                consensus_confidence = count / len(perspectives)
+    def _reconcile_two_perspectives(
+        self,
+        perspectives: list[LLMPerspective],
+        similarity: float
+    ) -> ReflectionConsensus:
+        """
+        Reconcile exactly two perspectives based on semantic similarity.
 
-                disagreement_points = [
-                    f"{p.model_name}: {p.root_cause}"
-                    for p in perspectives
-                    if p.root_cause != agreed_root_cause
-                ]
+        Args:
+            perspectives: Exactly two LLM perspectives
+            similarity: Cosine similarity between root causes [0, 1]
 
+        Returns:
+            ReflectionConsensus
+        """
+        p1, p2 = perspectives[0], perspectives[1]
+
+        # High similarity: semantic agreement (same root cause meaning)
+        if similarity >= self.SEMANTIC_MATCH_THRESHOLD:
+            # Choose root cause with higher confidence
+            if p1.confidence_score >= p2.confidence_score:
+                agreed_root_cause = p1.root_cause
             else:
-                # No majority - use highest confidence
-                consensus_method = "weighted_average"
-                best = max(perspectives, key=lambda p: p.confidence_score)
-                agreed_root_cause = best.root_cause
-                consensus_confidence = 0.5  # Low confidence
+                agreed_root_cause = p2.root_cause
 
-                disagreement_points = [
-                    f"{p.model_name}: {p.root_cause}" for p in perspectives
-                ]
+            consensus_confidence = min(1.0, 0.5 + similarity * 0.5)  # 0.85 sim -> 0.925 conf
+            consensus_method = "semantic_unanimous"
+            disagreement_points = []
+            logger.info(
+                f"Semantic consensus reached: similarity={similarity:.3f}, "
+                f"confidence={consensus_confidence:.3f}"
+            )
 
-        # Merge preconditions (union, deduplicate)
-        all_preconditions = []
-        for p in perspectives:
-            all_preconditions.extend(p.preconditions)
-        agreed_preconditions = list(dict.fromkeys(all_preconditions))  # Dedupe, preserve order
+        # Partial similarity: weighted voting
+        elif similarity >= self.SEMANTIC_PARTIAL_THRESHOLD:
+            # Weight by confidence
+            total_conf = p1.confidence_score + p2.confidence_score
+            weight1 = p1.confidence_score / total_conf
+            weight2 = p2.confidence_score / total_conf
 
-        # Select best resolution (highest confidence)
-        best_resolution = max(
-            perspectives, key=lambda p: p.confidence_score
-        ).resolution_strategy
+            # Choose root cause with higher weighted score
+            weighted_score1 = weight1 * (1 + similarity)  # Boost for similarity
+            weighted_score2 = weight2 * (1 + similarity)
+
+            if weighted_score1 >= weighted_score2:
+                agreed_root_cause = p1.root_cause
+                disagreement_points = [f"{p2.model_name}: {p2.root_cause}"]
+            else:
+                agreed_root_cause = p2.root_cause
+                disagreement_points = [f"{p1.model_name}: {p1.root_cause}"]
+
+            # Confidence based on similarity and model confidences
+            consensus_confidence = similarity * max(p1.confidence_score, p2.confidence_score)
+            consensus_method = "weighted_semantic_vote"
+            logger.info(
+                f"Weighted semantic vote: similarity={similarity:.3f}, "
+                f"weights=[{weight1:.2f}, {weight2:.2f}], confidence={consensus_confidence:.3f}"
+            )
+
+        # Low similarity: no consensus, use highest confidence
+        else:
+            if p1.confidence_score >= p2.confidence_score:
+                agreed_root_cause = p1.root_cause
+                disagreement_points = [f"{p2.model_name}: {p2.root_cause}"]
+            else:
+                agreed_root_cause = p2.root_cause
+                disagreement_points = [f"{p1.model_name}: {p1.root_cause}"]
+
+            # Low confidence for disagreement
+            consensus_confidence = max(p1.confidence_score, p2.confidence_score) * 0.5
+            consensus_method = "highest_confidence_fallback"
+            logger.warning(
+                f"Low semantic similarity ({similarity:.3f}), using highest confidence model. "
+                f"Disagreement: {disagreement_points}"
+            )
+
+        # Merge preconditions (union, deduplicate by semantic similarity)
+        agreed_preconditions = self._merge_preconditions_semantic(
+            [p.preconditions for p in perspectives]
+        )
+
+        # Select best resolution (highest confidence-weighted)
+        if p1.confidence_score >= p2.confidence_score:
+            agreed_resolution = p1.resolution_strategy
+        else:
+            agreed_resolution = p2.resolution_strategy
 
         return ReflectionConsensus(
             perspectives=perspectives,
             consensus_method=consensus_method,
             agreed_root_cause=agreed_root_cause,
             agreed_preconditions=agreed_preconditions,
-            agreed_resolution=best_resolution,
+            agreed_resolution=agreed_resolution,
             consensus_confidence=consensus_confidence,
             disagreement_points=disagreement_points,
             generated_at=datetime.now(timezone.utc),
         )
+
+    def _reconcile_multiple_perspectives(
+        self,
+        perspectives: list[LLMPerspective],
+        similarity_matrix: np.ndarray
+    ) -> ReflectionConsensus:
+        """
+        Reconcile 3+ perspectives using similarity clustering.
+
+        Args:
+            perspectives: List of 3+ LLM perspectives
+            similarity_matrix: Pairwise cosine similarity matrix
+
+        Returns:
+            ReflectionConsensus
+        """
+        n = len(perspectives)
+
+        # Find the perspective that has highest average similarity to others
+        avg_similarities = []
+        for i in range(n):
+            # Average similarity to all other perspectives
+            other_sims = [similarity_matrix[i, j] for j in range(n) if i != j]
+            avg_similarities.append(np.mean(other_sims))
+
+        # Sort by average similarity (descending)
+        ranked_indices = np.argsort(avg_similarities)[::-1]
+        best_idx = ranked_indices[0]
+        best_perspective = perspectives[best_idx]
+        best_avg_similarity = avg_similarities[best_idx]
+
+        # Count how many perspectives are semantically similar to the best one
+        agreement_count = 1  # Include self
+        disagreement_points = []
+        for i in range(n):
+            if i != best_idx:
+                sim = similarity_matrix[best_idx, i]
+                if sim >= self.SEMANTIC_MATCH_THRESHOLD:
+                    agreement_count += 1
+                elif sim < self.SEMANTIC_PARTIAL_THRESHOLD:
+                    disagreement_points.append(
+                        f"{perspectives[i].model_name}: {perspectives[i].root_cause}"
+                    )
+
+        # Determine consensus method based on agreement level
+        agreement_ratio = agreement_count / n
+
+        if agreement_ratio >= 0.67:  # 2/3 or more agree semantically
+            consensus_method = "semantic_majority"
+            consensus_confidence = min(1.0, agreement_ratio * best_avg_similarity)
+        elif agreement_ratio >= 0.5:  # Simple majority
+            consensus_method = "weighted_semantic_majority"
+            consensus_confidence = agreement_ratio * best_perspective.confidence_score
+        else:
+            consensus_method = "highest_confidence_fallback"
+            consensus_confidence = best_perspective.confidence_score * 0.5
+
+        logger.info(
+            f"Multi-perspective consensus: method={consensus_method}, "
+            f"agreement={agreement_count}/{n}, avg_sim={best_avg_similarity:.3f}, "
+            f"confidence={consensus_confidence:.3f}"
+        )
+
+        # Merge preconditions from all perspectives
+        agreed_preconditions = self._merge_preconditions_semantic(
+            [p.preconditions for p in perspectives]
+        )
+
+        # Use resolution from highest-confidence perspective
+        best_resolution_perspective = max(perspectives, key=lambda p: p.confidence_score)
+
+        return ReflectionConsensus(
+            perspectives=perspectives,
+            consensus_method=consensus_method,
+            agreed_root_cause=best_perspective.root_cause,
+            agreed_preconditions=agreed_preconditions,
+            agreed_resolution=best_resolution_perspective.resolution_strategy,
+            consensus_confidence=consensus_confidence,
+            disagreement_points=disagreement_points,
+            generated_at=datetime.now(timezone.utc),
+        )
+
+    @classmethod
+    def _get_embedding_model(cls):
+        """
+        Get or lazily load the embedding model (thread-safe singleton).
+
+        Returns:
+            SentenceTransformer model for semantic similarity
+
+        Raises:
+            RuntimeError: If sentence-transformers not available
+        """
+        if cls._embedding_model is not None:
+            return cls._embedding_model
+
+        with cls._embedding_lock:
+            # Double-check after acquiring lock
+            if cls._embedding_model is not None:
+                return cls._embedding_model
+
+            if not SENTENCE_TRANSFORMERS_AVAILABLE:
+                raise RuntimeError(
+                    "sentence-transformers required for semantic consensus. "
+                    "Install with: pip install sentence-transformers"
+                )
+
+            logger.info("Loading embedding model for semantic consensus...")
+            # Use same model as EmbeddingService for consistency
+            cls._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            logger.info("Embedding model loaded for semantic consensus")
+            return cls._embedding_model
+
+    def _compute_semantic_similarity_matrix(
+        self, texts: list[str]
+    ) -> np.ndarray:
+        """
+        Compute pairwise cosine similarity matrix for texts.
+
+        Args:
+            texts: List of text strings
+
+        Returns:
+            np.ndarray: N x N similarity matrix where entry [i,j] is
+                       cosine similarity between texts[i] and texts[j]
+        """
+        if not texts:
+            return np.array([[]])
+
+        n = len(texts)
+        if n == 1:
+            return np.array([[1.0]])
+
+        try:
+            model = self._get_embedding_model()
+
+            # Encode all texts at once (batched for performance)
+            embeddings = model.encode(
+                texts,
+                convert_to_tensor=False,
+                normalize_embeddings=True,  # L2 normalization for cosine sim
+                show_progress_bar=False,
+            )
+
+            # Compute cosine similarity matrix (embeddings are normalized, so dot product = cosine)
+            similarity_matrix = np.dot(embeddings, embeddings.T)
+
+            return similarity_matrix
+
+        except Exception as e:
+            logger.warning(
+                f"Semantic similarity computation failed: {e}. "
+                f"Falling back to string equality."
+            )
+            # Fallback: string equality matrix
+            matrix = np.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    matrix[i, j] = 1.0 if texts[i] == texts[j] else 0.0
+            return matrix
+
+    def _merge_preconditions_semantic(
+        self, precondition_lists: list[list[str]]
+    ) -> list[str]:
+        """
+        Merge preconditions from multiple perspectives with semantic deduplication.
+
+        Removes preconditions that are semantically similar (>0.85 cosine similarity)
+        to avoid redundancy while preserving unique insights.
+
+        Args:
+            precondition_lists: List of precondition lists from each perspective
+
+        Returns:
+            Merged and deduplicated list of preconditions
+        """
+        # Flatten all preconditions
+        all_preconditions = []
+        for plist in precondition_lists:
+            all_preconditions.extend(plist)
+
+        if not all_preconditions:
+            return []
+
+        if len(all_preconditions) == 1:
+            return all_preconditions
+
+        try:
+            model = self._get_embedding_model()
+
+            # Encode all preconditions
+            embeddings = model.encode(
+                all_preconditions,
+                convert_to_tensor=False,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+
+            # Greedy deduplication: keep precondition if not similar to any kept one
+            kept_indices = [0]  # Always keep first
+            kept_embeddings = [embeddings[0]]
+
+            for i in range(1, len(all_preconditions)):
+                emb = embeddings[i]
+                # Check similarity to all kept embeddings
+                max_similarity = max(
+                    np.dot(emb, kept_emb) for kept_emb in kept_embeddings
+                )
+
+                if max_similarity < self.SEMANTIC_MATCH_THRESHOLD:
+                    kept_indices.append(i)
+                    kept_embeddings.append(emb)
+
+            merged = [all_preconditions[i] for i in kept_indices]
+            logger.debug(
+                f"Merged {len(all_preconditions)} preconditions to {len(merged)} "
+                f"(removed {len(all_preconditions) - len(merged)} duplicates)"
+            )
+            return merged
+
+        except Exception as e:
+            logger.warning(
+                f"Semantic precondition merge failed: {e}. Using simple deduplication."
+            )
+            # Fallback: simple string deduplication
+            return list(dict.fromkeys(all_preconditions))
 
     def _merge_list_fields(self, lists: list[list[str]]) -> list[str]:
         """Merge multiple lists, deduplicate, preserve order."""
@@ -723,14 +1057,15 @@ Return ONLY valid JSON, no markdown."""
         )
 
     def get_usage_stats(self) -> dict:
-        """Get service usage statistics."""
-        return {
-            "total_cost_usd": self.total_cost_usd,
-            "total_requests": self.total_requests,
-            "requests_by_model": dict(self.requests_by_model),
-            "average_cost_per_request": (
-                self.total_cost_usd / self.total_requests
-                if self.total_requests > 0
-                else 0.0
-            ),
-        }
+        """Get service usage statistics (thread-safe)."""
+        with self._stats_lock:
+            return {
+                "total_cost_usd": self.total_cost_usd,
+                "total_requests": self.total_requests,
+                "requests_by_model": dict(self.requests_by_model),
+                "average_cost_per_request": (
+                    self.total_cost_usd / self.total_requests
+                    if self.total_requests > 0
+                    else 0.0
+                ),
+            }

@@ -527,6 +527,20 @@ reflection_persistence_total = Counter(
     labelnames=["success"],
 )
 
+# Reflection persistence retry tracking 
+reflection_persistence_retry_total = Counter(
+    "episodic_memory_reflection_persistence_retry_total",
+    "Reflection persistence retry attempts",
+    labelnames=["attempt", "success"],
+)
+
+# Dead-letter queue tracking 
+reflection_dead_letter_total = Counter(
+    "episodic_memory_reflection_dead_letter_total",
+    "Reflections logged to dead-letter queue after persistence failure",
+    labelnames=["failure_reason"],
+)
+
 # Reflection failure reasons (for debugging)
 reflection_failure_total = Counter(
     "episodic_memory_reflection_failure_total",
@@ -636,6 +650,43 @@ def track_reflection_persistence(success: bool) -> None:
     """
     reflection_persistence_total.labels(
         success="true" if success else "false",
+    ).inc()
+
+
+def track_reflection_persistence_retry(
+    episode_id: int,
+    attempt: int,
+    success: bool,
+) -> None:
+    """
+    Track reflection persistence retry attempts.
+
+    Args:
+        episode_id: Episode ID being persisted (for debugging)
+        attempt: Retry attempt number (1, 2, 3)
+        success: Whether this attempt succeeded
+    """
+    reflection_persistence_retry_total.labels(
+        attempt=str(attempt),
+        success="true" if success else "false",
+    ).inc()
+
+
+def track_dead_letter_queue(
+    episode_id: int,
+    customer_id: str,
+    failure_reason: str,
+) -> None:
+    """
+    Track reflection logged to dead-letter queue.
+
+    Args:
+        episode_id: Episode ID that failed (for debugging)
+        customer_id: Customer ID (for debugging)
+        failure_reason: Why persistence failed
+    """
+    reflection_dead_letter_total.labels(
+        failure_reason=failure_reason,
     ).inc()
 
 
@@ -862,6 +913,18 @@ premium_tier_usage_percentage = Gauge(
     "Percentage of reflections using premium tier",
 )
 
+# Daily cost alerts 
+daily_cost_alert_total = Counter(
+    "episodic_memory_daily_cost_alert_total",
+    "Daily cost alert triggers",
+    labelnames=["alert_type"],  # warning, limit_exceeded
+)
+
+daily_cost_usd = Gauge(
+    "episodic_memory_daily_cost_usd",
+    "Current daily reflection cost in USD",
+)
+
 
 # ============================================================================
 # PHASE 5: TIER METRIC TRACKING FUNCTIONS
@@ -947,6 +1010,27 @@ def update_premium_tier_percentage(percentage: float) -> None:
         percentage: Percentage of reflections using premium (0.0-100.0)
     """
     premium_tier_usage_percentage.set(percentage)
+
+
+def track_daily_cost_alert(
+    alert_type: str,
+    cost_usd: float,
+    threshold_usd: float,
+) -> None:
+    """
+    Track daily cost alert trigger 
+
+    Args:
+        alert_type: Type of alert (warning, limit_exceeded)
+        cost_usd: Current daily cost
+        threshold_usd: Threshold that was triggered
+    """
+    daily_cost_alert_total.labels(
+        alert_type=alert_type,
+    ).inc()
+
+    # Update daily cost gauge (uses module-level daily_cost_usd gauge)
+    daily_cost_usd.set(cost_usd)
 
 
 # ============================================================================

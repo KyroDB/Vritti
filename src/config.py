@@ -198,7 +198,8 @@ class LLMConfig(BaseSettings):
         description="Legacy OpenAI API key (deprecated, use openrouter_api_key)"
     )
 
-    @field_validator("openrouter_api_key", "openai_api_key", "anthropic_api_key", "google_api_key", "api_key")
+
+    @field_validator("openrouter_api_key", "api_key")
     @classmethod
     def validate_api_key_security(cls, v: str, info) -> str:
         """
@@ -238,10 +239,7 @@ class LLMConfig(BaseSettings):
         """Check if at least one LLM provider is configured."""
         return bool(
             self.openrouter_api_key or
-            self.openai_api_key or
-            self.anthropic_api_key or
-            self.google_api_key or
-            self.api_key
+            self.api_key  # Legacy fallback
         )
 
     @property
@@ -255,20 +253,7 @@ class LLMConfig(BaseSettings):
         providers = []
         if self.openrouter_api_key:
             providers.append("openrouter")
-        if self.openai_api_key or self.api_key:
-            providers.append("openai")
-        if self.anthropic_api_key:
-            providers.append("anthropic")
-        if self.google_api_key:
-            providers.append("google")
         return providers
-
-    def model_post_init(self, __context):
-        """Post-initialization: handle legacy api_key."""
-        if self.api_key and not self.openai_api_key:
-            self.openai_api_key = self.api_key
-            import logging
-            logging.info("Migrated legacy api_key to openai_api_key")
 
 
 class HygieneConfig(BaseSettings):

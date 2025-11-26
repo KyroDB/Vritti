@@ -146,7 +146,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning(
                 "No LLM API keys configured - reflection generation disabled\n"
-                "  Set LLM_OPENAI_API_KEY, LLM_ANTHROPIC_API_KEY, or LLM_GOOGLE_API_KEY"
+                "  Set OPENROUTER_API_KEY environment variable"
             )
             reflection_service = None
 

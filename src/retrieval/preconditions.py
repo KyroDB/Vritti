@@ -264,21 +264,17 @@ def get_precondition_matcher() -> PreconditionMatcher:
 
 import asyncio
 import json
+import os
 import time
 from functools import lru_cache
 from typing import Tuple
 
-try:
-    import google.generativeai as genai
-    HAS_GEMINI = True
-except ImportError:
-    HAS_GEMINI = False
-    logger.warning("google-generativeai not installed - LLM validation disabled")
+import httpx
 
 
 class AdvancedPreconditionMatcher:
     """
-    Enhanced precondition matching with LLM semantic validation.
+    Enhanced precondition matching with LLM semantic validation via OpenRouter.
     
     Two-stage approach:
     1. Fast heuristic matching (existing PreconditionMatcher)
@@ -288,7 +284,7 @@ class AdvancedPreconditionMatcher:
     - Customer ID validation
     - Input sanitization for LLM prompts
     - Query truncation to prevent abuse
-    - Timeout protection (20ms hard limit)
+    - Timeout protection (2s hard limit)
     
     Performance:
     - Only validates high-similarity matches (>0.85)
@@ -306,17 +302,23 @@ class AdvancedPreconditionMatcher:
     CACHE_SIZE = 500  # LRU cache size
     MAX_QUERY_LENGTH = 500  # Security: prevent abuse
     
-    def __init__(self, google_api_key: Optional[str] = None, enable_llm: bool = True):
+    # OpenRouter configuration
+    OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+    DEFAULT_MODEL = "x-ai/grok-4.1-fast:free"  # Fast free model for validation
+    
+    def __init__(self, openrouter_api_key: Optional[str] = None, enable_llm: bool = True, model: Optional[str] = None):
         """
-        Initialize advanced precondition matcher.
+        Initialize advanced precondition matcher with OpenRouter.
         
         Args:
-            google_api_key: Google API key for Gemini
+            openrouter_api_key: OpenRouter API key for LLM access
             enable_llm: Feature flag to enable/disable LLM validation
+            model: OpenRouter model to use (defaults to cheap free tier)
         """
         self.basic_matcher = PreconditionMatcher()
-        self.enable_llm = enable_llm and HAS_GEMINI
-        self.gemini_model = None
+        self.openrouter_api_key = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.model = model or self.DEFAULT_MODEL
+        self.enable_llm = enable_llm and bool(self.openrouter_api_key)
         
         # Statistics
         self.stats = {
@@ -328,20 +330,12 @@ class AdvancedPreconditionMatcher:
             "total_cost_usd": 0.0,
         }
         
-        # Initialize Gemini if available
-        if self.enable_llm and google_api_key:
-            try:
-                genai.configure(api_key=google_api_key)
-                self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-                logger.info("LLM precondition validation enabled (Gemini Flash)")
-            except Exception as e:
-                logger.error(f"Failed to initialize Gemini: {e}")
-                self.enable_llm = False
+        # Initialize OpenRouter client if available
+        if self.enable_llm:
+            logger.info(f"LLM precondition validation enabled (OpenRouter: {self.model})")
         else:
-            if not HAS_GEMINI:
-                logger.warning("LLM validation disabled: google-generativeai not installed")
-            elif not google_api_key:
-                logger.warning("LLM validation disabled: no API key provided")
+            if not self.openrouter_api_key:
+                logger.warning("LLM validation disabled: no OpenRouter API key provided")
             else:
                 logger.warning(f"LLM validation disabled: enable_llm={enable_llm}")
     
@@ -425,7 +419,7 @@ class AdvancedPreconditionMatcher:
         current_state: dict[str, Any]
     ) -> bool:
         """
-        Use Gemini Flash to verify semantic compatibility.
+        Use OpenRouter LLM to verify semantic compatibility.
         
         Returns:
             True if compatible, False if incompatible
@@ -442,7 +436,7 @@ class AdvancedPreconditionMatcher:
             self.stats["cache_hits"] += 1
             return cached_result
         
-        if not self.gemini_model:
+        if not self.enable_llm:
             # Fallback: accept if no LLM available
             return True
         
@@ -456,7 +450,7 @@ class AdvancedPreconditionMatcher:
             start_time = time.perf_counter()
             
             result = await asyncio.wait_for(
-                self._call_gemini(prompt),
+                self._call_openrouter(prompt),
                 timeout=self.VALIDATION_TIMEOUT_MS / 1000  # Convert to seconds
             )
             
@@ -467,8 +461,8 @@ class AdvancedPreconditionMatcher:
             
             # Track stats
             self.stats["llm_calls"] += 1
-            # Gemini Flash: ~$0.0001 per call
-            self.stats["total_cost_usd"] += 0.0001
+            # Free tier: $0.0 per call
+            self.stats["total_cost_usd"] += 0.0
             
             # Only accept if high confidence
             is_compatible = compatible and confidence >= self.LLM_CONFIDENCE_THRESHOLD
@@ -495,27 +489,43 @@ class AdvancedPreconditionMatcher:
             # Fallback: accept on errors
             return True
     
-    async def _call_gemini(self, prompt: str) -> Tuple[bool, float, str]:
+    async def _call_openrouter(self, prompt: str) -> Tuple[bool, float, str]:
         """
-        Call Gemini API.
+        Call OpenRouter API for LLM validation.
         
         Returns:
             (compatible, confidence, reason)
         """
-        response = await asyncio.to_thread(
-            self.gemini_model.generate_content,
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,  # Low temperature for consistency
-                max_output_tokens=200,
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/episodic-memory",
+            "X-Title": "EpisodicMemory Precondition Validation",
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,  # Low temperature for consistency
+            "max_tokens": 200,
+        }
+        
+        async with httpx.AsyncClient(timeout=self.VALIDATION_TIMEOUT_MS / 1000) as client:
+            response = await client.post(
+                f"{self.OPENROUTER_BASE_URL}/chat/completions",
+                headers=headers,
+                json=payload,
             )
-        )
+            response.raise_for_status()
+            data = response.json()
         
-        content = response.text
+        content = data["choices"][0]["message"]["content"]
         
-        # Parse JSON (Gemini doesn't have JSON mode)
+        # Parse JSON
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0]
         
         try:
             result = json.loads(content.strip())
@@ -618,6 +628,16 @@ If the goals have opposite meanings or would require different solutions, return
         
         self._cache[key] = (result, time.time())
     
+    @classmethod
+    def clear_cache(cls) -> None:
+        """
+        Clear the validation cache.
+        
+        Useful for testing to ensure cache isolation between tests.
+        Thread-safe: clears entire cache atomically.
+        """
+        cls._cache.clear()
+    
     def get_stats(self) -> dict:
         """Get validation statistics."""
         return {
@@ -634,14 +654,14 @@ _advanced_matcher: Optional[AdvancedPreconditionMatcher] = None
 
 
 def get_advanced_precondition_matcher(
-    google_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
     enable_llm: bool = True
 ) -> AdvancedPreconditionMatcher:
     """
     Get global advanced precondition matcher instance.
     
     Args:
-        google_api_key: Google API key (optional, uses config if not provided)
+        openrouter_api_key: OpenRouter API key (optional, uses config if not provided)
         enable_llm: Feature flag to enable/disable LLM validation
         
     Returns:
@@ -651,13 +671,13 @@ def get_advanced_precondition_matcher(
     
     if _advanced_matcher is None:
         # Get API key from config if not provided
-        if google_api_key is None:
+        if openrouter_api_key is None:
             try:
                 from src.config import get_settings
                 settings = get_settings()
-                google_api_key = settings.llm.google_api_key
+                openrouter_api_key = settings.llm.openrouter_api_key
                 enable_llm = getattr(
-                    settings.retrieval, 
+                    settings.search, 
                     'enable_llm_validation', 
                     enable_llm
                 )
@@ -665,7 +685,7 @@ def get_advanced_precondition_matcher(
                 logger.warning(f"Could not load config for LLM validation: {e}")
         
         _advanced_matcher = AdvancedPreconditionMatcher(
-            google_api_key=google_api_key,
+            openrouter_api_key=openrouter_api_key,
             enable_llm=enable_llm
         )
     

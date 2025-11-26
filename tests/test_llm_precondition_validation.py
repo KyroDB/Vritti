@@ -1,27 +1,15 @@
 """
 Unit tests for LLM-based precondition validation.
 
-Tests semantic compatibility checking with mocked LLM responses.
+Tests semantic compatibility checking with mocked OpenRouter responses.
 """
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+import httpx
 from src.retrieval.preconditions import AdvancedPreconditionMatcher
 from src.models.episode import Episode, EpisodeCreate, ErrorClass, Reflection
 from src.models.search import PreconditionCheckResult
-
-# Check if google-generativeai is available for mocking
-try:
-    import google.generativeai
-    HAS_GENAI = True
-except ImportError:
-    HAS_GENAI = False
-
-# Skip marker for tests requiring genai
-requires_genai = pytest.mark.skipif(
-    not HAS_GENAI,
-    reason="google-generativeai not installed - required for LLM mocking tests"
-)
 
 
 class TestAdvancedPreconditionMatcher:
@@ -31,7 +19,7 @@ class TestAdvancedPreconditionMatcher:
     def matcher_without_llm(self):
         """Create matcher with LLM disabled."""
         return AdvancedPreconditionMatcher(
-            google_api_key=None,
+            openrouter_api_key=None,
             enable_llm=False
         )
     
@@ -161,19 +149,7 @@ class TestAdvancedPreconditionMatcher:
 
 
 class TestLLMValidationWithMocks:
-    """Test LLM validation with mocked responses.
-    
-    Note: These tests require google-generativeai to be installed for proper mocking.
-    Tests will be skipped if the library is not available.
-    """
-    
-    @pytest.fixture
-    def skip_if_no_genai(self):
-        """Skip tests if google-generativeai is not installed."""
-        try:
-            import google.generativeai
-        except ImportError:
-            pytest.skip("google-generativeai not installed")
+    """Test LLM validation with mocked OpenRouter responses."""
     
     @pytest.fixture
     def sample_episode(self):
@@ -198,58 +174,68 @@ class TestLLMValidationWithMocks:
             )
         )
     
-    @requires_genai
+    def _mock_openrouter_response(self, content: str):
+        """Create a mock httpx response for OpenRouter."""
+        response = MagicMock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": content}}]
+        }
+        response.raise_for_status = MagicMock()
+        return response
+    
     @pytest.mark.asyncio
     async def test_llm_rejects_semantic_negation(self, sample_episode):
         """Test that LLM correctly rejects semantically opposite queries."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": false, "confidence": 0.95, "reason": "Opposite meaning due to EXCEPT keyword"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                result = await matcher.check_preconditions_with_llm(
-                    candidate_episode=sample_episode,
-                    current_query="Delete files EXCEPT those older than 7 days",
-                    current_state={},
-                    similarity_score=0.95
-                )
-                
-                assert result.matched is False
-                assert "Semantically incompatible" in result.explanation
-                assert matcher.stats["llm_rejections"] == 1
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        
+        mock_response = self._mock_openrouter_response(
+            '{"compatible": false, "confidence": 0.95, "reason": "Opposite meaning due to EXCEPT keyword"}'
+        )
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            result = await matcher.check_preconditions_with_llm(
+                candidate_episode=sample_episode,
+                current_query="Delete files EXCEPT those older than 7 days",
+                current_state={},
+                similarity_score=0.95
+            )
+            
+            assert result.matched is False
+            assert "Semantically incompatible" in result.explanation
+            assert matcher.stats["llm_rejections"] == 1
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_llm_accepts_compatible_query(self, sample_episode):
         """Test that LLM accepts semantically compatible queries."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": true, "confidence": 0.9, "reason": "Same goal, different wording"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                result = await matcher.check_preconditions_with_llm(
-                    candidate_episode=sample_episode,
-                    current_query="Remove files older than 7 days",
-                    current_state={},
-                    similarity_score=0.92
-                )
-                
-                assert result.matched is True
-                assert matcher.stats["llm_calls"] >= 1
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        # Clear cache using public method to ensure test isolation
+        AdvancedPreconditionMatcher.clear_cache()
+        
+        mock_response = self._mock_openrouter_response(
+            '{"compatible": true, "confidence": 0.9, "reason": "Same goal, different wording"}'
+        )
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            result = await matcher.check_preconditions_with_llm(
+                candidate_episode=sample_episode,
+                current_query="Remove files older than 7 days - accept test",  # Unique
+                current_state={},
+                similarity_score=0.92
+            )
+            
+            assert result.matched is True
+            assert matcher.stats["llm_calls"] >= 1
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_llm_rejects_environment_mismatch(self):
         """Test that LLM catches environment differences."""
@@ -273,128 +259,138 @@ class TestLLMValidationWithMocks:
             )
         )
         
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": false, "confidence": 0.9, "reason": "Different environments: production vs staging"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                result = await matcher.check_preconditions_with_llm(
-                    candidate_episode=episode,
-                    current_query="Deploy to staging",
-                    current_state={},
-                    similarity_score=0.95
-                )
-                
-                assert result.matched is False
-                assert matcher.stats["llm_rejections"] >= 1
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '{"compatible": false, "confidence": 0.9, "reason": "Different environments: production vs staging"}'}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            result = await matcher.check_preconditions_with_llm(
+                candidate_episode=episode,
+                current_query="Deploy to staging",
+                current_state={},
+                similarity_score=0.95
+            )
+            
+            assert result.matched is False
+            assert matcher.stats["llm_rejections"] >= 1
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_llm_validation_caching(self, sample_episode):
         """Test that LLM results are properly cached."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": true, "confidence": 0.9, "reason": "Compatible"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                await matcher.check_preconditions_with_llm(
-                    candidate_episode=sample_episode,
-                    current_query="Delete old files",
-                    current_state={},
-                    similarity_score=0.9
-                )
-                
-                await matcher.check_preconditions_with_llm(
-                    candidate_episode=sample_episode,
-                    current_query="Delete old files",
-                    current_state={},
-                    similarity_score=0.9
-                )
-                
-                assert matcher.stats["cache_hits"] >= 1
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '{"compatible": true, "confidence": 0.9, "reason": "Compatible"}'}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            await matcher.check_preconditions_with_llm(
+                candidate_episode=sample_episode,
+                current_query="Delete old files",
+                current_state={},
+                similarity_score=0.9
+            )
+            
+            await matcher.check_preconditions_with_llm(
+                candidate_episode=sample_episode,
+                current_query="Delete old files",
+                current_state={},
+                similarity_score=0.9
+            )
+            
+            assert matcher.stats["cache_hits"] >= 1
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_llm_low_confidence_rejection(self, sample_episode):
         """Test that low LLM confidence results are rejected."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": true, "confidence": 0.5, "reason": "Uncertain"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                result = await matcher.check_preconditions_with_llm(
-                    candidate_episode=sample_episode,
-                    current_query="Delete files",
-                    current_state={},
-                    similarity_score=0.9
-                )
-                
-                assert result.matched is False
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '{"compatible": true, "confidence": 0.5, "reason": "Uncertain"}'}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            result = await matcher.check_preconditions_with_llm(
+                candidate_episode=sample_episode,
+                current_query="Delete files",
+                current_state={},
+                similarity_score=0.9
+            )
+            
+            assert result.matched is False
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_llm_malformed_response_fallback(self, sample_episode):
         """Test graceful handling of malformed LLM responses."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_response = MagicMock()
-                mock_response.text = "Invalid JSON response"
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                result = await matcher.check_preconditions_with_llm(
-                    candidate_episode=sample_episode,
-                    current_query="Delete old files",
-                    current_state={},
-                    similarity_score=0.9
-                )
-                
-                assert result.matched is True
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Invalid JSON response"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            result = await matcher.check_preconditions_with_llm(
+                candidate_episode=sample_episode,
+                current_query="Delete old files",
+                current_state={},
+                similarity_score=0.9
+            )
+            
+            # Falls back to accept on parse error
+            assert result.matched is True
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_llm_api_error_fallback(self, sample_episode):
         """Test graceful handling of LLM API errors."""
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_model.generate_content = MagicMock(side_effect=Exception("API Error"))
-                
-                result = await matcher.check_preconditions_with_llm(
-                    candidate_episode=sample_episode,
-                    current_query="Delete old files",
-                    current_state={},
-                    similarity_score=0.9
-                )
-                
-                assert result.matched is True
-                assert matcher.stats["errors"] >= 1
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        # Clear cache using public method to ensure test isolation
+        AdvancedPreconditionMatcher.clear_cache()
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(side_effect=Exception("API Error"))
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            result = await matcher.check_preconditions_with_llm(
+                candidate_episode=sample_episode,
+                current_query="Delete old files - unique test",  # Unique query to avoid cached results
+                current_state={},
+                similarity_score=0.9
+            )
+            
+            assert result.matched is True
+            assert matcher.stats["errors"] >= 1
 
 
 class TestTimeNegationScenarios:
@@ -432,9 +428,9 @@ class TestTimeNegationScenarios:
             similarity_score=0.95
         )
         
+        # Without LLM, basic matcher cannot detect the semantic negation
         assert result.matched is True
     
-    @requires_genai
     @pytest.mark.asyncio
     async def test_time_negation_with_llm_validation(self):
         """Test that LLM correctly detects and rejects time negation."""
@@ -458,24 +454,27 @@ class TestTimeNegationScenarios:
             )
         )
         
-        with patch('src.retrieval.preconditions.HAS_GEMINI', True):
-            with patch('src.retrieval.preconditions.genai') as mock_genai:
-                mock_model = MagicMock()
-                mock_genai.GenerativeModel.return_value = mock_model
-                
-                matcher = AdvancedPreconditionMatcher(google_api_key="test_key", enable_llm=True)
-                
-                mock_response = MagicMock()
-                mock_response.text = '{"compatible": false, "confidence": 0.98, "reason": "Opposite time conditions: older than vs except older than"}'
-                mock_model.generate_content = MagicMock(return_value=mock_response)
-                
-                result = await matcher.check_preconditions_with_llm(
-                    candidate_episode=episode,
-                    current_query="Delete files EXCEPT those older than 7 days",
-                    current_state={},
-                    similarity_score=0.95
-                )
-                
-                assert result.matched is False
-                assert "Semantically incompatible" in result.explanation
-                assert matcher.stats["llm_rejections"] >= 1
+        matcher = AdvancedPreconditionMatcher(openrouter_api_key="test_key", enable_llm=True)
+        
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '{"compatible": false, "confidence": 0.98, "reason": "Opposite time conditions: older than vs except older than"}'}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        with patch('src.retrieval.preconditions.httpx.AsyncClient') as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            
+            result = await matcher.check_preconditions_with_llm(
+                candidate_episode=episode,
+                current_query="Delete files EXCEPT those older than 7 days",
+                current_state={},
+                similarity_score=0.95
+            )
+            
+            assert result.matched is False
+            assert "Semantically incompatible" in result.explanation
+            assert matcher.stats["llm_rejections"] >= 1

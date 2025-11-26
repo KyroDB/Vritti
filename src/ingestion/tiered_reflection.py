@@ -2,9 +2,9 @@
 Tiered reflection generation for cost optimization.
 
 Implements three-tier system:
-- CHEAP: Gemini Flash only (~$0.0003/reflection)
+- CHEAP: OpenRouter free tier model (~$0.00/reflection)
 - CACHED: Cluster templates 
-- PREMIUM: Multi-perspective consensus (~$0.096/reflection)
+- PREMIUM: Multi-perspective consensus via OpenRouter
 
 Security:
 - Input sanitization inherited from base services
@@ -21,6 +21,7 @@ Performance:
 import asyncio
 import json
 import logging
+import os
 import time
 import threading
 from collections import Counter
@@ -28,12 +29,7 @@ from datetime import timezone, datetime
 from enum import Enum
 from typing import Optional
 
-try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-    genai = None
+import httpx
 
 from src.config import LLMConfig
 from src.models.episode import EpisodeCreate, Reflection, LLMPerspective, ReflectionTier
@@ -50,9 +46,9 @@ logger = logging.getLogger(__name__)
 
 class CheapReflectionService:
     """
-    Single-model reflection using Gemini Flash for cost optimization.
+    Single-model reflection using OpenRouter free tier for cost optimization.
     
-    Cost: ~$0.0003 per reflection (320x cheaper than premium)
+    Cost: ~$0.00 per reflection (free tier models)
     Quality: Confidence ~0.6-0.7 (acceptable for non-critical errors)
     
     Security:
@@ -86,29 +82,28 @@ IMPORTANT RULES:
 
 Return ONLY valid JSON, no markdown."""
     
-  
-    COST_PER_REFLECTION_USD = 0.0003
+    # OpenRouter configuration
+    OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+    COST_PER_REFLECTION_USD = 0.0  # Free tier
     
     def __init__(self, config: LLMConfig):
         """
-        Initialize cheap reflection service.
+        Initialize cheap reflection service with OpenRouter.
         
         Args:
-            config: LLM configuration with Google API key
+            config: LLM configuration with OpenRouter API key
         """
         self.config = config
         
-        # Initialize Gemini Flash client
-        if config.google_api_key and GEMINI_AVAILABLE:
-            genai.configure(api_key=config.google_api_key)
-            self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-            logger.info("Cheap reflection service initialized with Gemini Flash")
+        # Get OpenRouter API key from config or environment
+        self.openrouter_api_key = config.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.model = config.cheap_model
+        self.enabled = bool(self.openrouter_api_key)
+        
+        if self.enabled:
+            logger.info(f"Cheap reflection service initialized with OpenRouter ({self.model})")
         else:
-            self.gemini_model = None
-            if not GEMINI_AVAILABLE:
-                logger.warning("google-generativeai not installed - cheap reflections disabled")
-            else:
-                logger.warning("Google API key not configured - cheap reflections disabled")
+            logger.warning("OPENROUTER_API_KEY not set - cheap reflections disabled")
         
         # Cost tracking (thread-safe)
         self._stats_lock = threading.Lock()
@@ -117,7 +112,7 @@ Return ONLY valid JSON, no markdown."""
     
     async def generate_reflection(self, episode: EpisodeCreate) -> Reflection:
         """
-        Generate reflection using only Gemini Flash.
+        Generate reflection using OpenRouter free tier model.
         
         Args:
             episode: Episode data (will be sanitized)
@@ -133,32 +128,23 @@ Return ONLY valid JSON, no markdown."""
         # Security: Sanitize inputs
         sanitized_episode = self._sanitize_episode(episode)
         
-        # Check if Gemini available
-        if not self.gemini_model:
-            logger.warning("Gemini Flash not available, using fallback")
+        # Check if OpenRouter available
+        if not self.enabled:
+            logger.warning("OpenRouter not available, using fallback")
             return self._create_fallback_reflection(sanitized_episode)
         
         # Build prompt
         user_prompt = self._build_user_prompt(sanitized_episode)
         
-        # Call Gemini Flash with retry
+        # Call OpenRouter with retry
         try:
             max_retries = self.config.max_retries
             
             for attempt in range(max_retries):
                 try:
-                    full_prompt = f"{self.SYSTEM_PROMPT}\n\n{user_prompt}"
-                    
-                    response = await asyncio.to_thread(
-                        self.gemini_model.generate_content,
-                        full_prompt,
-                        generation_config=genai.types.GenerationConfig(
-                            temperature=self.config.temperature,
-                            max_output_tokens=1000,  # Shorter than premium (cheaper)
-                        )
+                    content = await self._call_openrouter(
+                        f"{self.SYSTEM_PROMPT}\n\n{user_prompt}"
                     )
-                    
-                    content = response.text
                     
                     # Extract JSON from markdown if present
                     if "```json" in content:
@@ -180,7 +166,7 @@ Return ONLY valid JSON, no markdown."""
                         affected_components=data.get("affected_components", []),
                         generalization_score=float(data.get("generalization_score", 0.5)),
                         confidence_score=float(data.get("confidence_score", 0.6)),
-                        llm_model="gemini-1.5-flash",
+                        llm_model=self.model,
                         generated_at=datetime.now(timezone.utc),
                         cost_usd=self.COST_PER_REFLECTION_USD,
                         generation_latency_ms=latency_ms,
@@ -214,12 +200,47 @@ Return ONLY valid JSON, no markdown."""
                     # Fall through to fallback
             
             # All retries failed
-            logger.warning("All Gemini Flash attempts failed, using fallback")
+            logger.warning("All OpenRouter attempts failed, using fallback")
             return self._create_fallback_reflection(sanitized_episode)
         
         except Exception as e:
             logger.error(f"Cheap reflection generation failed: {e}", exc_info=True)
             return self._create_fallback_reflection(sanitized_episode)
+    
+    async def _call_openrouter(self, prompt: str) -> str:
+        """
+        Call OpenRouter API.
+        
+        Args:
+            prompt: Full prompt text
+            
+        Returns:
+            Response content string
+        """
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/episodic-memory",
+            "X-Title": "EpisodicMemory Cheap Reflection",
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.config.temperature,
+            "max_tokens": 1000,  # Shorter than premium
+        }
+        
+        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.OPENROUTER_BASE_URL}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+        
+        return data["choices"][0]["message"]["content"]
     
     def _sanitize_episode(self, episode: EpisodeCreate) -> EpisodeCreate:
         """Security: Sanitize all episode fields."""
@@ -332,6 +353,12 @@ class TieredReflectionService:
     - Circuit breakers for budget limits
     - Tier selection audit logging
     - Graceful fallback on failures
+
+    Budget Controls :
+    - Daily cost tracking with automatic reset at midnight UTC
+    - Warning alert at $10/day threshold
+    - Hard limit at $50/day - premium tier blocked
+    - Cheap tier always available (even when over budget)
     """
     
     # Critical error classes that require premium tier
@@ -341,6 +368,10 @@ class TieredReflectionService:
         "production_outage",
         "corruption",
     }
+
+    # Daily budget thresholds (USD)
+    DAILY_COST_WARNING_USD = 10.0   # Log warning
+    DAILY_COST_LIMIT_USD = 50.0     # Block premium tier
     
     def __init__(
         self,
@@ -405,6 +436,12 @@ class TieredReflectionService:
             ReflectionTier.CACHED: 0,
             ReflectionTier.PREMIUM: 0,
         }
+
+        # Daily cost tracking 
+        self._daily_cost_usd = 0.0
+        self._daily_cost_date = datetime.now(timezone.utc).date()
+        self._daily_warning_logged = False
+        self._daily_limit_logged = False
         
         logger.info("Tiered reflection service initialized")
     
@@ -512,6 +549,9 @@ class TieredReflectionService:
                 self.total_cost += reflection.cost_usd
                 self.cost_by_tier[tier] += reflection.cost_usd
                 self.count_by_tier[tier] += 1
+
+                # Daily cost tracking 
+                self._track_daily_cost(reflection.cost_usd)
             
             return reflection
         
@@ -525,9 +565,10 @@ class TieredReflectionService:
         Auto-select reflection tier based on episode characteristics.
         
         Priority:
-        1. CACHED: Check if episode matches existing cluster (Phase 6)
-        2. PREMIUM: Critical errors, novel signatures
-        3. CHEAP: Everything else (default)
+        1. Budget check: If daily budget exceeded, force CHEAP tier
+        2. CACHED: Check if episode matches existing cluster (Phase 6)
+        3. PREMIUM: Critical errors, novel signatures
+        4. CHEAP: Everything else (default)
         
         Args:
             episode: Episode data
@@ -535,6 +576,14 @@ class TieredReflectionService:
         Returns:
             Selected tier
         """
+        #  Budget check - if daily limit exceeded, force CHEAP tier
+        if self._is_daily_budget_exceeded():
+            logger.warning(
+                f"Daily budget exceeded (${self._daily_cost_usd:.2f} > ${self.DAILY_COST_LIMIT_USD}), "
+                f"forcing CHEAP tier for episode"
+            )
+            return ReflectionTier.CHEAP
+
         # Phase 6: Check 0 - Cluster match for CACHED tier
         if self.clusterer and self.embedding_service:
             try:
@@ -625,6 +674,128 @@ class TieredReflectionService:
         
         # All gates passed
         return True
+
+    def _track_daily_cost(self, cost_usd: float) -> None:
+        """
+        Track daily cost and trigger alerts when thresholds are exceeded.
+
+        Called within _stats_lock, so no additional locking needed.
+
+        Args:
+            cost_usd: Cost of current reflection in USD
+        """
+        current_date = datetime.now(timezone.utc).date()
+
+        # Reset daily tracking if date changed (midnight UTC)
+        if current_date != self._daily_cost_date:
+            logger.info(
+                f"Daily cost reset: previous day spent ${self._daily_cost_usd:.4f}, "
+                f"starting new day {current_date}"
+            )
+            self._daily_cost_usd = 0.0
+            self._daily_cost_date = current_date
+            self._daily_warning_logged = False
+            self._daily_limit_logged = False
+
+        # Add current cost
+        self._daily_cost_usd += cost_usd
+
+        # Warning threshold ($10/day)
+        if (
+            self._daily_cost_usd >= self.DAILY_COST_WARNING_USD
+            and not self._daily_warning_logged
+        ):
+            logger.warning(
+                f"COST WARNING: Daily reflection cost reached ${self._daily_cost_usd:.2f} "
+                f"(threshold: ${self.DAILY_COST_WARNING_USD}). "
+                f"Consider reviewing tier selection."
+            )
+            self._daily_warning_logged = True
+
+            # Track metric
+            try:
+                from src.observability.metrics import track_daily_cost_alert
+                track_daily_cost_alert(
+                    alert_type="warning",
+                    cost_usd=self._daily_cost_usd,
+                    threshold_usd=self.DAILY_COST_WARNING_USD,
+                )
+            except ImportError:
+                pass  # Metrics module may not have this function yet
+
+        # Hard limit threshold ($50/day)
+        if (
+            self._daily_cost_usd >= self.DAILY_COST_LIMIT_USD
+            and not self._daily_limit_logged
+        ):
+            logger.error(
+                f"COST LIMIT EXCEEDED: Daily reflection cost reached ${self._daily_cost_usd:.2f} "
+                f"(limit: ${self.DAILY_COST_LIMIT_USD}). "
+                f"Premium tier will be blocked until midnight UTC."
+            )
+            self._daily_limit_logged = True
+
+            # Track metric
+            try:
+                from src.observability.metrics import track_daily_cost_alert
+                track_daily_cost_alert(
+                    alert_type="limit_exceeded",
+                    cost_usd=self._daily_cost_usd,
+                    threshold_usd=self.DAILY_COST_LIMIT_USD,
+                )
+            except ImportError:
+                pass
+
+    def _is_daily_budget_exceeded(self) -> bool:
+        """
+        Check if daily budget limit has been exceeded.
+
+        Thread-safe: Acquires stats lock for reading.
+
+        Returns:
+            True if daily cost >= DAILY_COST_LIMIT_USD
+        """
+        with self._stats_lock:
+            # Check if date changed (reset if needed)
+            current_date = datetime.now(timezone.utc).date()
+            if current_date != self._daily_cost_date:
+                return False  # New day, budget reset
+
+            return self._daily_cost_usd >= self.DAILY_COST_LIMIT_USD
+
+    def get_daily_cost_stats(self) -> dict:
+        """
+        Get daily cost statistics.
+
+        Thread-safe: Acquires stats lock.
+
+        Returns:
+            Dict with daily cost metrics
+        """
+        with self._stats_lock:
+            current_date = datetime.now(timezone.utc).date()
+
+            # Check if date changed
+            if current_date != self._daily_cost_date:
+                return {
+                    "date": str(current_date),
+                    "daily_cost_usd": 0.0,
+                    "warning_threshold_usd": self.DAILY_COST_WARNING_USD,
+                    "limit_threshold_usd": self.DAILY_COST_LIMIT_USD,
+                    "warning_triggered": False,
+                    "limit_exceeded": False,
+                    "budget_remaining_usd": self.DAILY_COST_LIMIT_USD,
+                }
+
+            return {
+                "date": str(self._daily_cost_date),
+                "daily_cost_usd": self._daily_cost_usd,
+                "warning_threshold_usd": self.DAILY_COST_WARNING_USD,
+                "limit_threshold_usd": self.DAILY_COST_LIMIT_USD,
+                "warning_triggered": self._daily_warning_logged,
+                "limit_exceeded": self._daily_limit_logged,
+                "budget_remaining_usd": max(0, self.DAILY_COST_LIMIT_USD - self._daily_cost_usd),
+            }
     
     def get_stats(self) -> dict:
         """
@@ -667,6 +838,7 @@ class TieredReflectionService:
             "percentage_by_tier": tier_percentages,
             "cost_savings_usd": savings,
             "cost_savings_percentage": savings_percentage,
+            "daily_cost": self.get_daily_cost_stats(),  # Day 5: Add daily cost stats
             "cheap_service_stats": self.cheap_service.get_stats(),
             "premium_service_stats": self.premium_service.get_usage_stats(),
         }
