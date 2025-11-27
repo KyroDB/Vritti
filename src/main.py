@@ -11,6 +11,7 @@ Designed for <50ms P99 latency.
 
 import time
 from contextlib import asynccontextmanager
+from datetime import timezone, datetime
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -1105,6 +1106,135 @@ async def reflect_before_action(
         )
 
 
+# Admin endpoints
+class BudgetResponse(BaseModel):
+    """Daily budget status response."""
+
+    date: str = Field(..., description="Date for budget (YYYY-MM-DD)")
+    daily_cost_usd: float = Field(..., description="Total cost today in USD")
+    warning_threshold_usd: float = Field(..., description="Warning threshold ($10)")
+    limit_threshold_usd: float = Field(..., description="Hard limit threshold ($50)")
+    warning_triggered: bool = Field(..., description="Whether warning has been logged")
+    limit_exceeded: bool = Field(..., description="Whether limit has been exceeded")
+    budget_remaining_usd: float = Field(..., description="Remaining budget today")
+    premium_tier_blocked: bool = Field(..., description="Whether premium tier is blocked")
+    cost_by_tier: dict = Field(default_factory=dict, description="Cost breakdown by tier")
+    count_by_tier: dict = Field(default_factory=dict, description="Reflection count by tier")
+
+
+@app.get(
+    "/admin/budget",
+    response_model=BudgetResponse,
+    tags=["Admin"],
+    summary="Check daily LLM budget status",
+    description="Returns current daily cost, budget remaining, and tier blocking status.",
+)
+async def get_budget_status():
+    """
+    Check daily LLM budget status.
+
+    Returns current daily spending, budget thresholds, and whether
+    premium tier is blocked due to budget exhaustion.
+
+    This endpoint is for monitoring and debugging LLM costs.
+    Premium tier is automatically blocked when daily spend >= $50.
+
+    Returns:
+        BudgetResponse: Current budget status
+    """
+    if not reflection_service:
+        return BudgetResponse(
+            date=str(datetime.now(timezone.utc).date()),
+            daily_cost_usd=0.0,
+            warning_threshold_usd=10.0,
+            limit_threshold_usd=50.0,
+            warning_triggered=False,
+            limit_exceeded=False,
+            budget_remaining_usd=50.0,
+            premium_tier_blocked=False,
+            cost_by_tier={},
+            count_by_tier={},
+        )
+
+    stats = reflection_service.get_stats()
+    daily = stats.get("daily_cost", {})
+
+    return BudgetResponse(
+        date=daily.get("date", str(datetime.now(timezone.utc).date())),
+        daily_cost_usd=daily.get("daily_cost_usd", 0.0),
+        warning_threshold_usd=daily.get("warning_threshold_usd", 10.0),
+        limit_threshold_usd=daily.get("limit_threshold_usd", 50.0),
+        warning_triggered=daily.get("warning_triggered", False),
+        limit_exceeded=daily.get("limit_exceeded", False),
+        budget_remaining_usd=daily.get("budget_remaining_usd", 50.0),
+        premium_tier_blocked=daily.get("limit_exceeded", False),
+        cost_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("cost_by_tier", {}).items()},
+        count_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("count_by_tier", {}).items()},
+    )
+
+
+class ReflectionStatsResponse(BaseModel):
+    """Reflection service statistics response."""
+
+    total_cost_usd: float
+    total_reflections: int
+    average_cost_per_reflection: float
+    cost_savings_usd: float
+    cost_savings_percentage: float
+    daily_cost: dict
+    cost_by_tier: dict
+    count_by_tier: dict
+    percentage_by_tier: dict
+
+
+@app.get(
+    "/admin/reflection/stats",
+    response_model=ReflectionStatsResponse,
+    tags=["Admin"],
+    summary="Get reflection generation statistics",
+    description="Returns detailed statistics about reflection generation including cost savings.",
+)
+async def get_reflection_stats():
+    """
+    Get reflection generation statistics.
+
+    Returns comprehensive statistics about reflection generation:
+    - Total cost and reflection count
+    - Cost breakdown by tier (cheap/cached/premium)
+    - Cost savings vs all-premium baseline
+    - Daily cost tracking
+
+    Returns:
+        ReflectionStatsResponse: Reflection statistics
+    """
+    if not reflection_service:
+        return ReflectionStatsResponse(
+            total_cost_usd=0.0,
+            total_reflections=0,
+            average_cost_per_reflection=0.0,
+            cost_savings_usd=0.0,
+            cost_savings_percentage=0.0,
+            daily_cost={},
+            cost_by_tier={},
+            count_by_tier={},
+            percentage_by_tier={},
+        )
+
+    stats = reflection_service.get_stats()
+
+    return ReflectionStatsResponse(
+        total_cost_usd=stats.get("total_cost_usd", 0.0),
+        total_reflections=stats.get("total_reflections", 0),
+        average_cost_per_reflection=stats.get("average_cost_per_reflection", 0.0),
+        cost_savings_usd=stats.get("cost_savings_usd", 0.0),
+        cost_savings_percentage=stats.get("cost_savings_percentage", 0.0),
+        daily_cost=stats.get("daily_cost", {}),
+        cost_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("cost_by_tier", {}).items()},
+        count_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("count_by_tier", {}).items()},
+        percentage_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("percentage_by_tier", {}).items()},
+    )
+
+
 # Root endpoint
 @app.get("/", tags=["System"])
 async def root():
@@ -1117,6 +1247,10 @@ async def root():
         "docs": "/docs",
         "health": "/health",
         "stats": "/stats",
+        "admin": {
+            "budget": "/admin/budget",
+            "reflection_stats": "/admin/reflection/stats",
+        },
     }
 
 

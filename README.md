@@ -1,4 +1,4 @@
-# EpisodicMemory
+# Vriti
 
 **Production-grade episodic memory for AI coding assistants**
 

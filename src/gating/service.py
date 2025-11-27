@@ -12,6 +12,7 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
 from src.models.search import SearchRequest, SearchResult
 from src.models.skill import Skill
+from src.observability.metrics import track_gating_decision
 from src.retrieval.search import SearchPipeline
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,16 @@ class GatingService:
             skills_dicts = [
                 skill.to_metadata_dict() for skill, score in matched_skills
             ]
+
+            # Track gating decision metrics
+            track_gating_decision(
+                recommendation=recommendation.value,
+                customer_tier="default",  # TODO: Pass customer tier from context
+                confidence=confidence,
+                latency_seconds=total_latency_ms / 1000.0,
+                matched_failures=len(search_response.results),
+                matched_skills=len(matched_skills),
+            )
 
             return ReflectResponse(
                 recommendation=recommendation,

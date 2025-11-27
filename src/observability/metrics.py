@@ -1034,6 +1034,92 @@ def track_daily_cost_alert(
 
 
 # ============================================================================
+# GATING DECISION METRICS
+# ============================================================================
+
+# Pre-action gating decision counter
+gating_decision_total = Counter(
+    "episodic_memory_gating_decision_total",
+    "Total pre-action gating decisions by recommendation type",
+    labelnames=["recommendation", "customer_tier"],  # block, rewrite, hint, proceed
+)
+
+# Gating latency histogram
+gating_latency_seconds = Histogram(
+    "episodic_memory_gating_latency_seconds",
+    "Pre-action gating decision latency",
+    labelnames=["recommendation"],
+    buckets=(
+        0.010,  # 10ms
+        0.025,  # 25ms
+        0.050,  # 50ms
+        0.100,  # 100ms
+        0.250,  # 250ms
+        0.500,  # 500ms
+        1.000,  # 1s
+    ),
+)
+
+# Gating confidence histogram
+gating_confidence = Histogram(
+    "episodic_memory_gating_confidence",
+    "Gating decision confidence score",
+    labelnames=["recommendation"],
+    buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+
+# Gating matched failures count
+gating_matched_failures = Histogram(
+    "episodic_memory_gating_matched_failures",
+    "Number of matched failures in gating decision",
+    buckets=(0, 1, 2, 3, 5, 10, 20),
+)
+
+# Gating matched skills count
+gating_matched_skills = Histogram(
+    "episodic_memory_gating_matched_skills",
+    "Number of matched skills in gating decision",
+    buckets=(0, 1, 2, 3, 5, 10),
+)
+
+
+def track_gating_decision(
+    recommendation: str,
+    customer_tier: str,
+    confidence: float,
+    latency_seconds: float,
+    matched_failures: int,
+    matched_skills: int,
+) -> None:
+    """
+    Track pre-action gating decision metrics.
+
+    Args:
+        recommendation: Decision type (block, rewrite, hint, proceed)
+        customer_tier: Customer subscription tier
+        confidence: Decision confidence (0.0-1.0)
+        latency_seconds: Total gating latency
+        matched_failures: Number of matched failures
+        matched_skills: Number of matched skills
+    """
+    gating_decision_total.labels(
+        recommendation=recommendation,
+        customer_tier=customer_tier,
+    ).inc()
+
+    gating_latency_seconds.labels(
+        recommendation=recommendation,
+    ).observe(latency_seconds)
+
+    gating_confidence.labels(
+        recommendation=recommendation,
+    ).observe(confidence)
+
+    gating_matched_failures.observe(matched_failures)
+    gating_matched_skills.observe(matched_skills)
+
+
+# ============================================================================
 # METRICS ENDPOINT
 # ============================================================================
 
