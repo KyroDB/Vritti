@@ -15,6 +15,7 @@ Performance:
 
 import logging
 import time
+from typing import Optional
 
 from cachetools import TTLCache
 from fastapi import Header, HTTPException, Request, status
@@ -26,7 +27,6 @@ from src.observability.metrics import (
     track_api_key_validation,
 )
 from src.storage.database import get_customer_db
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -283,8 +283,9 @@ async def require_admin_access(
             # Only accessible with valid admin API key
             ...
     """
-    from src.config import get_settings
     import secrets
+
+    from src.config import get_settings
     
     settings = get_settings()
     configured_key = settings.admin_api_key

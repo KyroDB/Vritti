@@ -22,24 +22,21 @@ import asyncio
 import json
 import logging
 import os
-import time
 import threading
-from collections import Counter
+import time
 from datetime import timezone, datetime
-from enum import Enum
 from typing import Optional
 
 import httpx
 
 from src.config import LLMConfig
-from src.models.episode import EpisodeCreate, Reflection, LLMPerspective, ReflectionTier
-from src.ingestion.multi_perspective_reflection import (
-    MultiPerspectiveReflectionService,
-    PromptInjectionDefense
-)
+from src.models.episode import EpisodeCreate, Reflection, ReflectionTier
 from src.hygiene.clustering import EpisodeClusterer
 from src.hygiene.templates import TemplateGenerator
-from src.models.clustering import ClusterTemplate
+from src.ingestion.multi_perspective_reflection import (
+    MultiPerspectiveReflectionService,
+    PromptInjectionDefense,
+)
 
 logger = logging.getLogger(__name__)
 

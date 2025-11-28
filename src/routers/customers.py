@@ -11,6 +11,7 @@ Security:
 """
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
@@ -21,7 +22,6 @@ from src.models.customer import (
     CustomerUpdate,
 )
 from src.storage.database import CustomerDatabase, get_customer_db
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

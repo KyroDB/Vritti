@@ -14,6 +14,7 @@ Optimized for <10-15ms latency per candidate.
 
 import logging
 import re
+import hashlib
 from typing import Any, Optional
 
 from src.models.episode import Episode
@@ -266,8 +267,6 @@ import asyncio
 import json
 import os
 import time
-from functools import lru_cache
-from typing import Tuple
 
 import httpx
 
@@ -489,7 +488,7 @@ class AdvancedPreconditionMatcher:
             # Fallback: accept on errors
             return True
     
-    async def _call_openrouter(self, prompt: str) -> Tuple[bool, float, str]:
+    async def _call_openrouter(self, prompt: str) -> tuple[bool, float, str]:
         """
         Call OpenRouter API for LLM validation.
         
@@ -594,12 +593,17 @@ If the goals have opposite meanings or would require different solutions, return
         # Basic sanitization (prevent prompt injection)
         text = text.replace("```", "").replace("</", "").replace("<", "")
         
+        # Remove code blocks if they look like injection
+        if "import " in text or "system(" in text:
+             # Simple heuristic: if it looks like code, strip it
+             text = re.sub(r"import\s+\w+", "", text)
+             text = re.sub(r"system\(.*\)", "", text)
+
         return text.strip()
     
     def _get_cache_key(self, past_goal: str, current_query: str) -> str:
         """Generate cache key from goals."""
         # Simple hash-based key
-        import hashlib
         combined = f"{past_goal[:100]}|{current_query[:100]}"
         return hashlib.md5(combined.encode()).hexdigest()
     

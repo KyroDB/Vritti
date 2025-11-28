@@ -9,9 +9,10 @@ Design Decision: This system stores ONLY failures in episodic memory.
 - This prevents memory bloat and keeps the system focused on its core value
 """
 
-from datetime import datetime, timezone
+from datetime import timezone, datetime
 from enum import Enum
 from typing import Any, Optional
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 

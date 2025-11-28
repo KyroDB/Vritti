@@ -10,10 +10,11 @@ Security:
 - Validation of extracted metadata
 """
 
-import re
 import logging
+import re
 from enum import Enum
 from typing import Optional
+
 from pydantic import BaseModel, Field, validator
 
 logger = logging.getLogger(__name__)
@@ -384,7 +385,7 @@ class GoalParser:
             # Negation mismatch on same operator
             if tc1.operator == tc2.operator and tc1.negated != tc2.negated:
                 logger.debug(
-                    f"Goals incompatible: time condition negation mismatch"
+                    "Goals incompatible: time condition negation mismatch"
                 )
                 return False
         

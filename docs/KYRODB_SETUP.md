@@ -1,44 +1,36 @@
-# KyroDB Setup for Vritti Integration Testing
+# KyroDB Setup
 
-This document describes how to set up KyroDB for Vritti integration testing.
-
-## Overview
-
-Vritti uses KyroDB as its vector database for storing and searching episodic memories. The integration tests require a running KyroDB instance with the correct embedding dimensions.
+Vritti uses KyroDB as its vector database for storing episodes and running searches.
 
 ## Prerequisites
 
-1. **KyroDB Binary**: The `kyrodb_server` binary must be built and available
-2. **Python Environment**: Vritti's Python dependencies installed
-3. **Network Ports**: Ports 50051 (text) and 50052 (image) available
+- KyroDB server binary
+- Rust and Cargo (for building from source)
+- Ports 50051 (text) and 50052 (image) available
 
 ## Quick Start
 
-### 1. Build KyroDB (if not already built)
+### 1. Build KyroDB
 
 ```bash
-cd /path/to/ProjectKyro
-cargo build --release -p kyrodb-engine --bin kyrodb_server
+cd /path/to/KyroDB
+cargo build --release
 ```
 
-### 2. Create Test Configuration
+### 2. Create Configuration
 
-Create `/tmp/kyrodb_test_config.toml`:
+Create `kyrodb_config.toml`:
 
 ```toml
-# KyroDB Test Configuration for Vritti Integration Tests
-# Uses 384-dim embeddings to match all-MiniLM-L6-v2
-
 [server]
 port = 50051
 max_connections = 100
 
 [storage]
-data_dir = "/tmp/kyrodb_test_data"
+data_dir = "./kyrodb_data"
 wal_sync = "immediate"
 
 [hnsw]
-# 384 dimensions for all-MiniLM-L6-v2 embeddings
 dimension = 384
 distance = "cosine"
 M = 16
@@ -55,49 +47,23 @@ l2_cache_size_mb = 128
 level = "info"
 ```
 
-### 3. Start KyroDB Server
+### 3. Start KyroDB
 
 ```bash
-# Create clean data directory
-rm -rf /tmp/kyrodb_test_data
-mkdir -p /tmp/kyrodb_test_data
-
-# Start server with test config
-./target/release/kyrodb_server --config /tmp/kyrodb_test_config.toml
+./target/release/kyrodb_server --config kyrodb_config.toml
 ```
 
-### 4. Run Integration Tests
+Verify it's running:
 
 ```bash
-cd Vritti
-python -m pytest tests/integration/test_kyrodb_real.py -v
+lsof -i :50051
 ```
 
-## Test Configuration
+### 4. Configure Vritti
 
-### Embedding Dimensions
-
-Vritti uses `all-MiniLM-L6-v2` from sentence-transformers, which produces **384-dimensional** embeddings. The KyroDB server must be configured to match:
-
-```toml
-[hnsw]
-dimension = 384
-```
-
-### Dual Instance Architecture (Production)
-
-In production, Vritti uses two KyroDB instances:
-- **Text instance** (port 50051): 384-dim embeddings for text/code
-- **Image instance** (port 50052): 512-dim embeddings for images
-
-For testing, we use a single instance with 384-dim.
-
-### Environment Variables
-
-Set these in your `.env` file for Vritti:
+Edit `.env`:
 
 ```bash
-# KyroDB connection (for tests)
 KYRODB_TEXT_HOST=localhost
 KYRODB_TEXT_PORT=50051
 KYRODB_IMAGE_HOST=localhost
@@ -106,62 +72,77 @@ KYRODB_ENABLE_TLS=false
 KYRODB_REQUEST_TIMEOUT_SECONDS=30
 ```
 
-## Integration Test Coverage
+### 5. Test Connection
 
-The following tests validate KyroDB integration:
+```bash
+python -m pytest tests/integration/test_kyrodb_real.py -v
+```
 
-| Test | Description | Status |
-|------|-------------|--------|
-| `test_health_check` | Verify server connectivity | PASS |
-| `test_insert_and_query` | Insert and retrieve documents | PASS |
-| `test_search` | k-NN vector search | PASS |
-| `test_router_health` | Router health check (both instances) | PASS |
-| `test_insert_episode` | Episode insertion via router | PASS |
-| `test_search_episodes` | Episode search via router | PASS |
-| `test_update_episode_reflection` | Reflection persistence | PASS |
-| `test_insert_and_search_skill` | Skills storage and search | PASS |
+## Embedding Dimensions
+
+Vritti uses `all-MiniLM-L6-v2` which produces 384-dimensional embeddings.
+
+KyroDB must be configured to match:
+
+```toml
+[hnsw]
+dimension = 384
+```
+
+Mismatch will cause errors:
+```
+grpc.aio._call.AioRpcError: query dimension mismatch: expected 768 found 384
+```
+
+## Dual Instance Setup (Production)
+
+For production, run two KyroDB instances:
+
+**Text instance** (port 50051):
+```toml
+[hnsw]
+dimension = 384
+```
+
+**Image instance** (port 50052):
+```toml
+[hnsw]
+dimension = 512
+```
+
+Start both:
+
+```bash
+# Terminal 1
+./kyrodb_server --config text_config.toml
+
+# Terminal 2
+./kyrodb_server --config image_config.toml
+```
 
 ## Troubleshooting
 
-### Dimension Mismatch Error
-
-```
-grpc.aio._call.AioRpcError: Search failed: query dimension mismatch: expected 768 found 384
-```
-
-**Solution**: Ensure KyroDB is configured with `dimension = 384` in the HNSW config.
-
 ### Connection Refused
 
+Check if KyroDB is running:
+
+```bash
+lsof -i :50051
 ```
-grpc._channel._InactiveRpcError: failed to connect to all addresses
-```
 
-**Solution**: 
-1. Check if KyroDB is running: `lsof -i :50051`
-2. Start the server if not running
+Start the server if not running.
 
-### Health Check Degraded
+### Dimension Mismatch
 
-The server may report "Degraded" status on first start (before any data is inserted). This is expected and tests will still pass.
+Ensure KyroDB config has `dimension = 384` for text instance.
 
-## Performance Benchmarks
+### Performance Issues
 
-Target performance for integration tests:
-- Insert: < 1ms per document
-- Query: < 1ms P99
-- Search: < 5ms P99 for k=10
-- Batch operations: < 10ms for 100 documents
+Expected performance:
+- Insert: <1ms per document
+- Search: <5ms P99 for k=10
 
-## Production Deployment
-
-For production deployment, see:
-- `docs/OPERATIONS.md` - Operational guidelines
-- `docs/CONFIGURATION_MANAGEMENT.md` - Configuration best practices
-- `docs/BACKUP_AND_RECOVERY.md` - Data durability
-
-## Related Documentation
-
-- [Architecture Overview](ARCHITECTURE.md)
-- [API Reference](API_REFERENCE.md)
-- [Observability](OBSERVABILITY.md)
+If slower, check:
+- Disk I/O (use SSD)
+- Memory (increase cache sizes)
+- Network latency (use localhost for testing)

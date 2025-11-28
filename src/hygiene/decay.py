@@ -16,8 +16,7 @@ Performance:
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import timezone, datetime, timedelta
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode, ErrorClass

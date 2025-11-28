@@ -1,6 +1,6 @@
 # Observability & Monitoring
 
-Production-grade observability infrastructure for EpisodicMemory .
+Production-grade observability infrastructure for Vritti.
 
 ## Overview
 
@@ -8,7 +8,7 @@ EpisodicMemory includes comprehensive observability features:
 
 - **Prometheus metrics**  - Request latency, business metrics, error tracking
 - **Structured logging** - JSON logs with request context
-- **Health checks** - Kubernetes-ready probes
+- **Health checks** - Liveness and readiness probes
 - **Grafana dashboards** - Pre-built monitoring dashboards
 
 ## Architecture
@@ -161,81 +161,29 @@ episodic_memory_credits_used_total{customer_id="acme-corp",customer_tier="pro",o
 
 ### Installation
 
-**Docker Compose** (recommended for development):
-```yaml
-version: '3.8'
+Prometheus can be run standalone to scrape your Vritti service.
 
-services:
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.retention.time=90d'
-
-  episodic_memory:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - CORS_ALLOWED_ORIGINS=*
-
-volumes:
-  prometheus_data:
-```
-
-**Kubernetes**:
-```yaml
-# See k8s/prometheus-config.yaml for complete configuration
-```
-
-### Configuration File
-
-**`prometheus.yml`**:
+**prometheus.yml**:
 ```yaml
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
-  external_labels:
-    cluster: 'episodic-memory-prod'
-    environment: 'production'
 
 scrape_configs:
-  - job_name: 'episodic-memory'
+  - job_name: 'vritti'
     scrape_interval: 15s
     scrape_timeout: 10s
     metrics_path: '/metrics'
     static_configs:
       - targets:
-          - 'episodic-memory:8000'
+          - 'localhost:8000'
         labels:
-          service: 'episodic-memory'
-          region: 'us-west-2'
+          service: 'vritti'
+```
 
-    # Optional: Basic auth for metrics endpoint (Phase 3)
-    # basic_auth:
-    #   username: 'prometheus'
-    #   password_file: '/etc/prometheus/metrics_password'
-
-    # Relabeling for service discovery
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: 'episodic-memory'
-
-# Alerting rules
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets:
-            - 'alertmanager:9093'
-
-rule_files:
-  - '/etc/prometheus/alerts.yml'
+**Run Prometheus**:
+```bash
+prometheus --config.file=prometheus.yml
 ```
 
 ### Alerting Rules
@@ -484,9 +432,9 @@ If metrics show gaps:
 
 ## Next Steps
 
-**Phase 2 Week 6**: Structured logging with JSON output
-**Phase 2 Week 7**: Health check endpoints and Grafana dashboards
-**Phase 3**: Containerization and production deployment
+- Structured logging with JSON output
+- Health check endpoints and Grafana dashboards
+- Containerization and production deployment
 
 ## References
 

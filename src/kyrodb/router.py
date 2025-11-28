@@ -10,11 +10,11 @@ Namespace format: {customer_id}:failures (e.g., "acme-corp:failures")
 """
 
 import logging
+from typing import Optional
 
 from src.config import KyroDBConfig
 from src.kyrodb.client import KyroDBClient
 from src.kyrodb.kyrodb_pb2 import SearchResponse
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -607,7 +607,6 @@ class KyroDBRouter:
             ValueError: If customer_id is empty or episode not found
             KyroDBError: On update failure
         """
-        import json
 
         # Generate customer-namespaced collection
         namespaced_collection = get_namespaced_collection(customer_id, collection)

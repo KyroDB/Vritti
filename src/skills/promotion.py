@@ -14,14 +14,13 @@ Security:
 
 import logging
 import re
-from datetime import timezone, datetime
+from typing import Optional
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode
 from src.models.skill import Skill
 from src.utils.identifiers import generate_episode_id
-from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 

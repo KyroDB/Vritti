@@ -13,7 +13,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import timezone, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,19 +29,13 @@ from src.auth import (
     require_admin_access,
 )
 from src.config import get_settings
-from src.rate_limits import (
-    CAPTURE_RATE_LIMIT,
-    SEARCH_RATE_LIMIT,
-    REFLECT_RATE_LIMIT,
-    SKILLS_RATE_LIMIT,
-    ADMIN_RATE_LIMIT,
-    get_rate_limit_for_tier,
-    log_rate_limit_exceeded,
-)
+from src.gating.service import GatingService
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.tiered_reflection import TieredReflectionService, get_tiered_reflection_service
-from src.gating.service import GatingService
+from src.ingestion.tiered_reflection import (
+    TieredReflectionService,
+    get_tiered_reflection_service,
+)
 from src.kyrodb.client import KyroDBError
 from src.kyrodb.router import KyroDBRouter
 from src.models.customer import Customer
@@ -68,12 +62,18 @@ from src.observability.metrics import (
 )
 from src.observability.middleware import ErrorTrackingMiddleware, PrometheusMiddleware
 from src.observability.request_limits import RequestSizeLimitMiddleware
+from src.rate_limits import (
+    CAPTURE_RATE_LIMIT,
+    REFLECT_RATE_LIMIT,
+    SEARCH_RATE_LIMIT,
+    SKILLS_RATE_LIMIT,
+    log_rate_limit_exceeded,
+)
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
 from src.storage.database import CustomerDatabase, get_customer_db
-from typing import Union, Optional
 
-# Initialize structured logging (Phase 2 Week 6)
+# Initialize structured logging
 settings = get_settings()
 configure_logging(
     log_level=settings.logging.level,
@@ -148,7 +148,7 @@ async def lifespan(app: FastAPI):
         embedding_service.warmup()
         logger.info("[OK] Embedding models warmed up")
 
-        # Initialize tiered reflection service (Phase 5)
+        # Initialize tiered reflection service
         if settings.llm.has_any_api_key:
             logger.info("Initializing tiered LLM reflection service...")
             reflection_service = get_tiered_reflection_service(config=settings.llm)
@@ -180,7 +180,7 @@ async def lifespan(app: FastAPI):
         )
         logger.info("[OK] Search pipeline ready")
 
-        # Initialize gating service (Phase 3)
+        # Initialize gating service
         logger.info("Initializing gating service...")
         gating_service = GatingService(
             search_pipeline=search_pipeline,
@@ -299,7 +299,7 @@ logger.info(
     credentials=settings.cors.allow_credentials,
 )
 
-# Observability and security middleware (Phase 2 Week 5-6, Phase 5)
+# Observability and security middleware
 # Order matters (processed in reverse order of registration):
 # 1. RequestSizeLimitMiddleware (innermost) - Rejects oversized requests first
 # 2. ErrorTrackingMiddleware - Classifies errors
@@ -361,7 +361,7 @@ async def validation_error_handler(request: Request, exc: ValueError):
     )
 
 
-# Health check endpoints (Phase 2 Week 7)
+# Health check endpoints
 # Kubernetes-ready liveness, readiness, and comprehensive health checks
 
 
@@ -550,7 +550,7 @@ async def get_stats():
     )
 
 
-# Prometheus metrics endpoint (Phase 2 Week 5)
+# Prometheus metrics endpoint
 @app.get("/metrics", tags=["System"])
 async def metrics():
     """
@@ -744,7 +744,7 @@ async def capture_episode(
             # Log but don't fail the request if usage tracking fails
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
-        # Track business metrics (Phase 2 Week 5)
+        # Track business metrics
         # Wrapped in try-except to prevent telemetry failures from breaking the request
         try:
             track_ingestion_credits(
@@ -830,8 +830,8 @@ async def validate_fix(
         - Episode ownership validated
         - Stats validated for consistency
     """
-    from src.skills.promotion import SkillPromotionService
     from src.kyrodb.router import get_namespaced_collection
+    from src.skills.promotion import SkillPromotionService
 
     logger.info(
         f"Fix validation request for episode {validation.episode_id} "
@@ -936,6 +936,7 @@ async def validate_fix(
 
             try:
                 import time
+
                 from src.observability.metrics import track_skill_promotion
 
                 start_time = time.perf_counter()
@@ -1046,7 +1047,7 @@ async def search_episodes(
 
     Usage Billing:
         - Base cost: 0.1 credits per search
-        - With image search: +0.2 credits (Phase 2)
+        - With image search: +0.2 credits
     """
     if not search_pipeline:
         raise HTTPException(
@@ -1082,7 +1083,7 @@ async def search_episodes(
             # Log but don't fail the request if usage tracking fails
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
-        # Track business metrics (Phase 2 Week 5)
+        # Track business metrics
         # Wrapped in try-except to prevent telemetry failures from breaking the request
         try:
             track_search_credits(
@@ -1120,7 +1121,7 @@ async def search_episodes(
         )
 
 
-# Pre-action gating endpoint (Phase 3)
+# Pre-action gating endpoint
 @app.post(
     "/api/v1/reflect",
     response_model=ReflectResponse,
@@ -1168,8 +1169,6 @@ async def reflect_before_action(
             )
         except Exception as e:
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
-
-        # TODO: Track business metrics for reflection
 
         return response
 
@@ -1305,7 +1304,10 @@ async def skill_feedback(
             )
 
         # Track metrics
-        from src.observability.metrics import track_skill_application, update_skill_success_rate
+        from src.observability.metrics import (
+            track_skill_application,
+            update_skill_success_rate,
+        )
 
         track_skill_application(
             skill_id=skill_id,
@@ -1376,7 +1378,6 @@ async def list_skills(
         - Customer namespace isolation enforced
         - Only returns skills belonging to authenticated customer
     """
-    from src.models.skill import Skill
 
     logger.info(f"Listing skills for customer {customer_id} (limit: {limit})")
 
@@ -1577,7 +1578,7 @@ async def get_budget_status(_: None = Depends(require_admin_access)):
     """
     if not reflection_service:
         return BudgetResponse(
-            date=str(datetime.now(timezone.utc).date()),
+            date=str(datetime.now(UTC).date()),
             daily_cost_usd=0.0,
             warning_threshold_usd=10.0,
             limit_threshold_usd=50.0,
@@ -1593,7 +1594,7 @@ async def get_budget_status(_: None = Depends(require_admin_access)):
     daily = stats.get("daily_cost", {})
 
     return BudgetResponse(
-        date=daily.get("date", str(datetime.now(timezone.utc).date())),
+        date=daily.get("date", str(datetime.now(UTC).date())),
         daily_cost_usd=daily.get("daily_cost_usd", 0.0),
         warning_threshold_usd=daily.get("warning_threshold_usd", 10.0),
         limit_threshold_usd=daily.get("limit_threshold_usd", 50.0),

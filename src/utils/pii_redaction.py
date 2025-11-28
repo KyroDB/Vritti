@@ -5,10 +5,10 @@ Removes sensitive data from error traces, logs, and code diffs before storage.
 Uses regex patterns optimized for performance with compilation caching.
 """
 
-import re
 import logging
+import re
 from re import Pattern
-from typing import Union, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

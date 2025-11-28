@@ -10,14 +10,6 @@ All API requests require an API Key in the header:
 X-API-Key: your_api_key_here
 ```
 
-## Base URL
-
-- **Production**: `https://api.episodic.kyro.ai` (or `${PRODUCTION_API_HOST}`)
-- **Staging**: `https://staging-api.episodic.kyro.ai` (or `${STAGING_API_HOST}`)
-- **Local**: `http://localhost:8000`
-
----
-
 ## Core Workflows
 
 ### 1. Capture a Failure Episode
@@ -98,7 +90,7 @@ Call this before taking an action or when an error occurs, to see if it happened
 
 Call this *before* executing a sensitive or complex action to get a Go/No-Go decision.
 
-**Endpoint**: `POST /api/v1/gate`
+**Endpoint**: `POST /api/v1/reflect`
 
 **Request**:
 ```json
@@ -223,7 +215,7 @@ class EpisodicClient:
         
         try:
             response = requests.post(
-                f"{self.base_url}/api/v1/gate",
+                f"{self.base_url}/api/v1/reflect",
                 headers=self.headers,
                 json=payload,
                 timeout=self.timeout
@@ -279,7 +271,7 @@ curl -X POST https://${API_HOST}/api/v1/search \
   }'
 
 # Gate
-curl -X POST https://${API_HOST}/api/v1/gate \
+curl -X POST https://${API_HOST}/api/v1/reflect \
   -H "X-API-Key: your_key" \
   -H "Content-Type: application/json" \
   -d '{

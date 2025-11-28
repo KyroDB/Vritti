@@ -16,15 +16,19 @@ import logging
 import time
 from datetime import timezone, datetime
 from threading import Lock
+from typing import Optional
 
+from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode
 from src.models.search import SearchRequest, SearchResponse, SearchResult
-from src.retrieval.preconditions import PreconditionMatcher, AdvancedPreconditionMatcher, get_advanced_precondition_matcher
+from src.retrieval.preconditions import (
+    AdvancedPreconditionMatcher,
+    PreconditionMatcher,
+    get_advanced_precondition_matcher,
+)
 from src.retrieval.ranking import EpisodeRanker
-from src.config import get_settings
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

@@ -16,7 +16,7 @@
   - Preconditions filtered out all candidates.
   - Empty database.
 - **Fix**:
-  - Lower `min_similarity` (vector similarity threshold, range 0.0–1.0, default: 0.8) to 0.6 or 0.7.
+  - Lower `min_similarity` (vector similarity threshold, range 0.0-1.0, default: 0.8) to 0.6 or 0.7.
   - Check `current_state` matches episode preconditions.
   - Ensure episodes are being ingested correctly.
 
@@ -35,44 +35,40 @@
 Check the system status:
 
 ```bash
-# Local
+# Liveness (is the service running?)
+curl http://localhost:8000/health/liveness
+
+# Readiness (is the service ready to accept traffic?)
+curl http://localhost:8000/health/readiness
+
+# Comprehensive health check
 curl http://localhost:8000/health
-
-# Staging
-curl https://staging-api.example.com/health  # Replace with ${STAGING_API_HOST}
-
-# Production
-curl https://api.example.com/health  # Replace with ${PRODUCTION_API_HOST}
 ```
-
-**Note**: `HOST` and `PORT` are configurable via environment variables or deployment settings.
 
 **Response**:
 ```json
 {
   "status": "healthy",
-  "components": {
-    "kyrodb": "connected",      // Vector database for episodes
-    "database": "connected",    // Metadata database (PostgreSQL/SQLite)
-    "redis": "connected"        // Cache layer
-  }
+  "components": [
+    {"name": "kyrodb", "status": "healthy"},
+    {"name": "database", "status": "healthy"}
+  ]
 }
 ```
 
 **Component Statuses**:
-- `connected`: Service is healthy
-- `disconnected`: Service is unreachable
+- `healthy`: Service is working
+- `unhealthy`: Service is unreachable
 - `degraded`: Service is partially available
 
 **Troubleshooting disconnected components**:
-1. **Verify service is running**:
+1. **Verify KyroDB is running**:
    ```bash
-   docker-compose ps  # Check if services are up
+   lsof -i :50051
    ```
 2. **Check service logs**:
    ```bash
-   docker-compose logs <SERVICE_NAME>  # Replace <SERVICE_NAME> with: kyrodb, postgres, redis, etc.
-   # Find service names: docker-compose config --services
+   grep ERROR logs/app.log | tail -20
    ```
 3. **Confirm network/.env configuration**:
    - Check connection strings in `.env`
@@ -84,7 +80,6 @@ curl https://api.example.com/health  # Replace with ${PRODUCTION_API_HOST}
 Logs are structured JSON. Look for `level="ERROR"` or `level="WARNING"`.
 
 ```bash
-# Tail logs (replace <SERVICE_NAME> with your actual service name, e.g., "api", "episodic-memory")
-# Find service name: docker-compose ps
-docker-compose logs -f <SERVICE_NAME> | grep "ERROR"
+# Tail logs
+tail -f logs/app.log | grep "ERROR"
 ```

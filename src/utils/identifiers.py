@@ -10,7 +10,7 @@ Provides:
 import hashlib
 import json
 import time
-from typing import Union, Any, Optional
+from typing import Any, Optional
 
 
 class SnowflakeIDGenerator:

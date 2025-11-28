@@ -4,8 +4,8 @@ Clustering data models for memory hygiene.
 Defines schemas for episode clusters, templates, and clustering metadata.
 """
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import timezone, datetime
+
 from pydantic import BaseModel, Field
 
 

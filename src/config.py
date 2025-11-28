@@ -40,7 +40,7 @@ class KyroDBConfig(BaseSettings):
     connection_timeout_seconds: int = Field(default=30, ge=1)
     request_timeout_seconds: int = Field(default=60, ge=1)
 
-    # TLS/SSL configuration (Phase 1 Week 4)
+    # TLS/SSL configuration
     enable_tls: bool = Field(
         default=False, description="Enable TLS for KyroDB connections (required for production)"
     )
@@ -289,8 +289,8 @@ class SearchConfig(BaseSettings):
 
     # LLM semantic validation
     enable_llm_validation: bool = Field(
-        default=False,
-        description="Enable LLM semantic validation for preconditions (disabled by default for safety)"
+        default=True,
+        description="Enable LLM semantic validation for preconditions to prevent false blocks in context-sensitive scenarios"
     )
     llm_similarity_threshold: float = Field(
         default=0.85,
@@ -364,7 +364,7 @@ class ServiceConfig(BaseSettings):
 
 
 class CORSConfig(BaseSettings):
-    """CORS configuration for API security (Phase 1 Week 4)."""
+    """CORS configuration for API security."""
 
     model_config = SettingsConfigDict(env_prefix="CORS_")
 
@@ -405,7 +405,7 @@ class CORSConfig(BaseSettings):
 
 
 class LoggingConfig(BaseSettings):
-    """Structured logging configuration (Phase 2 Week 6)."""
+    """Structured logging configuration."""
 
     model_config = SettingsConfigDict(env_prefix="LOGGING_")
 
@@ -531,7 +531,7 @@ class HealthCheckConfig(BaseSettings):
 
 
 class ReflectionConfig(BaseSettings):
-    """Reflection generation configuration (Phase 5 - Cost Optimization)."""
+    """Reflection generation configuration for cost optimization."""
 
     model_config = SettingsConfigDict(env_prefix="REFLECTION_")
 
@@ -598,50 +598,6 @@ class ReflectionConfig(BaseSettings):
         return v
 
 
-class StripeConfig(BaseSettings):
-    """Stripe billing integration configuration."""
-
-    model_config = SettingsConfigDict(env_prefix="STRIPE_")
-
-    api_key: Optional[str] = Field(
-        default=None, description="Stripe secret API key (sk_live_... or sk_test_...)"
-    )
-    webhook_secret: Optional[str] = Field(
-        default=None, description="Stripe webhook signing secret (whsec_...)"
-    )
-    publishable_key: Optional[str] = Field(
-        default=None, description="Stripe publishable key (pk_live_... or pk_test_...)"
-    )
-
-    # Subscription tier price IDs (created in Stripe dashboard)
-    price_id_starter: Optional[str] = Field(
-        default=None, description="Stripe price ID for Starter tier"
-    )
-    price_id_pro: Optional[str] = Field(default=None, description="Stripe price ID for Pro tier")
-    price_id_enterprise: Optional[str] = Field(
-        default=None, description="Stripe price ID for Enterprise tier"
-    )
-
-    # Billing behavior
-    trial_period_days: int = Field(default=14, ge=0, le=90, description="Free trial period in days")
-    payment_grace_period_days: int = Field(
-        default=3, ge=0, le=30, description="Grace period after payment failure before suspension"
-    )
-
-    # Usage-based billing
-    enable_metered_billing: bool = Field(
-        default=False, description="Enable usage-based metered billing (credits)"
-    )
-    metered_price_id: Optional[str] = Field(
-        default=None, description="Stripe price ID for metered usage (credits)"
-    )
-
-    @property
-    def is_configured(self) -> bool:
-        """Check if Stripe is properly configured."""
-        return self.api_key is not None and self.webhook_secret is not None
-
-
 class Settings(BaseSettings):
     """Root configuration for Episodic Memory service."""
 
@@ -655,13 +611,12 @@ class Settings(BaseSettings):
     kyrodb: KyroDBConfig = Field(default_factory=KyroDBConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
-    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)  # NEW: Phase 5
+    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
     hygiene: HygieneConfig = Field(default_factory=HygieneConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     cors: CORSConfig = Field(default_factory=CORSConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
-    stripe: StripeConfig = Field(default_factory=StripeConfig)
     health: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     
     # Admin authentication (optional but recommended for production)
@@ -726,13 +681,6 @@ class Settings(BaseSettings):
         if self.embedding.image_dimension not in {512, 768, 1024}:
             logging.warning(
                 f"Non-standard image embedding dimension: {self.embedding.image_dimension}"
-            )
-
-        # Check Stripe configuration
-        if not self.stripe.is_configured:
-            logging.warning(
-                "Stripe is not configured - billing features will be disabled. "
-                "Set STRIPE_API_KEY and STRIPE_WEBHOOK_SECRET to enable."
             )
 
 

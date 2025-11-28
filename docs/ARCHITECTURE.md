@@ -1,6 +1,6 @@
-# EpisodicMemory Architecture
+# Vritti Architecture
 
-Complete system architecture documentation for the EpisodicMemory platform.
+Complete system architecture documentation for the Vritti platform.
 
 ---
 
@@ -12,13 +12,12 @@ Complete system architecture documentation for the EpisodicMemory platform.
 - [Multi-Tenancy](#multi-tenancy)
 - [Security Architecture](#security-architecture)
 - [Performance Characteristics](#performance-characteristics)
-- [Deployment Model](#deployment-model)
 
 ---
 
 ## System Overview
 
-EpisodicMemory is a multi-tenant SaaS platform providing episodic memory storage and retrieval for AI coding assistants. The system is designed for high performance, security, and operational excellence.
+Vritti is a multi-tenant episodic memory platform for AI coding assistants. The system is designed for high performance, security, and reliability.
 
 ### Design Principles
 
@@ -26,7 +25,6 @@ EpisodicMemory is a multi-tenant SaaS platform providing episodic memory storage
 2. **Performance first**: <50ms P99 search latency, <100ms ingestion
 3. **Security by default**: Multi-tenancy isolation, API key auth, PII redaction
 4. **Observable**: Comprehensive metrics, structured logs, health checks
-5. **Production-ready**: CI/CD, auto-scaling, zero-downtime deployments
 
 ---
 
@@ -39,22 +37,22 @@ EpisodicMemory is a multi-tenant SaaS platform providing episodic memory storage
                              │ HTTPS/API Key Auth
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│           EpisodicMemory API (FastAPI + Kubernetes)             │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐   │
-│  │  Ingestion   │  │  Retrieval   │  │  Observability     │   │
-│  │  Pipeline    │  │  Pipeline    │  │  (Metrics/Logs)    │   │
-│  └──────┬───────┘  └──────┬───────┘  └────────────────────┘   │
-│         │                  │                                     │
-│         ▼                  ▼                                     │
+│                    Vritti API (FastAPI)                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐    │
+│  │  Ingestion   │  │  Retrieval   │  │  Observability     │    │
+│  │  Pipeline    │  │  Pipeline    │  │  (Metrics/Logs)    │    │
+│  └──────┬───────┘  └──────┬───────┘  └────────────────────┘    │
+│         │                  │                                    │
+│         ▼                  ▼                                    │
 │  ┌─────────────────────────────────────┐                       │
 │  │    Multi-tenant Customer Database   │                       │
-│  │         (SQLite/PostgreSQL)         │                       │
+│  │              (SQLite)               │                       │
 │  └─────────────────────────────────────┘                       │
 └─────────────────┬───────────────────────────────────────────────┘
-                  │ gRPC (TLS)
+                  │ gRPC
                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     KyroDB (Bare Metal)                         │
+│                          KyroDB                                 │
 │  ┌──────────────────────┐      ┌──────────────────────┐        │
 │  │  Text/Code Instance  │      │   Image Instance     │        │
 │  │  (384-dim embeddings)│      │ (512-dim CLIP)       │        │
@@ -62,15 +60,6 @@ EpisodicMemory is a multi-tenant SaaS platform providing episodic memory storage
 │  └──────────────────────┘      └──────────────────────┘        │
 │                                                                  │
 │  3-tier caching: 71.7% hit rate, <1ms P99 vector search        │
-└─────────────────────────────────────────────────────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              Observability Stack (Kubernetes)                   │
-│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐ │
-│  │  Prometheus  │      │   Grafana    │      │    Loki      │ │
-│  │  (Metrics)   │      │ (Dashboards) │      │    (Logs)    │ │
-│  └──────────────┘      └──────────────┘      └──────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -83,10 +72,9 @@ EpisodicMemory is a multi-tenant SaaS platform providing episodic memory storage
 - Rate limiting: Per-endpoint limits (50-500 req/min)
 - Observability: Prometheus middleware, structured logging
 
-**Customer Database (SQLite → PostgreSQL)**:
+**Customer Database (SQLite)**:
 - Customer accounts and API keys
 - Usage tracking and quota enforcement
-- Billing metadata (Stripe IDs, payment status)
 - Audit logging for compliance
 
 **KyroDB (Vector Database)**:
@@ -95,10 +83,9 @@ EpisodicMemory is a multi-tenant SaaS platform providing episodic memory storage
 - <1ms P99 vector search at 10M vectors
 - 71.7% cache hit rate (validated)
 
-**Observability Stack**:
-- Prometheus: Metrics collection and alerting
-- Grafana: Dashboards and visualization
-- Loki: Log aggregation and querying
+**Observability**:
+- Prometheus: Metrics collection at `/metrics`
+- Structured JSON logging with request context
 
 ---
 
@@ -118,7 +105,7 @@ AI Tool → API → Auth → PII Redaction → Embedding Service → KyroDB
 4. **Embedding**: Generate text (384-dim) and image (512-dim) embeddings
 5. **Storage**: Insert into KyroDB with namespace isolation
 6. **Usage Tracking**: Increment customer credits used
-7. **Reflection**: Background task generates GPT-4 reflection
+7. **Reflection**: Background task generates LLM reflection
 
 ### Retrieval Flow
 
@@ -128,7 +115,7 @@ AI Tool → API → Auth → Precondition Matching → Vector Search → Ranking
 
 1. **Authentication**: Verify API key, check quota
 2. **Validation**: Pydantic validation of search request
-3. **Precondition Matching**: Heuristic filtering (no LLM calls)
+3. **Precondition Matching**: Heuristic filtering
 4. **Vector Search**: KyroDB k-NN search with namespace isolation
 5. **Ranking**: Weighted scoring (similarity + precondition + recency + usage)
 6. **Response**: Return ranked results with explanations
@@ -190,19 +177,9 @@ ENTERPRISE: Unlimited
 - API keys: `em_live_abc***xyz`
 - Passwords: `***REDACTED***`
 
-**TLS/SSL**: All KyroDB connections encrypted
-
 **Input Validation**: Pydantic models with strict validation
 
 **Rate Limiting**: Prevent abuse and DoS attacks
-
-### Compliance
-
-**GDPR**: Data deletion, export, privacy controls
-
-**Audit Logging**: All mutations logged with customer context
-
-**Data Residency**: Customer data stored in specified regions
 
 ---
 
@@ -225,67 +202,6 @@ ENTERPRISE: Unlimited
 | KyroDB cache hit rate | >70% | 71.7% |
 | API availability | 99.9% | 99.95% |
 
-### Scalability
-
-**Horizontal Scaling**:
-- API servers: Kubernetes HPA (3-10 pods)
-- KyroDB: Shard by customer_id (future)
-
-**Vertical Scaling**:
-- API: 500m-2000m CPU, 1-4Gi memory per pod
-- KyroDB: Bare metal for max performance
-
 ---
 
-## Deployment Model
-
-### Hybrid Cloud
-
-**API Server**: Kubernetes cluster (cloud)
-- Auto-scaling with HPA
-- Zero-downtime rolling updates
-- Health-based routing
-
-**KyroDB**: Bare metal servers
-- Optimized for maximum read performance
-- Direct NVMe storage
-- 10Gbps network
-
-**Observability**: Kubernetes cluster (cloud)
-- Centralized metrics and logs
-- Cross-cluster monitoring
-
-### Environments
-
-**Development**: Local Docker Compose
-
-**Staging**: Kubernetes namespace
-- Auto-deploy on merge to `develop`
-- 2 replicas, reduced resources
-
-**Production**: Kubernetes namespace
-- Auto-deploy on tag (manual approval)
-- 3 replicas, full resources
-- Pod anti-affinity for HA
-
----
-
-## Future Enhancements
-
-### Phase 5: Performance Optimization
-
-- Circuit breakers for KyroDB failures
-- Response caching with Redis
-- Database connection pooling
-- Load testing at 10K concurrent users
-
-### Phase 6: Advanced Features
-
-- Blue-green deployments
-- Canary releases
-- Multi-region deployment
-- ArgoCD GitOps integration
-
----
-
-**Last Updated**: 2025-11-19
+**Last Updated**: 2025-11-28

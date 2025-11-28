@@ -8,11 +8,12 @@ store success episodes to prevent memory bloat and maintain focus on learning
 from mistakes.
 """
 
-from datetime import datetime, timezone
+from datetime import timezone, datetime
 from typing import Any, Literal, Optional
+
 from pydantic import BaseModel, Field, field_validator
 
-from src.models.episode import Episode, EpisodeType
+from src.models.episode import Episode
 
 
 class RankingWeights(BaseModel):

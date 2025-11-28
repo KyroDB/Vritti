@@ -4,7 +4,7 @@
 
 ---
 
-## 📋 Data Captured in `EpisodeCreate`
+## Data Captured in `EpisodeCreate`
 
 When an agent experiences a failure, the system captures comprehensive context to enable intelligent learning and retrieval.
 
@@ -94,7 +94,7 @@ environment_info: dict[str, Any]  # OS, versions, configuration, etc.
 
 ---
 
-### 5. Visual Context (Screenshots) 🖼️
+### 5. Visual Context (Screenshots)
 
 ```python
 screenshot_path: Optional[str]  # Path to error screenshot
@@ -120,7 +120,7 @@ image_embedding = embedding_service.embed_image(screenshot_path)
 kyrodb.insert(embedding=image_embedding, metadata={"screenshot_path": screenshot_path})
 ```
 
-**Search Capability**: Multi-modal search finds episodes with **visually similar** error screens!
+**Search Capability**: Multi-modal search finds episodes with **visually similar** error screens.
 
 ---
 
@@ -158,7 +158,7 @@ customer_id: str       # Multi-tenant isolation (extracted from API key)
 
 ---
 
-## 🧠 Generated Data (After Ingestion)
+## Generated Data (After Ingestion)
 
 ### 8. LLM Reflection (Multi-Perspective Analysis)
 
@@ -173,15 +173,15 @@ reflection: Reflection
   ├─ confidence_score: float         # LLM confidence in analysis
   ├─ consensus: ReflectionConsensus  # Multi-LLM agreement (if premium)
   ├─ cost_usd: float                # LLM generation cost
-  └─ tier: str                      # cheap/cached/premium (Phase 5)
+  └─ tier: str                      # cheap/cached/premium
 ```
 
-#### Reflection Tiers (Phase 5 - Cost Optimization)
+#### Reflection Tiers (Cost Optimization)
 
 | Tier | Model | Cost | Usage | When Used |
 |------|-------|------|-------|-----------|
 | **CHEAP** | OpenRouter (cheap model) | ~$0.0003 | 90% | Normal errors |
-| **CACHED** | Cluster template | $0.0000 | Future (Phase 6) | Seen before |
+| **CACHED** | Cluster template | $0.0000 | Future | Seen before |
 | **PREMIUM** | Multi-perspective (2 LLMs) | ~$0.0500 | 10% | Critical errors |
 
 **How It's Generated**:
@@ -207,7 +207,7 @@ reflection = build_consensus(perspectives)
 
 ---
 
-## 🗄️ Storage Architecture
+## Storage Architecture
 
 ### Dual KyroDB Instances (Multi-Modal)
 
@@ -216,7 +216,7 @@ reflection = build_consensus(perspectives)
 │              Episodic Memory Storage                    │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  📄 TEXT INSTANCE (Port 50051)                         │
+│  TEXT INSTANCE (Port 50051)                            │
 │  ├─ Text Embedding (384-dim MiniLM)                    │
 │  │  └─ Generated from: goal + error_trace              │
 │  │                                                      │
@@ -234,7 +234,7 @@ reflection = build_consensus(perspectives)
 │  │  ├─ environment_hash (deduplication)                │
 │  │  └─ error_signature (deduplication)                 │
 │  │                                                      │
-│  🖼️  IMAGE INSTANCE (Port 50052)                        │
+│  IMAGE INSTANCE (Port 50052)                           │
 │  ├─ Image Embedding (512-dim CLIP)                     │
 │  │  └─ Generated from: screenshot file                 │
 │  │                                                      │
@@ -272,7 +272,7 @@ results = search(
 
 ---
 
-## 🔐 Security & Data Processing
+## Security & Data Processing
 
 ### Before Storage (Ingestion Pipeline)
 
@@ -314,10 +314,10 @@ results = search(
 
 ---
 
-## 📊 What's NOT Stored
+## What's NOT Stored
 
-| ❌ Not Stored | Why | Alternative |
-|--------------|-----|-------------|
+| Not Stored | Why | Alternative |
+|------------|-----|-------------|
 | **Raw image pixel data** | Too large, privacy concerns | CLIP embeddings (512-dim) |
 | **Credentials/secrets** | Security risk | Redacted via PII detection |
 | **User-provided customer_id** | Spoofing risk | Extracted from API key |
@@ -326,7 +326,7 @@ results = search(
 
 ---
 
-## 💡 Complete Example Flow
+## Complete Example Flow
 
 ### Input (Agent Failure)
 
@@ -371,7 +371,7 @@ graph TD
     H --> I
     I --> J{Select Tier}
     J -->|90%| K[Cheap: Gemini Flash]
-    J -->|10%| L[Premium: 3 LLMs]
+    J -->|10%| L[Premium: Multi-LLM]
     K --> M[Quality Validation]
     M -->|Pass| N[Store Reflection]
     M -->|Fail| L
@@ -386,7 +386,7 @@ graph TD
 {
     "doc_id": 1234567890,
     "namespace": "customer_abc123:failures",
-    "embedding": [0.123, -0.456, 0.789, ...],  // 384 dimensions
+    "embedding": [0.123, -0.456, 0.789, ...],
     "metadata": {
         "episode_id": 1234567890,
         "customer_id": "customer_abc123",
@@ -429,14 +429,14 @@ graph TD
 {
     "doc_id": 1234567890,
     "namespace": "customer_abc123:failures",
-    "embedding": [0.234, -0.567, 0.891, ...],  // 512 dimensions (CLIP)
+    "embedding": [0.234, -0.567, 0.891, ...],
     "metadata": { /* same as text instance */ }
 }
 ```
 
 ---
 
-## 📈 Usage Statistics Tracking
+## Usage Statistics Tracking
 
 Episodes track how often their fixes help:
 
@@ -453,13 +453,13 @@ usage_stats:
 ```
 
 **Skill Promotion Criteria**:
-- Success rate ≥ 80%
-- Applied ≥ 5 times
-- → Promoted to Skills Library for faster retrieval
+- Success rate >= 80%
+- Applied >= 5 times
+- Promoted to Skills Library for faster retrieval
 
 ---
 
-## 🔍 Search & Retrieval
+## Search & Retrieval
 
 When an agent encounters a new error:
 
@@ -475,7 +475,7 @@ results = kyrodb.search(
     filters={"error_class": "permission_error"}
 )
 
-# 3. Precondition matching (Phase 4)
+# 3. Precondition matching
 # Filter results by context relevance
 # LLM validates semantic compatibility
 
@@ -485,7 +485,7 @@ results = kyrodb.search(
 
 ---
 
-## 💰 Cost Optimization (Phase 5)
+## Cost Optimization
 
 **Monthly Cost at 10K Episodes**:
 
@@ -499,19 +499,19 @@ results = kyrodb.search(
 
 ---
 
-## 🎯 Summary
+## Summary
 
 **We store**:
-- ✅ Rich failure context (code, tools, environment)
-- ✅ Visual context (screenshot embeddings)
-- ✅ Execution trace (what was tried)
-- ✅ Multi-LLM analysis (root cause, fix strategy)
-- ✅ Searchable vectors (text + image)
-- ✅ Usage statistics (what works)
+- Rich failure context (code, tools, environment)
+- Visual context (screenshot embeddings)
+- Execution trace (what was tried)
+- Multi-LLM analysis (root cause, fix strategy)
+- Searchable vectors (text + image)
+- Usage statistics (what works)
 
 **We DON'T store**:
-- ❌ Raw image files (only embeddings)
-- ❌ Credentials (redacted)
-- ❌ Successes (episodic memory for failures only)
+- Raw image files (only embeddings)
+- Credentials (redacted)
+- Successes (episodic memory for failures only)
 
-**Result**: Intelligent, multi-modal failure database enabling AI agents to **learn from experience** and **avoid repeating mistakes**! 🚀
+**Result**: Intelligent, multi-modal failure database enabling AI agents to learn from experience and avoid repeating mistakes.

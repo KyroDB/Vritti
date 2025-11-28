@@ -1,0 +1,342 @@
+# Prometheus Alerting Rules for Vritti Mission Metrics
+#
+# Deploy: kubectl apply -f prometheus_alerts_mission.yml
+# Or: Add to prometheus.yml under `rule_files`
+
+groups:
+  - name: vritti_mission_critical
+    interval: 30s
+    rules:
+      # ========================================================================
+      # MISSION-CRITICAL: Repeat Error Prevention
+      # ========================================================================
+
+      - alert: MissionSuccessRateCritical
+        expr: |
+          (
+            increase(episodic_memory_repeat_error_prevented_total[1h]) /
+            increase(episodic_memory_gating_decision_total[1h])
+          ) < 0.5
+        for: 10m
+        labels:
+          severity: critical
+          component: gating
+          mission_impact: high
+        annotations:
+          summary: "Mission success rate critically low: {{$value | humanizePercentage}}"
+          description: |
+            Vritti is preventing <50% of repeat errors (current: {{$value | humanizePercentage}}).
+            Target: >80% prevention rate.
+
+            This means AI agents are repeating mistakes at a high rate.
+
+            Impact: Mission failure - core value proposition not being delivered.
+
+            Action Required:
+            1. Check LLM validation service health
+            2. Review recent episodes for quality issues
+            3. Verify precondition matching accuracy
+            4. Check if gating thresholds need tuning
+          runbook_url: "https://docs.vritti.ai/runbooks/mission-success-rate-low"
+          dashboard_url: "https://grafana.company.com/d/vritti-mission"
+
+      - alert: MissionSuccessRateWarning
+        expr: |
+          (
+            increase(episodic_memory_repeat_error_prevented_total[1h]) /
+            increase(episodic_memory_gating_decision_total[1h])
+          ) < 0.7
+        for: 30m
+        labels:
+          severity: warning
+          component: gating
+          mission_impact: medium
+        annotations:
+          summary: "Mission success rate below target: {{$value | humanizePercentage}}"
+          description: |
+            Vritti preventing {{$value | humanizePercentage}} of repeat errors (target: >80%).
+
+            Trending towards mission failure. Investigate before it becomes critical.
+
+            Action:
+            1. Review gating decision logs for patterns
+            2. Check similarity/precondition score distributions
+            3. Verify LLM validation cache hit rate
+          dashboard_url: "https://grafana.company.com/d/vritti-mission"
+
+      - alert: NoRepeatErrorsPrevented
+        expr: |
+          increase(episodic_memory_repeat_error_prevented_total[4h]) == 0
+          and
+          increase(episodic_memory_gating_decision_total[4h]) > 10
+        for: 1h
+        labels:
+          severity: critical
+          component: gating
+          mission_impact: critical
+        annotations:
+          summary: "Zero repeat errors prevented in 4 hours despite active gating"
+          description: |
+            Vritti has made {{$value}} gating decisions but prevented 0 repeat errors.
+
+            This indicates complete mission failure.
+
+            Possible causes:
+            1. All gating decisions returning PROCEED (too lenient)
+            2. No similar failures in database (empty corpus)
+            3. Search pipeline broken (not finding matches)
+            4. Precondition matching broken (all rejecting)
+
+            IMMEDIATE ACTION REQUIRED
+          runbook_url: "https://docs.vritti.ai/runbooks/zero-preventions"
+
+      # ========================================================================
+      # PERFORMANCE SLOs
+      # ========================================================================
+
+      - alert: GatingLatencyP99Exceeded
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(episodic_memory_gating_latency_seconds_bucket[5m])) by (le)
+          ) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          component: gating
+          slo: latency
+        annotations:
+          summary: "Gating P99 latency exceeded SLO: {{$value | humanizeDuration}}"
+          description: |
+            P99 gating latency is {{$value | humanizeDuration}} (SLO: <100ms).
+
+            Impact: Slow agent responses, poor user experience.
+
+            Common causes:
+            1. LLM validation not caching (check cache hit rate)
+            2. KyroDB search slow (check kyrodb_operation_duration_seconds)
+            3. Embedding service slow
+            4. High query volume (check rate)
+
+            Action:
+            1. Check LLM validation cache hit rate (target >80%)
+            2. Review slow query logs
+            3. Scale KyroDB if needed
+          dashboard_url: "https://grafana.company.com/d/vritti-performance"
+
+      - alert: GatingLatencyP99Critical
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(episodic_memory_gating_latency_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          component: gating
+          slo: latency
+        annotations:
+          summary: "Gating latency critically slow: {{$value | humanizeDuration}}"
+          description: |
+            P99 latency is {{$value | humanizeDuration}} (>500ms).
+
+            This is degrading agent performance severely.
+
+            IMMEDIATE ACTION:
+            1. Check if LLM validation endpoint is down
+            2. Check KyroDB health
+            3. Consider circuit breaker for LLM validation
+          runbook_url: "https://docs.vritti.ai/runbooks/latency-critical"
+
+      # ========================================================================
+      # ERROR RATES
+      # ========================================================================
+
+      - alert: GatingErrorRateHigh
+        expr: |
+          (
+            rate(episodic_memory_errors_total{error_type="gating"}[5m]) /
+            rate(episodic_memory_gating_decision_total[5m])
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: gating
+        annotations:
+          summary: "Gating error rate high: {{$value | humanizePercentage}}"
+          description: |
+            {{$value | humanizePercentage}} of gating decisions are failing.
+
+            Errors include:
+            - Search pipeline failures
+            - LLM validation errors
+            - Database connection issues
+
+            Action:
+            1. Check error logs for patterns
+            2. Verify external service health (OpenRouter, KyroDB)
+            3. Check rate limits
+          dashboard_url: "https://grafana.company.com/d/vritti-errors"
+
+      # ========================================================================
+      # LLM VALIDATION
+      # ========================================================================
+
+      - alert: LLMValidationCacheHitRateLow
+        expr: |
+          (
+            increase(search_pipeline_llm_cache_hits[1h]) /
+            (increase(search_pipeline_llm_cache_hits[1h]) + increase(search_pipeline_llm_validation_calls[1h]))
+          ) < 0.5
+        for: 30m
+        labels:
+          severity: warning
+          component: llm_validation
+          cost_impact: high
+        annotations:
+          summary: "LLM validation cache hit rate low: {{$value | humanizePercentage}}"
+          description: |
+            Cache hitting only {{$value | humanizePercentage}} (target: >80%).
+
+            Impact:
+            1. Increased LLM API costs (more calls)
+            2. Higher latency (200ms vs 5ms)
+            3. Potential rate limiting
+
+            Action:
+            1. Check cache TTL configuration (should be 5 minutes)
+            2. Verify cache is not being cleared prematurely
+            3. Check if query patterns have high cardinality
+            4. Consider increasing cache size
+          runbook_url: "https://docs.vritti.ai/runbooks/llm-cache-low"
+
+      - alert: LLMValidationCostHigh
+        expr: |
+          increase(search_pipeline_llm_total_cost_usd[24h]) > 10
+        for: 1h
+        labels:
+          severity: warning
+          component: llm_validation
+          cost_impact: high
+        annotations:
+          summary: "LLM validation costs high: ${{$value}}/day"
+          description: |
+            Daily LLM validation cost is ${{$value}} (budget: $10/day).
+
+            This may indicate:
+            1. Cache not working (low hit rate)
+            2. Unusually high query volume
+            3. Many unique queries (high cardinality)
+
+            Action:
+            1. Check cache hit rate
+            2. Review query volume trends
+            3. Consider raising budget if legitimate traffic
+            4. Implement circuit breaker if needed
+          dashboard_url: "https://grafana.company.com/d/vritti-costs"
+
+      # ========================================================================
+      # COMPOSITE HEALTH
+      # ========================================================================
+      # NOTE: This health score uses BINARY checks (each term = 0 or 1), not continuous metrics.
+      # Possible scores: 0%, 30%, 60%, or 100% (essentially a 3-state alert).
+      # - Score 40 = only prevention passed (not 40% continuous health)
+      # - Score 60 = prevention + one other component passed
+      # - Score 100 = all components passing
+      # TODO: Consider refactoring to use continuous metrics for more granular health visibility
+
+      - alert: MissionHealthScoreLow
+        expr: |
+          (
+            (increase(episodic_memory_repeat_error_prevented_total[5m]) > 0) * 0.4 +
+            (histogram_quantile(0.99, sum(rate(episodic_memory_gating_latency_seconds_bucket[5m])) by (le)) < 0.1) * 0.3 +
+            (rate(episodic_memory_errors_total{error_type="gating"}[5m]) < 0.01) * 0.3
+          ) * 100 < 70
+        for: 15m
+        labels:
+          severity: warning
+          component: mission
+          composite: true
+        annotations:
+          summary: "Mission health score low: {{$value}}%"
+          description: |
+            Composite health score is {{$value}}% (threshold: 70%).
+
+            Health components:
+            - 40%: Repeat error prevention rate
+            - 30%: Latency SLO compliance (<100ms P99)
+            - 30%: Error rate (<1%)
+
+            Action:
+            1. Check each component individually
+            2. Focus on lowest scoring component first
+            3. Review recent changes/deployments
+          dashboard_url: "https://grafana.company.com/d/vritti-mission"
+
+      # ========================================================================
+      # CUSTOMER-LEVEL ALERTS
+      # ========================================================================
+
+      - alert: CustomerZeroPreventions
+        expr: |
+          sum by (customer_id) (increase(episodic_memory_repeat_error_prevented_total[24h])) == 0
+          and
+          sum by (customer_id) (increase(episodic_memory_gating_decision_total[24h])) > 20
+        for: 12h
+        labels:
+          severity: warning
+          component: customer_success
+        annotations:
+          summary: "Customer {{$labels.customer_id}} has 0 preventions despite active usage"
+          description: |
+            Customer {{$labels.customer_id}} made {{$value}} gating requests but had 0 preventions.
+
+            Possible issues:
+            1. No similar failures in their corpus (still learning)
+            2. All their actions are novel (good!)
+            3. Their episodes lack quality reflections
+            4. Similarity thresholds too strict for their use case
+
+            Action:
+            1. Review customer's episode quality
+            2. Check if they need onboarding assistance
+            3. Verify their use case fits Vritti's model
+          runbook_url: "https://docs.vritti.ai/runbooks/customer-zero-value"
+
+# ============================================================================
+# AlertManager Configuration
+# ============================================================================
+
+# Add to alertmanager.yml:
+#
+# route:
+#   receiver: 'team-email'
+#   group_by: ['alertname', 'severity']
+#   group_wait: 30s
+#   group_interval: 5m
+#   repeat_interval: 12h
+#
+#   routes:
+#     - match:
+#         severity: critical
+#       receiver: 'pagerduty'
+#       continue: true
+#
+#     - match:
+#         component: mission
+#         severity: critical
+#       receiver: 'ceo-slack'  # Mission-critical goes to leadership
+#       continue: true
+#
+# receivers:
+#   - name: 'team-email'
+#     email_configs:
+#       - to: 'team@company.com'
+#
+#   - name: 'pagerduty'
+#     pagerduty_configs:
+#       - service_key: '<PD_SERVICE_KEY>'
+#
+#   - name: 'ceo-slack'
+#     slack_configs:
+#       - api_url: '<SLACK_WEBHOOK>'
+#         channel: '#mission-critical'
+#         title: '🚨 MISSION CRITICAL: {{ .GroupLabels.alertname }}'

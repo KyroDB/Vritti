@@ -17,19 +17,18 @@ Performance:
 - Optimized numpy operations
 """
 
-import asyncio
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
 from hdbscan import HDBSCAN
 
 from src.kyrodb.router import KyroDBRouter
-from src.models.clustering import ClusterInfo, ClusterTemplate, ClusteringStats
-from src.models.episode import Episode, Reflection
+from src.models.clustering import ClusterInfo, ClusterTemplate
+from src.models.episode import Episode
 
 logger = logging.getLogger(__name__)
 
@@ -423,7 +422,7 @@ class EpisodeClusterer:
         # For now, return empty list - full implementation requires
         # an episodes index or full table scan capability in KyroDB
         logger.warning(
-            f"_fetch_active_episodes requires full episode enumeration - not yet implemented"
+            "_fetch_active_episodes requires full episode enumeration - not yet implemented"
         )
         return []
     

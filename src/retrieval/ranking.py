@@ -15,10 +15,10 @@ Optimized for <5ms latency per ranking operation.
 import logging
 import math
 from datetime import timezone, datetime
+from typing import Optional
 
 from src.models.episode import Episode
 from src.models.search import RankingWeights, SearchResult
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

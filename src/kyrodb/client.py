@@ -11,6 +11,7 @@ Provides a clean async interface to KyroDB operations with:
 import asyncio
 import logging
 from pathlib import Path
+from typing import Optional
 
 import grpc
 from grpc import StatusCode
@@ -30,7 +31,6 @@ from src.kyrodb.kyrodb_pb2 import (
 )
 from src.kyrodb.kyrodb_pb2_grpc import KyroDBServiceStub
 from src.resilience.circuit_breakers import with_kyrodb_circuit_breaker
-from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 

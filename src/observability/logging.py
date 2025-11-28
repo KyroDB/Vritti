@@ -25,10 +25,10 @@ import sys
 import time
 import uuid
 from contextvars import ContextVar
+from typing import Optional
 
 import structlog
 from structlog.types import EventDict, Processor
-from typing import Optional
 
 # Context variables for request-scoped data
 # These propagate across async boundaries automatically

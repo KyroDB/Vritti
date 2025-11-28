@@ -1082,6 +1082,20 @@ gating_matched_skills = Histogram(
     buckets=(0, 1, 2, 3, 5, 10),
 )
 
+# MISSION-CRITICAL: Repeat error prevention counter
+repeat_error_prevented_total = Counter(
+    "episodic_memory_repeat_error_prevented_total",
+    "Total number of repeat errors prevented by gating (MISSION METRIC)",
+    labelnames=["customer_id", "customer_tier", "error_class", "recommendation"],
+)
+
+# Repeat error prevention rate (gauge for dashboard)
+repeat_error_prevention_rate = Gauge(
+    "episodic_memory_repeat_error_prevention_rate",
+    "Percentage of gating decisions that prevented repeat errors",
+    labelnames=["customer_tier"],
+)
+
 
 def track_gating_decision(
     recommendation: str,
@@ -1117,6 +1131,56 @@ def track_gating_decision(
 
     gating_matched_failures.observe(matched_failures)
     gating_matched_skills.observe(matched_skills)
+
+
+def track_repeat_error_prevented(
+    customer_id: str,
+    customer_tier: str,
+    error_class: str,
+    recommendation: str,
+) -> None:
+    """
+    Track when gating successfully prevents a repeat error.
+
+    THIS IS THE MISSION-CRITICAL METRIC.
+
+    Called when:
+    1. Agent asks Vritti "should I do X?"
+    2. Vritti finds similar past failure
+    3. Vritti recommends BLOCK/REWRITE/HINT
+    4. (Implies agent will follow recommendation)
+
+    Args:
+        customer_id: Customer ID
+        customer_tier: Customer subscription tier
+        error_class: Error classification from matched episode
+        recommendation: Gating recommendation (block, rewrite, hint)
+
+    NOTE: This metric proves Vritti fulfills its mission:
+    "AI agents that learn from mistakes and don't repeat them"
+    """
+    repeat_error_prevented_total.labels(
+        customer_id=customer_id,
+        customer_tier=customer_tier,
+        error_class=error_class,
+        recommendation=recommendation,
+    ).inc()
+
+
+def update_repeat_error_prevention_rate(
+    customer_tier: str,
+    prevention_rate: float,
+) -> None:
+    """
+    Update repeat error prevention rate gauge.
+
+    Args:
+        customer_tier: Customer subscription tier
+        prevention_rate: Percentage (0.0-1.0) of gating decisions that prevented repeats
+    """
+    repeat_error_prevention_rate.labels(
+        customer_tier=customer_tier,
+    ).set(prevention_rate)
 
 
 # ============================================================================

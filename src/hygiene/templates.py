@@ -14,16 +14,15 @@ Performance:
 - Batch operations
 """
 
-import logging
-from datetime import datetime, timezone
-from typing import Optional
 import json
+import logging
+from datetime import timezone, datetime
+from typing import Optional
 
-from src.hygiene.clustering import EpisodeClusterer
+from src.ingestion.tiered_reflection import ReflectionTier
 from src.kyrodb.router import KyroDBRouter
 from src.models.clustering import ClusterInfo, ClusterTemplate
 from src.models.episode import Episode, Reflection
-from src.ingestion.tiered_reflection import ReflectionTier
 
 logger = logging.getLogger(__name__)
 

@@ -41,7 +41,7 @@ curl -s http://localhost:8000/metrics | grep episodic_memory_errors_total
 curl -s http://localhost:8000/metrics | grep "error_type"
 
 # 3. Check recent logs for errors
-docker logs vritti-api --since 5m 2>&1 | grep -i error | tail -50
+grep -i error logs/app.log | tail -50
 
 # 4. Check service health
 curl -s http://localhost:8000/health | jq
@@ -57,11 +57,8 @@ curl -s http://localhost:8000/health | jq
 
 2. **If Validation Errors**:
    ```bash
-   # Check for schema changes in recent deployments
+   # Check for schema changes in recent commits
    git log --oneline -10 src/models/
-   
-   # Rollback if necessary
-   kubectl rollout undo deployment/vritti-api
    ```
 
 3. **If Authentication Errors**:
@@ -69,8 +66,9 @@ curl -s http://localhost:8000/health | jq
    # Check API key cache health
    curl -s http://localhost:8000/metrics | grep api_key_cache
    
-   # Clear cache if corrupted (restart service)
-   kubectl rollout restart deployment/vritti-api
+   # Clear cache by restarting service
+   ./scripts/restart_api.sh
+   # Or manually: pkill -TERM -f "uvicorn.*app.main:app" && sleep 5 && uvicorn app.main:app ...
    ```
 
 4. **Escalation**: If error rate persists > 15 minutes, page on-call engineer.
@@ -129,11 +127,11 @@ curl -s http://localhost:8000/metrics | grep http_requests_active
 
 3. **If Traffic Spike**:
    ```bash
-   # Scale horizontally
-   kubectl scale deployment/vritti-api --replicas=4
-   
    # Check rate limiting
    curl -s http://localhost:8000/metrics | grep rate_limit_exceeded
+   
+   # Consider running multiple workers
+   uvicorn src.main:app --workers 4
    ```
 
 4. **Temporary Mitigation**:
@@ -158,25 +156,19 @@ curl -s http://localhost:8000/metrics | grep http_requests_active
 # 1. Check KyroDB health via router
 curl -s http://localhost:8000/health | jq '.components[] | select(.name=="kyrodb")'
 
-# 2. Check KyroDB process
-docker ps | grep kyrodb
-kubectl get pods -l app=kyrodb
+# 2. Check KyroDB process is running
+lsof -i :50051
 
 # 3. Test gRPC connectivity
 grpcurl -plaintext localhost:50051 list
-
-# 4. Check KyroDB logs
-docker logs kyrodb --since 5m 2>&1 | tail -100
 ```
 
 ### Resolution Steps
 
-1. **If KyroDB Container Down**:
+1. **If KyroDB is Down**:
    ```bash
-   # Restart KyroDB
-   docker restart kyrodb
-   # or
-   kubectl rollout restart statefulset/kyrodb
+   # Restart KyroDB server
+   ./kyrodb_server --config kyrodb_config.toml
    
    # Wait for health
    sleep 10 && curl http://localhost:8000/health/readiness
@@ -187,23 +179,11 @@ docker logs kyrodb --since 5m 2>&1 | tail -100
    # Check network connectivity
    nc -zv localhost 50051
    
-   # Check firewall rules (example for ufw)
+   # Check firewall rules
    sudo ufw status | grep 50051
-   
-   # Or check iptables
-   sudo iptables -L -n | grep 50051
    ```
 
-3. **If TLS Issues**:
-   ```bash
-   # Verify TLS certificates
-   openssl s_client -connect localhost:50051 -tls1_2
-   
-   # Check certificate expiry
-   openssl x509 -enddate -noout -in /path/to/cert.pem
-   ```
-
-4. **Recovery Validation**:
+3. **Recovery Validation**:
    ```bash
    # Insert test episode
    curl -X POST http://localhost:8000/api/v1/capture \
@@ -253,9 +233,11 @@ curl -s http://localhost:8000/metrics | grep reflection_cost_by_tier
 
 2. **If Budget Increase Needed**:
    ```bash
-   # Update config (requires restart)
+   # Update config in .env and restart
    export REFLECTION_MAX_COST_PER_DAY_USD=100
-   kubectl rollout restart deployment/vritti-api
+   export REFLECTION_MAX_COST_PER_DAY_USD=100
+   # Restart the uvicorn process
+   ./scripts/restart_api.sh
    ```
 
 3. **Investigate High Spend**:
@@ -296,7 +278,7 @@ curl -s http://localhost:8000/metrics | grep llm_call_total
 curl -s https://status.openrouter.ai/api/v2/status.json | jq
 
 # 4. Check logs for LLM errors
-docker logs vritti-api --since 10m 2>&1 | grep -i "openrouter\|llm\|reflection"
+grep -i "openrouter\|llm\|reflection" logs/app.log | tail -50
 ```
 
 ### Resolution Steps
@@ -309,7 +291,10 @@ docker logs vritti-api --since 10m 2>&1 | grep -i "openrouter\|llm\|reflection"
    
    # If key invalid, rotate key
    export OPENROUTER_API_KEY=sk-or-v1-new-key-here
-   kubectl rollout restart deployment/vritti-api
+   # Restart the service
+   export OPENROUTER_API_KEY=sk-or-v1-new-key-here
+   # Restart the service
+   ./scripts/restart_api.sh
    ```
 
 2. **If Single Model Failing**:
@@ -319,14 +304,18 @@ docker logs vritti-api --since 10m 2>&1 | grep -i "openrouter\|llm\|reflection"
    
    # Update to different model in config
    export LLM_CONSENSUS_MODEL_1=anthropic/claude-3-haiku
-   kubectl rollout restart deployment/vritti-api
+   export LLM_CONSENSUS_MODEL_1=anthropic/claude-3-haiku
+   # Restart the uvicorn process
+   ./scripts/restart_api.sh
    ```
 
 3. **If Timeout Errors**:
    ```bash
-   # Increase timeout
+   # Increase timeout in .env
    export LLM_TIMEOUT_SECONDS=90
-   kubectl rollout restart deployment/vritti-api
+   export LLM_TIMEOUT_SECONDS=90
+   # Restart the uvicorn process
+   ./scripts/restart_api.sh
    ```
 
 ---
@@ -433,8 +422,10 @@ sqlite3 data/customers.db "SELECT credits_used_current_month, monthly_credit_lim
 
 ```bash
 # 1. Check resource usage
-kubectl top pods -l app=vritti-api
-docker stats vritti-api
+# macOS:
+top -l 1 | grep uvicorn
+# Linux:
+# top -bn1 | grep uvicorn
 
 # 2. Check for memory leaks
 curl -s http://localhost:8000/metrics | grep process_
@@ -447,13 +438,14 @@ python -c "import psutil; print(psutil.Process().memory_info().rss / 1024**3, 'G
 
 1. **Immediate**: Restart service to clear memory
    ```bash
-   kubectl rollout restart deployment/vritti-api
+   # Kill and restart the uvicorn process
+   # Kill and restart the uvicorn process
+   ./scripts/restart_api.sh
    ```
 
 2. **If Recurring**:
-   - Increase memory limits in deployment
-   - Add horizontal pod autoscaling
    - Profile for memory leaks
+   - Consider running with fewer workers
 
 3. **Embedding Model Memory**:
    ```bash
@@ -478,7 +470,7 @@ python -c "import psutil; print(psutil.Process().memory_info().rss / 1024**3, 'G
 1. **Identify Compromised Key**:
    ```bash
    # Check logs for suspicious activity (DO NOT LOG API KEYS IN PRODUCTION)
-   docker logs vritti-api --since 1h | grep "customer_id" | sort | uniq -c | sort -rn | head -20
+   grep "customer_id" logs/app.log | sort | uniq -c | sort -rn | head -20
    ```
 
 2. **Revoke Key Immediately**:

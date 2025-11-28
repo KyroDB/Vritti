@@ -4,13 +4,13 @@ Maximize the value of EpisodicMemory with these integration patterns.
 
 ## When to Capture
 
-✅ **DO Capture**:
+**DO Capture**:
 - Unhandled exceptions
 - Tool execution failures (non-zero exit codes)
 - Logic failures (agent loop exceeded)
 - User-reported failures (feedback)
 
-❌ **DON'T Capture**:
+**DO NOT Capture**:
 - Transient network glitches (unless persistent)
 - User cancellation
 - Successful operations (unless implementing success tracking)

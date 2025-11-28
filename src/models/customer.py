@@ -1,20 +1,20 @@
 """
 Customer/tenant data models for multi-tenancy support.
 
-Each customer represents an organization/workspace using the episodic memory service.
+Each customer represents an organization/workspace using the Vritti service.
 Customer IDs are used for namespace isolation in KyroDB and quota enforcement.
 """
 
 import re
 from datetime import timezone, datetime
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional
 
 
 class SubscriptionTier(str, Enum):
-    """Subscription tier for billing and quota management."""
+    """Subscription tier for quota management."""
 
     FREE = "free"  # 1K credits/month
     STARTER = "starter"  # 10K credits/month
@@ -26,7 +26,7 @@ class CustomerStatus(str, Enum):
     """Customer account status."""
 
     ACTIVE = "active"
-    SUSPENDED = "suspended"  # Payment failed or abuse
+    SUSPENDED = "suspended"  # Quota abuse
     DELETED = "deleted"  # Soft delete - data retained for 30 days
 
 
@@ -59,37 +59,6 @@ class Customer(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_api_call_at: Optional[datetime] = Field(default=None)
-
-    # Stripe integration
-    stripe_customer_id: Optional[str] = Field(
-        default=None, description="Stripe customer ID (cus_xxx)"
-    )
-    stripe_subscription_id: Optional[str] = Field(
-        default=None, description="Stripe subscription ID (sub_xxx)"
-    )
-    stripe_payment_method_id: Optional[str] = Field(
-        default=None, description="Stripe payment method ID (pm_xxx)"
-    )
-
-    # Billing cycle tracking
-    billing_cycle_start: Optional[datetime] = Field(
-        default=None, description="Current billing period start"
-    )
-    billing_cycle_end: Optional[datetime] = Field(
-        default=None, description="Current billing period end"
-    )
-    next_invoice_date: Optional[datetime] = Field(
-        default=None, description="Next invoice generation date"
-    )
-
-    # Payment status
-    payment_failed: bool = Field(default=False, description="True if last payment attempt failed")
-    payment_failed_at: Optional[datetime] = Field(default=None)
-
-    # Trial period
-    trial_end_date: Optional[datetime] = Field(
-        default=None, description="End of trial period if applicable"
-    )
 
     @field_validator("customer_id")
     @classmethod
@@ -133,24 +102,12 @@ class Customer(BaseModel):
         self.updated_at = datetime.now(timezone.utc)
 
     def reset_monthly_usage(self) -> None:
-        """Reset monthly credit usage (called on billing cycle)."""
+        """Reset monthly credit usage (called at start of new month)."""
         self.credits_used_current_month = 0
         self.updated_at = datetime.now(timezone.utc)
 
-    def is_in_trial(self) -> bool:
-        """Check if customer is currently in trial period."""
-        if not self.trial_end_date:
-            return False
-        return datetime.now(timezone.utc) < self.trial_end_date
-
-    def has_valid_payment_method(self) -> bool:
-        """Check if customer has a valid payment method on file."""
-        return self.stripe_payment_method_id is not None and not self.payment_failed
-
     def should_suspend(self) -> bool:
-        """Check if customer should be suspended due to payment failure or quota abuse."""
-        if self.payment_failed:
-            return True
+        """Check if customer should be suspended due to quota abuse."""
         if self.credits_used_current_month > self.monthly_credit_limit * 1.2:
             return True
         return False

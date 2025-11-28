@@ -545,8 +545,8 @@ See `examples/structured_logging_demo.py` for complete working examples.
 
 ## Next Steps
 
-**Phase 2 Week 7**: Grafana dashboards and log aggregation integration
-**Phase 3**: Production log retention and archival policies
+- Grafana dashboards and log aggregation integration
+- Production log retention and archival policies
 
 ## References
 

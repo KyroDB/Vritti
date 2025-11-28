@@ -18,7 +18,7 @@ import logging
 import secrets
 from datetime import timezone, datetime, timedelta
 from pathlib import Path
-from typing import Union, Optional
+from typing import Optional
 
 import aiosqlite
 import bcrypt
@@ -107,20 +107,10 @@ class CustomerDatabase:
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         last_api_call_at TEXT,
-                        stripe_customer_id TEXT UNIQUE,
-                        stripe_subscription_id TEXT,
-                        stripe_payment_method_id TEXT,
-                        billing_cycle_start TEXT,
-                        billing_cycle_end TEXT,
-                        next_invoice_date TEXT,
-                        payment_failed INTEGER NOT NULL DEFAULT 0,
-                        payment_failed_at TEXT,
-                        trial_end_date TEXT,
 
                         CHECK (customer_id GLOB '[a-z0-9-]*'),
                         CHECK (credits_used_current_month >= 0),
-                        CHECK (monthly_credit_limit >= 0),
-                        CHECK (payment_failed IN (0, 1))
+                        CHECK (monthly_credit_limit >= 0)
                     )
                 """
                 )
@@ -310,33 +300,6 @@ class CustomerDatabase:
             last_api_call_at=(
                 datetime.fromisoformat(row["last_api_call_at"]) if row["last_api_call_at"] else None
             ),
-            stripe_customer_id=row["stripe_customer_id"],
-            stripe_subscription_id=row["stripe_subscription_id"],
-            stripe_payment_method_id=row.get("stripe_payment_method_id"),
-            billing_cycle_start=(
-                datetime.fromisoformat(row["billing_cycle_start"])
-                if row.get("billing_cycle_start")
-                else None
-            ),
-            billing_cycle_end=(
-                datetime.fromisoformat(row["billing_cycle_end"])
-                if row.get("billing_cycle_end")
-                else None
-            ),
-            next_invoice_date=(
-                datetime.fromisoformat(row["next_invoice_date"])
-                if row.get("next_invoice_date")
-                else None
-            ),
-            payment_failed=bool(row.get("payment_failed", 0)),
-            payment_failed_at=(
-                datetime.fromisoformat(row["payment_failed_at"])
-                if row.get("payment_failed_at")
-                else None
-            ),
-            trial_end_date=(
-                datetime.fromisoformat(row["trial_end_date"]) if row.get("trial_end_date") else None
-            ),
         )
 
     async def update_customer(self, customer_id: str, update: CustomerUpdate) -> Optional[Customer]:
@@ -460,100 +423,6 @@ class CustomerDatabase:
 
         return cursor.rowcount > 0
 
-    async def update_customer_stripe_id(
-        self, customer_id: str, stripe_customer_id: str, stripe_subscription_id: Optional[str] = None
-    ) -> bool:
-        """
-        Update customer Stripe IDs.
-
-        Args:
-            customer_id: Customer to update
-            stripe_customer_id: Stripe customer ID (cus_xxx)
-            stripe_subscription_id: Stripe subscription ID (sub_xxx), optional
-
-        Returns:
-            bool: True if successful
-        """
-        conn = await self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
-
-        if stripe_subscription_id:
-            cursor = await conn.execute(
-                """
-                UPDATE customers
-                SET stripe_customer_id = ?,
-                    stripe_subscription_id = ?,
-                    updated_at = ?
-                WHERE customer_id = ?
-                """,
-                (stripe_customer_id, stripe_subscription_id, now, customer_id),
-            )
-        else:
-            cursor = await conn.execute(
-                """
-                UPDATE customers
-                SET stripe_customer_id = ?,
-                    updated_at = ?
-                WHERE customer_id = ?
-                """,
-                (stripe_customer_id, now, customer_id),
-            )
-        await conn.commit()
-
-        await self._log_audit(
-            customer_id=customer_id,
-            action="UPDATE_STRIPE_ID",
-            resource_type="customer",
-            resource_id=customer_id,
-            details=f"stripe_customer_id={stripe_customer_id}",
-        )
-
-        return cursor.rowcount > 0
-
-    async def update_customer_payment_failed(
-        self, customer_id: str, failed: bool, failed_at: Optional[datetime]
-    ) -> bool:
-        """
-        Update customer payment failure status.
-
-        Args:
-            customer_id: Customer to update
-            failed: True if payment failed
-            failed_at: Timestamp of failure (None to clear)
-
-        Returns:
-            bool: True if successful
-        """
-        conn = await self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
-
-        cursor = await conn.execute(
-            """
-            UPDATE customers
-            SET payment_failed = ?,
-                payment_failed_at = ?,
-                updated_at = ?
-            WHERE customer_id = ?
-            """,
-            (
-                1 if failed else 0,
-                failed_at.isoformat() if failed_at else None,
-                now,
-                customer_id,
-            ),
-        )
-        await conn.commit()
-
-        await self._log_audit(
-            customer_id=customer_id,
-            action="UPDATE_PAYMENT_STATUS",
-            resource_type="customer",
-            resource_id=customer_id,
-            details=f"payment_failed={failed}",
-        )
-
-        return cursor.rowcount > 0
-
     async def update_customer_status(self, customer_id: str, status: CustomerStatus) -> bool:
         """
         Update customer status.
@@ -586,49 +455,6 @@ class CustomerDatabase:
             resource_id=customer_id,
             details=f"status={status.value}",
         )
-
-        return cursor.rowcount > 0
-
-    async def update_billing_cycle(
-        self,
-        customer_id: str,
-        billing_cycle_start: datetime,
-        billing_cycle_end: datetime,
-        next_invoice_date: Optional[datetime] = None,
-    ) -> bool:
-        """
-        Update customer billing cycle dates.
-
-        Args:
-            customer_id: Customer to update
-            billing_cycle_start: Start of billing period
-            billing_cycle_end: End of billing period
-            next_invoice_date: Next invoice generation date
-
-        Returns:
-            bool: True if successful
-        """
-        conn = await self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
-
-        cursor = await conn.execute(
-            """
-            UPDATE customers
-            SET billing_cycle_start = ?,
-                billing_cycle_end = ?,
-                next_invoice_date = ?,
-                updated_at = ?
-            WHERE customer_id = ?
-            """,
-            (
-                billing_cycle_start.isoformat(),
-                billing_cycle_end.isoformat(),
-                next_invoice_date.isoformat() if next_invoice_date else None,
-                now,
-                customer_id,
-            ),
-        )
-        await conn.commit()
 
         return cursor.rowcount > 0
 
@@ -742,7 +568,7 @@ class CustomerDatabase:
 
         conn = await self._get_connection()
 
-        # Get all active API keys (we need to hash-compare each one)
+        # Get all active API keys for hash-comparison
         # Note: This is a performance trade-off for security
         # Alternative: hash the key first and lookup by hash (but exposes timing attacks)
         cursor = await conn.execute(
@@ -794,8 +620,6 @@ class CustomerDatabase:
                         if row["last_api_call_at"]
                         else None
                     ),
-                    stripe_customer_id=row["stripe_customer_id"],
-                    stripe_subscription_id=row["stripe_subscription_id"],
                 )
 
         # No matching key found

@@ -6,7 +6,7 @@ Handles end-to-end capture of failure/success episodes:
 2. ID generation
 3. Multi-modal embedding
 4. KyroDB storage
-5. Async multi-perspective reflection generation (Phase 1 Week 1-2)
+5. Async multi-perspective reflection generation
 
 Security:
 - All inputs sanitized before storage
@@ -19,10 +19,13 @@ Designed for <50ms P99 latency (excluding async reflection).
 import asyncio
 import logging
 from datetime import timezone, datetime
+from typing import Optional
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.tiered_reflection import TieredReflectionService, get_tiered_reflection_service
+from src.ingestion.tiered_reflection import (
+    TieredReflectionService,
+)
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode, EpisodeCreate, ReflectionTier
 from src.utils.identifiers import (
@@ -31,7 +34,6 @@ from src.utils.identifiers import (
     hash_error_signature,
 )
 from src.utils.pii_redaction import redact_all
-from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,7 @@ class IngestionPipeline:
         Args:
             kyrodb_router: KyroDB router for dual-instance storage
             embedding_service: Multi-modal embedding service
-            reflection_service: Optional tiered LLM reflection service (Phase 5)
+            reflection_service: Optional tiered LLM reflection service
 
         Security:
             - All services initialized with validated configs
@@ -471,7 +473,6 @@ class IngestionPipeline:
         Returns:
             bool: True if persistence succeeded, False after all retries fail
         """
-        import time
 
         base_delay_seconds = 1.0  # Initial delay before first retry
         last_exception = None
@@ -564,7 +565,6 @@ class IngestionPipeline:
         """
         import json
         from pathlib import Path
-        from datetime import timezone, datetime
 
         dead_letter_path = Path("data/failed_reflections.log")
 
@@ -709,8 +709,7 @@ class IngestionPipeline:
         Returns:
             list[Episode]: Captured episodes
         """
-        # TODO: Implement batch optimization
-        # For now, process sequentially
+        # Sequential processing for reliability - batch embedding optimization pending
         results = []
         for episode_data in episodes:
             try:

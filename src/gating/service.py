@@ -12,7 +12,10 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
 from src.models.search import SearchRequest, SearchResult
 from src.models.skill import Skill
-from src.observability.metrics import track_gating_decision
+from src.observability.metrics import (
+    track_gating_decision,
+    track_repeat_error_prevented,
+)
 from src.retrieval.search import SearchPipeline
 
 logger = logging.getLogger(__name__)
@@ -103,7 +106,7 @@ class GatingService:
 
             # Convert skills to dict for response
             skills_dicts = [
-                skill.to_metadata_dict() for skill, score in matched_skills
+                skill.to_metadata_dict() for skill, _ in matched_skills
             ]
 
             # Track gating decision metrics
@@ -115,6 +118,39 @@ class GatingService:
                 matched_failures=len(search_response.results),
                 matched_skills=len(matched_skills),
             )
+
+            # Track repeat error prevention
+            if (recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT] and
+                len(search_response.results) > 0):
+                top_match = search_response.results[0]
+                error_class = "unknown"
+                
+                # Defensive extraction of error_class with proper null checks
+                try:
+                    if (top_match.episode and 
+                        top_match.episode.create_data and 
+                        hasattr(top_match.episode.create_data, 'error_class') and
+                        top_match.episode.create_data.error_class is not None):
+                        
+                        error_class_obj = top_match.episode.create_data.error_class
+                        
+                        # Check if it's an Enum with .value attribute
+                        if hasattr(error_class_obj, 'value'):
+                            error_class = str(error_class_obj.value)
+                        else:
+                            # Coerce to string if not an Enum
+                            error_class = str(error_class_obj)
+                except Exception as e:
+                    # Log but don't fail - metrics are critical
+                    logger.debug(f"Could not extract error_class from match: {e}, using 'unknown'")
+                    error_class = "unknown"
+
+                track_repeat_error_prevented(
+                    customer_id=customer_id,
+                    customer_tier="default",
+                    error_class=error_class,
+                    recommendation=recommendation.value,
+                )
 
             return ReflectResponse(
                 recommendation=recommendation,
@@ -142,10 +178,10 @@ class GatingService:
 
     def _determine_gating_recommendation(
         self,
-        proposed_action: str,
+        _proposed_action: str,
         matched_failures: list[SearchResult],
         matched_skills: list[tuple[Skill, float]],
-        current_state: dict[str, Any]
+        _current_state: dict[str, Any]
     ) -> tuple[ActionRecommendation, float, str, Optional[str], list[str]]:
         """
         Determine gating recommendation based on matched failures and skills.

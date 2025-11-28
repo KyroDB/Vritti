@@ -9,6 +9,7 @@ Handles:
 
 import logging
 from pathlib import Path
+from typing import Optional, Union
 
 import torch
 from PIL import Image
@@ -16,7 +17,6 @@ from sentence_transformers import SentenceTransformer
 from transformers import CLIPModel, CLIPProcessor
 
 from src.config import EmbeddingConfig
-from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 
