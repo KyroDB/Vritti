@@ -678,10 +678,10 @@ class Settings(BaseSettings):
         Validate cross-field constraints and log warnings.
         Called at application startup.
         """
+        import logging
+
         # Check LLM API key
         if not self.llm.has_any_api_key:
-            import logging
-
             logging.warning("LLM API key not configured - reflection generation will be disabled")
 
         # Validate embedding dimensions match KyroDB instances
