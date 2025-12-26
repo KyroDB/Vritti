@@ -7,7 +7,7 @@ Uses regex patterns optimized for performance with compilation caching.
 
 import logging
 import re
-from re import Pattern
+from re import Match, Pattern
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -222,7 +222,7 @@ def redact_home_paths(text: str, replacement: str = "[USER]") -> str:
         str: Text with usernames in paths redacted
     """
 
-    def replace_username(match):
+    def replace_username(match: Match[str]) -> str:
         prefix = match.group(0).split("/")[1]  # 'home' or 'Users'
         return f"/{prefix}/{replacement}"
 

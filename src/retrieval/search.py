@@ -14,7 +14,7 @@ Designed for <50ms P99 latency.
 
 import logging
 import time
-from datetime import timezone, datetime
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Optional
 
@@ -232,7 +232,7 @@ class SearchPipeline:
         collection: str,
         k: int,
         min_similarity: float,
-        metadata_filters: Optional[dict[str, str]] = None,
+        metadata_filters: dict[str, str] | None = None,
     ) -> list[tuple[Episode, float]]:
         """
         Fetch candidate episodes from KyroDB with server-side filtering.

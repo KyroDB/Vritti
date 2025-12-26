@@ -16,10 +16,15 @@ Security:
 Designed for <50ms P99 latency (excluding async reflection).
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
-from datetime import timezone, datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.models.episode import Reflection
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
@@ -452,7 +457,7 @@ class IngestionPipeline:
         self,
         episode_id: int,
         customer_id: str,
-        reflection: "Reflection",
+        reflection: Reflection,
         max_retries: int = 3,
     ) -> bool:
         """
@@ -546,7 +551,7 @@ class IngestionPipeline:
         self,
         episode_id: int,
         customer_id: str,
-        reflection: "Reflection",
+        reflection: Reflection,
         failure_reason: str,
     ) -> None:
         """
@@ -648,7 +653,7 @@ class IngestionPipeline:
             logger.debug(f"Persistence retry: episode={episode_id}, attempt={attempt}, success={success}")
 
     def _track_reflection_success(
-        self, reflection: "Reflection", generation_time: float
+        self, reflection: Reflection, generation_time: float
     ) -> None:
         """Track successful reflection generation metrics."""
         from src.observability.metrics import (
