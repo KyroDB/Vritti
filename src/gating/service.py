@@ -201,7 +201,13 @@ class GatingService:
         1. Skills (proven solutions) - suggest REWRITE if high confidence
         2. Failures - BLOCK/REWRITE/HINT based on confidence
         3. Default - PROCEED if no matches
-
+        
+        Args:
+            _proposed_action: The proposed action (unused - reserved for future context-aware gating)
+            matched_failures: List of matched failure episodes from search
+            matched_skills: List of matched skills with confidence scores
+            _current_state: Current state dict (unused - reserved for future state-aware gating)
+        
         Returns:
             GatingRecommendationResult with recommendation details
         """

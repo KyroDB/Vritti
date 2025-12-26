@@ -7,7 +7,8 @@ Uses Pydantic Settings for type-safe configuration with multiple sources:
 - Defaults (lowest priority)
 """
 
-from typing import Literal, Optional
+import logging
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -48,14 +49,14 @@ class KyroDBConfig(BaseSettings):
     enable_tls: bool = Field(
         default=False, description="Enable TLS for KyroDB connections (required for production)"
     )
-    tls_ca_cert_path: Optional[str] = Field(
+    tls_ca_cert_path: str | None = Field(
         default=None,
         description="Path to CA certificate for server verification (None = system CA bundle)",
     )
-    tls_client_cert_path: Optional[str] = Field(
+    tls_client_cert_path: str | None = Field(
         default=None, description="Path to client certificate for mutual TLS (optional)"
     )
-    tls_client_key_path: Optional[str] = Field(
+    tls_client_key_path: str | None = Field(
         default=None, description="Path to client private key for mutual TLS (optional)"
     )
     tls_verify_server: bool = Field(
@@ -73,7 +74,7 @@ class KyroDBConfig(BaseSettings):
 
     @field_validator("tls_client_cert_path")
     @classmethod
-    def validate_tls_cert_path(cls, v: Optional[str], info) -> Optional[str]:
+    def validate_tls_cert_path(cls, v: str | None, info) -> str | None:
         """Validate that if client cert is provided, client key must also be provided."""
         if v is not None:
             values = info.data
@@ -230,7 +231,6 @@ class LLMConfig(BaseSettings):
 
         v_lower = v.lower()
         if any(pattern in v_lower for pattern in placeholder_patterns):
-            import logging
             field_name = info.field_name
             logging.warning(
                 f"{field_name} appears to be a placeholder - reflection may be disabled"
@@ -238,7 +238,6 @@ class LLMConfig(BaseSettings):
             return ""
 
         if len(v) < 20:
-            import logging
             field_name = info.field_name
             logging.warning(
                 f"{field_name} seems too short to be valid - reflection may fail"
@@ -373,6 +372,18 @@ class ServiceConfig(BaseSettings):
     # Storage paths
     screenshot_storage_path: str = Field(default="./data/screenshots")
     archive_storage_path: str = Field(default="./data/archive")
+    dead_letter_queue_path: str = Field(
+        default="./data/failed_reflections.log",
+        description="Path to dead letter queue file for failed reflections"
+    )
+    
+    # Dead letter queue file rotation settings
+    dead_letter_queue_max_size_mb: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum size of dead letter queue file in MB before rotation"
+    )
 
 
 class CORSConfig(BaseSettings):
@@ -633,14 +644,14 @@ class Settings(BaseSettings):
     
     # Admin authentication (optional but recommended for production)
     # Set ADMIN_API_KEY in environment to protect admin endpoints
-    admin_api_key: Optional[str] = Field(
+    admin_api_key: str | None = Field(
         default=None,
         description="API key for admin endpoints (required for admin access)"
     )
 
     @field_validator("admin_api_key")
     @classmethod
-    def validate_admin_api_key_security(cls, v: Optional[str]) -> Optional[str]:
+    def validate_admin_api_key_security(cls, v: str | None) -> str | None:
         """
         Security: Validate admin API key format and prevent common mistakes.
 
@@ -659,14 +670,12 @@ class Settings(BaseSettings):
 
         v_lower = v.lower()
         if any(pattern in v_lower for pattern in placeholder_patterns):
-            import logging
             logging.warning(
                 "admin_api_key appears to be a placeholder - admin endpoints will be BLOCKED"
             )
             return None
 
         if len(v) < 32:
-            import logging
             logging.warning(
                 "admin_api_key seems too short to be secure - use at least 32 characters"
             )
@@ -680,8 +689,6 @@ class Settings(BaseSettings):
         """
         # Check LLM API key
         if not self.llm.has_any_api_key:
-            import logging
-
             logging.warning("LLM API key not configured - reflection generation will be disabled")
 
         # Validate embedding dimensions match KyroDB instances
@@ -697,7 +704,7 @@ class Settings(BaseSettings):
 
 
 # Global settings instance (lazy-loaded)
-_settings: Optional[Settings] = None
+_settings: Settings | None = None
 
 
 def get_settings() -> Settings:

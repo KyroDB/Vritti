@@ -16,7 +16,6 @@ import logging
 import time
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Optional
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
@@ -53,9 +52,9 @@ class SearchPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        precondition_matcher: Optional[PreconditionMatcher] = None,
-        advanced_precondition_matcher: Optional[AdvancedPreconditionMatcher] = None,
-        ranker: Optional[EpisodeRanker] = None,
+        precondition_matcher: PreconditionMatcher | None = None,
+        advanced_precondition_matcher: AdvancedPreconditionMatcher | None = None,
+        ranker: EpisodeRanker | None = None,
     ):
         """
         Initialize search pipeline.
@@ -121,7 +120,17 @@ class SearchPipeline:
             stage_start = time.perf_counter()
             kyrodb_filters = self._build_kyrodb_filters(request)
             # Fetch 2x buffer: headroom for incomplete server-side filtering + precondition matching
-            fetch_k = request.k * 2
+            # Validate fetch_k to prevent memory issues with very large k values
+            settings = get_settings()
+            max_fetch_k = settings.search.max_k * 2
+            fetch_k = min(request.k * 2, max_fetch_k)
+            
+            if request.k * 2 > max_fetch_k:
+                logger.warning(
+                    f"Requested k={request.k} would fetch {request.k * 2} candidates, "
+                    f"capping at max_fetch_k={max_fetch_k} to prevent memory issues"
+                )
+            
             candidates = await self._fetch_candidates(
                 query_embedding=query_embedding,
                 customer_id=request.customer_id,
@@ -178,7 +187,7 @@ class SearchPipeline:
                 breakdown=latency_breakdown,
                 collection=request.collection,
                 query_embedding_dimension=len(query_embedding),
-                searched_at=datetime.now(timezone.utc),
+                searched_at=datetime.now(UTC),
             )
 
             logger.info(
@@ -232,7 +241,7 @@ class SearchPipeline:
         collection: str,
         k: int,
         min_similarity: float,
-        metadata_filters: Optional[dict[str, str]] = None,
+        metadata_filters: dict[str, str] | None = None,
     ) -> list[tuple[Episode, float]]:
         """
         Fetch candidate episodes from KyroDB with server-side filtering.
@@ -316,11 +325,11 @@ class SearchPipeline:
 
         # Validate timestamp range
         if request.min_timestamp is not None:
-            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=timezone.utc)
+            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=UTC)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at >= min_dt]
 
         if request.max_timestamp is not None:
-            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=timezone.utc)
+            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=UTC)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at <= max_dt]
 
         # Validate tags
@@ -464,7 +473,7 @@ class SearchPipeline:
             precondition_scores=precondition_scores,
             matched_preconditions_list=matched_preconditions_list,
             weights=request.ranking_weights,
-            current_time=datetime.now(timezone.utc),
+            current_time=datetime.now(UTC),
         )
 
         return ranked_results
