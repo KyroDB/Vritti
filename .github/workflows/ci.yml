@@ -1,0 +1,142 @@
+# CI Pipeline for Vritti
+# Automated testing and quality checks
+#
+# Triggers:
+#   - Push to main branch
+#   - Pull requests to main
+#
+# Jobs:
+#   1. test: Run pytest with coverage
+#   2. lint: Run ruff for linting
+#   3. format: Check black formatting
+#   4. typecheck: Run mypy for type checking
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================================================
+  # Run Test Suite with Coverage
+  # ============================================================================
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ -v --tb=short --cov=src --cov-report=xml --cov-report=term
+        env:
+          # Test environment variables
+          LOGGING_JSON_OUTPUT: 'false'
+          LOGGING_LEVEL: 'DEBUG'
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # Lint with Ruff
+  # ============================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Lint with ruff
+        run: |
+          ruff check src/ tests/
+
+  # ============================================================================
+  # Check Code Formatting with Black
+  # ============================================================================
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black
+
+      - name: Check code formatting with black
+        run: |
+          black --check src/ tests/
+
+  # ============================================================================
+  # Type Checking with mypy
+  # ============================================================================
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install mypy
+
+      - name: Type check with mypy
+        run: |
+          mypy src/
+        continue-on-error: true  # Don't fail CI on type errors initially
