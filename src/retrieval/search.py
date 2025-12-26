@@ -232,7 +232,7 @@ class SearchPipeline:
         collection: str,
         k: int,
         min_similarity: float,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filters: Optional[dict[str, str]] = None,
     ) -> list[tuple[Episode, float]]:
         """
         Fetch candidate episodes from KyroDB with server-side filtering.
