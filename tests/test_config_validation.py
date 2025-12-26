@@ -24,7 +24,7 @@ def settings_with_api_key() -> Settings:
     return Settings(
         kyrodb=KyroDBConfig(),
         embedding=EmbeddingConfig(
-            text_dimension=256,  # Non-standard to trigger warning
+            text_dimension=200,  # Non-standard to trigger warning
             image_dimension=768,  # Standard
         ),
         llm=LLMConfig(
@@ -39,7 +39,7 @@ def settings_without_api_key() -> Settings:
     return Settings(
         kyrodb=KyroDBConfig(),
         embedding=EmbeddingConfig(
-            text_dimension=256,  # Non-standard to trigger warning
+            text_dimension=200,  # Non-standard to trigger warning
             image_dimension=768,  # Standard
         ),
         llm=LLMConfig(
@@ -54,8 +54,8 @@ def settings_all_nonstandard() -> Settings:
     return Settings(
         kyrodb=KyroDBConfig(),
         embedding=EmbeddingConfig(
-            text_dimension=256,  # Non-standard
-            image_dimension=1024,  # Standard
+            text_dimension=200,  # Non-standard
+            image_dimension=600,  # Non-standard
         ),
         llm=LLMConfig(
             openrouter_api_key=""  # No key
@@ -74,7 +74,7 @@ def test_validate_configuration_with_api_key(settings_with_api_key, caplog):
         settings_with_api_key.validate_configuration()
     
     # Should have warning for non-standard text dimension
-    assert any("Non-standard text embedding dimension: 256" in record.message 
+    assert any("Non-standard text embedding dimension: 200" in record.message 
                for record in caplog.records)
     
     # Should NOT have warning for missing API key
@@ -98,7 +98,7 @@ def test_validate_configuration_without_api_key(settings_without_api_key, caplog
     
     # Should have warning for non-standard text dimension
     # This is where the bug would occur - logging would not be imported
-    assert any("Non-standard text embedding dimension: 256" in record.message 
+    assert any("Non-standard text embedding dimension: 200" in record.message 
                for record in caplog.records)
 
 
@@ -115,7 +115,9 @@ def test_validate_configuration_all_warnings(settings_all_nonstandard, caplog):
     # Should have all warnings
     assert any("LLM API key not configured" in record.message 
                for record in caplog.records)
-    assert any("Non-standard text embedding dimension: 256" in record.message 
+    assert any("Non-standard text embedding dimension: 200" in record.message 
+               for record in caplog.records)
+    assert any("Non-standard image embedding dimension: 600" in record.message 
                for record in caplog.records)
 
 
