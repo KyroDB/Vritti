@@ -54,6 +54,10 @@ class GatingService:
     REWRITE_SIMILARITY = 0.8  # Similarity threshold for rewrite suggestion
     REWRITE_PRECONDITION = 0.5  # Precondition match threshold for rewrite
     HINT_SIMILARITY = 0.7  # Similarity threshold for showing hints
+    
+    # Display limits for hints and context
+    MAX_ACTION_HINT_LENGTH = 100  # Maximum characters for action hints
+    MAX_ENV_FACTORS_IN_HINTS = 3  # Maximum environment factors to show in hints
 
     def __init__(self, search_pipeline: SearchPipeline, kyrodb_router: KyroDBRouter):
         self.search_pipeline = search_pipeline
@@ -189,7 +193,7 @@ class GatingService:
 
     def _determine_gating_recommendation(
         self,
-        _proposed_action: str,
+        proposed_action: str,
         matched_failures: list[SearchResult],
         matched_skills: list[tuple[Skill, float]],
         _current_state: dict[str, Any]
@@ -254,9 +258,14 @@ class GatingService:
         # Extract reflection data safely
         root_cause = "Unknown"
         resolution = None
+        environment_factors = []
         if top_match.episode.reflection:
             root_cause = top_match.episode.reflection.root_cause
             resolution = top_match.episode.reflection.resolution_strategy
+            environment_factors = top_match.episode.reflection.environment_factors
+        
+        # Check if current environment matches failure's environment factors
+        environment_match = self._check_environment_match(current_state, environment_factors)
 
         # 3. Check for BLOCK (highest confidence failure match)
         if (similarity_score >= self.BLOCK_SIMILARITY and
@@ -317,3 +326,34 @@ class GatingService:
                 suggested_action=None,
                 hints=[]
             )
+
+    def _check_environment_match(
+        self, current_state: dict[str, Any], environment_factors: list[str]
+    ) -> bool:
+        """
+        Check if current environment state matches the failure's environment factors.
+
+        Args:
+            current_state: Current environment state (OS, versions, tools, etc.)
+            environment_factors: List of environment factors from the failure
+
+        Returns:
+            True if there's a reasonable match, False otherwise
+        """
+        if not current_state or not environment_factors:
+            # If either is missing, we can't make a determination
+            # Return True (assume match) to be conservative
+            return True
+
+        # Check if any environment factor appears in current state values
+        # We check each value individually to avoid false positives from string concatenation
+        matches = 0
+        for factor in environment_factors:
+            factor_lower = factor.lower()
+            for value in current_state.values():
+                if value is not None and factor_lower in str(value).lower():
+                    matches += 1
+                    break  # Found a match for this factor, move to next
+
+        # Consider it a match if at least one factor is found
+        return matches > 0
