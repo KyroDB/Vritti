@@ -57,7 +57,9 @@ def pytest_sessionfinish(session, exitstatus):
 
     # Force exit with the test exit code
     # This bypasses the hanging asyncio cleanup in threading module
-    os._exit(exitstatus)
+    # Only force exit on success to allow error reports to be printed
+    if exitstatus == 0:
+        os._exit(exitstatus)
 
 
 @pytest.fixture
