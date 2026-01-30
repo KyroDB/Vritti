@@ -265,7 +265,7 @@ class GatingService:
             environment_factors = top_match.episode.reflection.environment_factors
         
         # Check if current environment matches failure's environment factors
-        environment_match = self._check_environment_match(current_state, environment_factors)
+        environment_match = self._check_environment_match(_current_state, environment_factors)
 
         # 3. Check for BLOCK (highest confidence failure match)
         if (similarity_score >= self.BLOCK_SIMILARITY and

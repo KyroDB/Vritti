@@ -11,7 +11,7 @@ protobuf==4.25.8
 
 # Embedding models
 sentence-transformers==2.3.0
-torch==2.1.0
+torch==2.2.2
 transformers==4.48.0
 Pillow==10.2.0
 
@@ -26,6 +26,9 @@ aiofiles==23.2.1
 aiosqlite==0.19.0
 bcrypt==4.1.1
 cachetools==5.3.2
+slowapi==0.1.9
+structlog==24.1.0
+prometheus-client==0.20.0
 
 # Resilience 
 pybreaker==1.0.1
@@ -47,7 +50,7 @@ isort==5.13.0
 
 hdbscan>=0.8.33
 scikit-learn>=1.4.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 
 # PII Redaction 
 presidio-analyzer>=2.2.351

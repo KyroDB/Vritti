@@ -237,7 +237,7 @@ try:
     from presidio_anonymizer.entities import OperatorConfig
 
     _HAS_PRESIDIO = True
-except ImportError:
+except Exception:
     _HAS_PRESIDIO = False
 
 

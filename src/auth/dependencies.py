@@ -5,7 +5,7 @@ Security:
 - API key validation with bcrypt
 - customer_id injection from validated key (prevents spoofing)
 - Rate limiting per customer
-- Request tracking for usage billing
+- Request tracking for usage tracking
 
 Performance:
 - API key validation cached in-memory (5 minute TTL)

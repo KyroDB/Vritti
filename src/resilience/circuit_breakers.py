@@ -1,7 +1,7 @@
 """
 Circuit breakers for external dependencies.
 
-Prevents cascade failures when KyroDB or Stripe experience outages.
+Prevents cascade failures when KyroDB experiences outages.
 
 Circuit breaker states:
 - CLOSED: Normal operation, requests pass through
@@ -30,12 +30,6 @@ logger = logging.getLogger(__name__)
 
 class KyroDBCircuitBreakerError(Exception):
     """Circuit breaker open for KyroDB operations."""
-
-    pass
-
-
-class StripeCircuitBreakerError(Exception):
-    """Circuit breaker open for Stripe operations."""
 
     pass
 
@@ -91,16 +85,6 @@ kyrodb_breaker = CircuitBreaker(
 )
 
 
-# Stripe circuit breaker
-# Opens after 3 consecutive failures, stays open for 30 seconds (faster recovery for billing)
-stripe_breaker = CircuitBreaker(
-    fail_max=3,
-    reset_timeout=30,
-    name="Stripe",
-    listeners=[_logging_listener],
-)
-
-
 def get_kyrodb_breaker() -> CircuitBreaker:
     """
     Get KyroDB circuit breaker instance.
@@ -118,23 +102,6 @@ def get_kyrodb_breaker() -> CircuitBreaker:
     return kyrodb_breaker
 
 
-def get_stripe_breaker() -> CircuitBreaker:
-    """
-    Get Stripe circuit breaker instance.
-
-    Returns:
-        CircuitBreaker: Configured for Stripe API calls
-
-    Usage:
-        breaker = get_stripe_breaker()
-
-        @breaker
-        def create_subscription(...):
-            return stripe.Subscription.create(...)
-    """
-    return stripe_breaker
-
-
 def reset_all_breakers() -> None:
     """
     Reset all circuit breakers to CLOSED state.
@@ -142,7 +109,6 @@ def reset_all_breakers() -> None:
     Use for testing or manual recovery.
     """
     kyrodb_breaker.close()
-    stripe_breaker.close()
     logger.info("All circuit breakers reset to CLOSED state")
 
 
@@ -209,47 +175,6 @@ def with_kyrodb_circuit_breaker(func):
                 # CircuitBreakerError occurs if circuit just opened
                 pass
             raise
-
-    return wrapper
-
-
-def with_stripe_circuit_breaker(func):
-    """
-    Decorator to wrap Stripe operations with circuit breaker.
-
-    Args:
-        func: Function to wrap (sync or async)
-
-    Returns:
-        Wrapped function with circuit breaker protection
-
-    Raises:
-        StripeCircuitBreakerError: If circuit is open
-
-    Usage:
-        @with_stripe_circuit_breaker
-        def create_customer(...):
-            return stripe.Customer.create(...)
-    """
-
-    def wrapper(*args, **kwargs):
-        try:
-            # Call function through circuit breaker
-            result = stripe_breaker.call(func, *args, **kwargs)
-            return result
-        except CircuitBreakerError as e:
-            # Circuit is open - fail fast
-            logger.warning(
-                "Stripe circuit breaker OPEN - failing fast",
-                extra={
-                    "function": func.__name__,
-                    "state": stripe_breaker.current_state,
-                },
-            )
-            raise StripeCircuitBreakerError(
-                f"Stripe service unavailable (circuit breaker open). "
-                f"Retry after {stripe_breaker.reset_timeout} seconds."
-            ) from e
 
     return wrapper
 

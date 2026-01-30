@@ -684,7 +684,7 @@ async def capture_episode(
         - API key validated with bcrypt
         - Quota enforcement (soft limit with warning)
 
-    Usage Billing:
+    Usage Tracking:
         - Base cost: 1 credit per episode
         - With image: +0.2 credits
         - With reflection: +0.5 credits
@@ -1045,7 +1045,7 @@ async def search_episodes(
         - API key validated with bcrypt
         - Namespace isolation (only searches customer's episodes)
 
-    Usage Billing:
+    Usage Tracking:
         - Base cost: 0.1 credits per search
         - With image search: +0.2 credits
     """
@@ -1147,7 +1147,7 @@ async def reflect_before_action(
         - HINT: Might fail, show hints
         - PROCEED: No known issues
 
-    Usage billing:
+    Usage tracking:
         - Base cost: 0.2 credits (2x search cost, since this prevents failures)
     """
     if not gating_service:

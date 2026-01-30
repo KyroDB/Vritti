@@ -391,7 +391,7 @@ class CustomerDatabase:
 
     async def reset_monthly_usage(self, customer_id: str) -> bool:
         """
-        Reset monthly credit usage (called on billing cycle).
+        Reset monthly credit usage (called on quota cycle).
 
         Args:
             customer_id: Customer to reset

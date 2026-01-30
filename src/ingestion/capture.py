@@ -187,7 +187,7 @@ class IngestionPipeline:
             episode = Episode(
                 create_data=episode_data,
                 episode_id=episode_id,
-                created_at=datetime.now(UTC),
+                created_at=datetime.now(timezone.utc),
                 retrieval_count=0,
                 reflection=None,  # Will be generated async
             )
@@ -584,7 +584,7 @@ class IngestionPipeline:
             max_size_bytes = self.settings.service.dead_letter_queue_max_size_mb * 1024 * 1024
             if dead_letter_path.exists() and dead_letter_path.stat().st_size >= max_size_bytes:
                 # Rotate: rename current file with timestamp
-                timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 rotated_path = dead_letter_path.with_suffix(f".{timestamp}.log")
                 dead_letter_path.rename(rotated_path)
                 logger.info(
@@ -618,7 +618,7 @@ class IngestionPipeline:
 
             # Create dead-letter entry
             entry = {
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "episode_id": episode_id,
                 "customer_id": customer_id,
                 "failure_reason": failure_reason,

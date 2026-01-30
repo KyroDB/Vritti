@@ -187,7 +187,7 @@ class SearchPipeline:
                 breakdown=latency_breakdown,
                 collection=request.collection,
                 query_embedding_dimension=len(query_embedding),
-                searched_at=datetime.now(UTC),
+                searched_at=datetime.now(timezone.utc),
             )
 
             logger.info(
@@ -325,11 +325,11 @@ class SearchPipeline:
 
         # Validate timestamp range
         if request.min_timestamp is not None:
-            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=UTC)
+            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=timezone.utc)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at >= min_dt]
 
         if request.max_timestamp is not None:
-            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=UTC)
+            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=timezone.utc)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at <= max_dt]
 
         # Validate tags
@@ -473,7 +473,7 @@ class SearchPipeline:
             precondition_scores=precondition_scores,
             matched_preconditions_list=matched_preconditions_list,
             weights=request.ranking_weights,
-            current_time=datetime.now(UTC),
+            current_time=datetime.now(timezone.utc),
         )
 
         return ranked_results

@@ -368,7 +368,7 @@ async def reset_monthly_usage(
     """
     Reset monthly usage (admin only).
 
-    Called automatically on billing cycle.
+    Called automatically on quota cycle.
 
     Args:
         customer_id: Customer ID
