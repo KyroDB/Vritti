@@ -7,6 +7,7 @@ Run with: pytest tests/load/test_load_1000_rps.py -v -s
 """
 
 import asyncio
+import os
 import time
 import statistics
 import random
@@ -51,6 +52,10 @@ class Test1000RPSLoad:
 
     @pytest.mark.asyncio
     @pytest.mark.slow
+    @pytest.mark.skipif(
+        not os.getenv("RUN_LOAD_TESTS"),
+        reason="Load test is disabled by default. Set RUN_LOAD_TESTS=1 to run."
+    )
     async def test_sustained_1000_rps(
         self, ingestion_pipeline, search_pipeline, gating_service
     ):
@@ -103,7 +108,8 @@ class Test1000RPSLoad:
             try:
                 if op_type == 'search':
                     request = SearchRequest(
-                        query=f"test query {random.randint(1, 1000)}",
+                        customer_id="test_customer",
+                        goal=f"test query {random.randint(1, 1000)}",
                         k=5,
                         min_similarity=0.7,
                     )

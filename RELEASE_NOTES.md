@@ -70,7 +70,7 @@ if await agent.check_action("rm -rf /", "Clean files"):
 - <50ms latency (P99)
 
 ### 📊 Production-Ready
-- Prometheus metrics
+
 - Structured JSON logging
 - Health checks and readiness probes
 - Circuit breakers for resilience

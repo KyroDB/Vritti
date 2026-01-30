@@ -25,7 +25,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 **Integrations**
 - KyroDB vector database (dual-instance: text + image)
 - OpenRouter LLM API (free tier models)
-- Prometheus metrics and observability
+- Observability improvements
 - Structured JSON logging
 
 **API Endpoints**
@@ -33,7 +33,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 - `POST /api/v1/gate/reflect` - Pre-action gating
 - `POST /api/v1/search` - Semantic search
 - `GET /health` - Health checks
-- `GET /metrics` - Prometheus metrics
+
 
 **Documentation**
 - Complete API guide

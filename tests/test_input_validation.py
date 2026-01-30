@@ -239,8 +239,8 @@ class TestDeadLetterQueueConfiguration:
 class TestGatingServiceDocumentation:
     """Test that gating service properly documents unused parameters."""
 
-    def test_unused_parameters_documented(self):
-        """Test that _determine_gating_recommendation has proper documentation."""
+    def test_gating_parameters_documented(self):
+        """Test that _determine_gating_recommendation documents its parameters."""
         mock_search = MagicMock()
         mock_router = AsyncMock()
         
@@ -249,16 +249,15 @@ class TestGatingServiceDocumentation:
         # Get the method
         method = service._determine_gating_recommendation
         
-        # Check docstring mentions the unused parameters
+        # Check docstring mentions the parameters
         docstring = method.__doc__
         assert docstring is not None
-        assert "_proposed_action" in docstring
-        assert "_current_state" in docstring
-        assert "TODO" in docstring or "unused" in docstring.lower()
+        assert "proposed_action" in docstring
+        assert "current_state" in docstring
         
         # Verify the method signature still has the parameters (for future use)
         import inspect
         sig = inspect.signature(method)
         params = list(sig.parameters.keys())
-        assert "_proposed_action" in params
-        assert "_current_state" in params
+        assert "proposed_action" in params
+        assert "current_state" in params

@@ -12,10 +12,6 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
 from src.models.search import SearchRequest, SearchResult
 from src.models.skill import Skill
-from src.observability.metrics import (
-    track_gating_decision,
-    track_repeat_error_prevented,
-)
 from src.retrieval.search import SearchPipeline
 
 logger = logging.getLogger(__name__)
@@ -124,49 +120,6 @@ class GatingService:
                 skill.to_metadata_dict() for skill, _ in matched_skills
             ]
 
-            # Track gating decision metrics
-            track_gating_decision(
-                recommendation=result.recommendation.value,
-                customer_tier="default",  # TODO: Pass customer tier from context
-                confidence=result.confidence,
-                latency_seconds=total_latency_ms / 1000.0,
-                matched_failures=len(search_response.results),
-                matched_skills=len(matched_skills),
-            )
-
-            # Track repeat error prevention
-            if (result.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT] and
-                len(search_response.results) > 0):
-                top_match = search_response.results[0]
-                error_class = "unknown"
-                
-                # Defensive extraction of error_class with proper null checks
-                try:
-                    if (top_match.episode and 
-                        top_match.episode.create_data and 
-                        hasattr(top_match.episode.create_data, 'error_class') and
-                        top_match.episode.create_data.error_class is not None):
-                        
-                        error_class_obj = top_match.episode.create_data.error_class
-                        
-                        # Check if it's an Enum with .value attribute
-                        if hasattr(error_class_obj, 'value'):
-                            error_class = str(error_class_obj.value)
-                        else:
-                            # Coerce to string if not an Enum
-                            error_class = str(error_class_obj)
-                except Exception as e:
-                    # Log but don't fail - metrics are critical
-                    logger.debug(f"Could not extract error_class from match: {e}, using 'unknown'")
-                    error_class = "unknown"
-
-                track_repeat_error_prevented(
-                    customer_id=customer_id,
-                    customer_tier="default",
-                    error_class=error_class,
-                    recommendation=result.recommendation.value,
-                )
-
             return ReflectResponse(
                 recommendation=result.recommendation,
                 confidence=result.confidence,
@@ -196,7 +149,7 @@ class GatingService:
         proposed_action: str,
         matched_failures: list[SearchResult],
         matched_skills: list[tuple[Skill, float]],
-        _current_state: dict[str, Any]
+        current_state: dict[str, Any]
     ) -> GatingRecommendationResult:
         """
         Determine gating recommendation based on matched failures and skills.
@@ -207,10 +160,10 @@ class GatingService:
         3. Default - PROCEED if no matches
         
         Args:
-            _proposed_action: The proposed action (unused - reserved for future context-aware gating)
+            proposed_action: The proposed action to evaluate
             matched_failures: List of matched failure episodes from search
             matched_skills: List of matched skills with confidence scores
-            _current_state: Current state dict (unused - reserved for future state-aware gating)
+            current_state: Current environment state for context-aware hints
         
         Returns:
             GatingRecommendationResult with recommendation details
@@ -223,12 +176,16 @@ class GatingService:
             if score >= self.SKILL_HIGH_CONFIDENCE:
                 # We have a proven solution with high confidence
                 # Suggest using the skill instead of the proposed action
+                action_hint = proposed_action
+                if len(action_hint) > self.MAX_ACTION_HINT_LENGTH:
+                    action_hint = action_hint[: self.MAX_ACTION_HINT_LENGTH] + "..."
                 return GatingRecommendationResult(
                     recommendation=ActionRecommendation.REWRITE,
                     confidence=0.9,
                     rationale=f"Found proven solution: '{top_skill.name}' (used {top_skill.usage_count}× successfully)",
                     suggested_action=top_skill.code,  # Suggest the skill's code
                     hints=[
+                        f"Original action: {action_hint}",
                         f"Success rate: {top_skill.success_rate * 100:.0f}%",
                         f"Skill documentation: {top_skill.docstring}"
                     ]
@@ -265,7 +222,7 @@ class GatingService:
             environment_factors = top_match.episode.reflection.environment_factors
         
         # Check if current environment matches failure's environment factors
-        environment_match = self._check_environment_match(_current_state, environment_factors)
+        environment_match = self._check_environment_match(current_state, environment_factors)
 
         # 3. Check for BLOCK (highest confidence failure match)
         if (similarity_score >= self.BLOCK_SIMILARITY and
@@ -276,12 +233,22 @@ class GatingService:
                 f"{precondition_score:.2f} precondition match). Root cause: {root_cause}"
             )
             
+            hints = [
+                f"Previous failure: {top_match.episode.create_data.goal}",
+                f"Blocked action: {proposed_action}",
+            ]
+            if environment_factors:
+                if environment_match:
+                    hints.append("Environment matches prior failure context")
+                else:
+                    hints.append("Environment differs from prior failure context")
+
             return GatingRecommendationResult(
                 recommendation=ActionRecommendation.BLOCK,
                 confidence=0.95,
                 rationale=rationale,
                 suggested_action=resolution,  # Suggest the fix from the failure
-                hints=[f"Previous failure: {top_match.episode.create_data.goal}"]
+                hints=hints
             )
 
         # 4. Check for REWRITE (medium-high confidence)
@@ -294,12 +261,19 @@ class GatingService:
                 f"Suggested alternative available. Root cause: {root_cause}"
             )
             
+            hints = [f"Based on failure: {top_match.episode.create_data.goal}"]
+            if environment_factors:
+                if environment_match:
+                    hints.append("Environment matches prior failure context")
+                else:
+                    hints.append("Environment differs from prior failure context")
+
             return GatingRecommendationResult(
                 recommendation=ActionRecommendation.REWRITE,
                 confidence=0.85,
                 rationale=rationale,
                 suggested_action=resolution,
-                hints=[f"Based on failure: {top_match.episode.create_data.goal}"]
+                hints=hints
             )
 
         # 5. Check for HINT (medium confidence)

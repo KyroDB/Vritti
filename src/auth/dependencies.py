@@ -21,11 +21,6 @@ from cachetools import TTLCache
 from fastapi import Header, HTTPException, Request, status
 
 from src.models.customer import Customer
-from src.observability.metrics import (
-    track_api_key_cache_hit,
-    track_api_key_cache_miss,
-    track_api_key_validation,
-)
 from src.storage.database import get_customer_db
 
 logger = logging.getLogger(__name__)
@@ -109,10 +104,6 @@ async def get_authenticated_customer(
         if time.time() < expire_time:
             logger.debug(f"API key cache hit for customer: {customer.customer_id}")
 
-            # Track cache hit (Phase 2 Week 5)
-            track_api_key_cache_hit()
-            track_api_key_validation(duration_seconds=0.001, cache_hit=True)
-
             # Verify customer is still active
             if customer.status != "active":
                 raise HTTPException(
@@ -126,7 +117,6 @@ async def get_authenticated_customer(
 
     # Cache miss or expired - validate with database
     logger.debug("API key cache miss - validating with database")
-    track_api_key_cache_miss()
 
     db = await get_customer_db()
 
@@ -137,8 +127,6 @@ async def get_authenticated_customer(
     validation_time_seconds = time.perf_counter() - start_time
     validation_time_ms = validation_time_seconds * 1000
 
-    # Track validation latency (Phase 2 Week 5)
-    track_api_key_validation(duration_seconds=validation_time_seconds, cache_hit=False)
 
     if customer is None:
         logger.warning(f"API key validation failed (validation time: {validation_time_ms:.2f}ms)")
@@ -265,7 +253,7 @@ async def require_admin_access(
     
     Security:
         - Requires X-Admin-API-Key header with valid admin key
-        - If ADMIN_API_KEY is not configured, endpoint is UNPROTECTED (logs warning)
+        - If ADMIN_API_KEY is not configured, endpoint is blocked (fail closed)
         - Use constant-time comparison to prevent timing attacks
         
     Args:

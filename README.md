@@ -228,23 +228,6 @@ Include in requests:
 curl -H "X-API-Key: em_live_..." http://localhost:8000/api/v1/search
 ```
 
----
-
-## Monitoring
-
-Prometheus metrics available at `/metrics`:
-
-```bash
-curl http://localhost:8000/metrics
-```
-
-Key metrics:
-- `episodic_memory_gating_decision_total` - Total gating decisions
-- `episodic_memory_repeat_error_prevented_total` - Errors prevented
-- `episodic_memory_gating_latency_seconds` - Decision latency
-
----
-
 ## Health Checks
 
 ```bash
@@ -266,7 +249,7 @@ curl http://localhost:8000/health
 2. Start KyroDB instances (text on port 50051, image on port 50052)
 3. Start with `uvicorn src.main:app --host 0.0.0.0 --port 8000`
 4. Configure reverse proxy (nginx/caddy) for HTTPS
-5. Set up Prometheus scraping for `/metrics`
+
 
 ---
 

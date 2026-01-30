@@ -25,7 +25,7 @@ def print_section(title):
 
 async def test_health_check():
     """Test the health check endpoint."""
-    print_section("1️⃣ Testing Health Check")
+    print_section("1. Testing Health Check")
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -39,10 +39,9 @@ async def test_health_check():
                 print(f"   Version: {health['version']}")
                 print(f"   Uptime: {health['uptime_seconds']:.1f}s")
                 
-                print(f"\n📊 Components Status:")
+                print("\nComponents Status:")
                 for component in health.get('components', []):
-                    status_icon = "" if component['status'] == 'healthy' else "⚠️"
-                    print(f"   {status_icon} {component['name']}: {component['status']}")
+                    print(f"   {component['name']}: {component['status']}")
                     if component.get('message'):
                         print(f"      └─ {component['message']}")
                     if component.get('latency_ms') is not None:
@@ -55,48 +54,25 @@ async def test_health_check():
                 
     except Exception as e:
         print(f" Cannot connect to Vritti: {e}")
-        print("\n💡 Make sure Vritti is running:")
+        print("\nMake sure Vritti is running:")
         print("   cd Vritti && uvicorn src.main:app --port 8000")
         return False
 
-
-async def test_metrics_endpoint():
-    """Test the Prometheus metrics endpoint."""
-    print_section("2️⃣ Testing Metrics Endpoint")
-    
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get("http://localhost:8000/metrics")
-            
-            if response.status_code == 200:
-                metrics = response.text
-                
-                # Count metrics
-                metric_lines = [line for line in metrics.split('\n') if line and not line.startswith('#')]
-                
-                print(f" Metrics endpoint working")
-                print(f"   Total metrics: {len(metric_lines)}")
-                
-                # Show sample metrics
-                print(f"\n📈 Sample Metrics:")
-                for line in metric_lines[:5]:
-                    if '{' in line:
-                        metric_name = line.split('{')[0]
-                        print(f"   • {metric_name}")
-                
-                return True
-            else:
-                print(f" Metrics endpoint failed: {response.status_code}")
-                return False
-                
-    except Exception as e:
-        print(f" Cannot access metrics: {e}")
-        return False
+async def test_core_endpoints():
+    """Validate core endpoints that do not require authentication."""
+    print_section("2. Testing Core Endpoints")
+    async with httpx.AsyncClient() as client:
+        for path in ["/health/liveness", "/health/readiness", "/health"]:
+            try:
+                response = await client.get(f"http://localhost:8000{path}")
+                print(f"{path}: {response.status_code}")
+            except Exception as e:
+                print(f"Error testing {path}: {e}")
 
 
 async def test_api_docs():
     """Test that API documentation is available."""
-    print_section("3️⃣ Testing API Documentation")
+    print_section("3. Testing API Documentation")
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -117,7 +93,7 @@ async def test_api_docs():
 
 async def test_openapi_schema():
     """Test OpenAPI schema endpoint."""
-    print_section("4️⃣ Testing OpenAPI Schema")
+    print_section("4. Testing OpenAPI Schema")
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -134,10 +110,10 @@ async def test_openapi_schema():
                 paths = schema.get('paths', {})
                 endpoint_count = len(paths)
                 
-                print(f"\n🔌 API Endpoints: {endpoint_count}")
+                print(f"\nAPI Endpoints: {endpoint_count}")
                 for path in list(paths.keys())[:5]:
                     methods = list(paths[path].keys())
-                    print(f"   • {path} [{', '.join(m.upper() for m in methods)}]")
+                    print(f"   {path} [{', '.join(m.upper() for m in methods)}]")
                 
                 if endpoint_count > 5:
                     print(f"   ... and {endpoint_count - 5} more")
@@ -154,7 +130,7 @@ async def test_openapi_schema():
 
 async def test_kyrodb_connectivity():
     """Test that Vritti can connect to KyroDB instances."""
-    print_section("5️⃣ Testing KyroDB Connectivity")
+    print_section("5. Testing KyroDB Connectivity")
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -174,12 +150,12 @@ async def test_kyrodb_connectivity():
                     if kyrodb_component['status'] == 'healthy':
                         metadata = kyrodb_component.get('metadata', {})
                         print(f" KyroDB instances connected")
-                        print(f"   Text instance (50051): {'' if metadata.get('text_healthy') else ''}")
-                        print(f"   Image instance (50052): {'' if metadata.get('image_healthy') else ''}")
+                        print(f"   Text instance (50051): {'healthy' if metadata.get('text_healthy') else 'unhealthy'}")
+                        print(f"   Image instance (50052): {'healthy' if metadata.get('image_healthy') else 'unhealthy'}")
                         print(f"   Latency: {kyrodb_component.get('latency_ms', 0):.2f}ms")
                         return True
                     else:
-                        print(f"⚠️ KyroDB status: {kyrodb_component['status']}")
+                        print(f"KyroDB status: {kyrodb_component['status']}")
                         print(f"   Message: {kyrodb_component.get('message')}")
                         return False
                 else:
@@ -200,27 +176,27 @@ async def run_all_tests():
     
     results = {
         "Health Check": await test_health_check(),
-        "Metrics Endpoint": await test_metrics_endpoint(),
+        "Core Endpoints": await test_core_endpoints(),
         "API Documentation": await test_api_docs(),
         "OpenAPI Schema": await test_openapi_schema(),
         "KyroDB Connectivity": await test_kyrodb_connectivity(),
     }
     
     # Summary
-    print_section("📊 Test Summary")
+    print_section("Test Summary")
     
     passed = sum(1 for v in results.values() if v)
     total = len(results)
     
     for test_name, result in results.items():
-        icon = "" if result else ""
-        print(f"{icon} {test_name}")
+        status = "PASS" if result else "FAIL"
+        print(f"{status}: {test_name}")
     
     print(f"\n{'=' * 60}")
     print(f"Results: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All tests passed! Vritti is working correctly.")
+        print("All tests passed. Vritti is working correctly.")
     elif passed > 0:
         print(" Some tests passed. Check failed tests above.")
     else:

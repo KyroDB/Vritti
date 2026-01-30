@@ -710,16 +710,6 @@ class TieredReflectionService:
             )
             self._daily_warning_logged = True
 
-            # Track metric
-            try:
-                from src.observability.metrics import track_daily_cost_alert
-                track_daily_cost_alert(
-                    alert_type="warning",
-                    cost_usd=self._daily_cost_usd,
-                    threshold_usd=self.DAILY_COST_WARNING_USD,
-                )
-            except ImportError:
-                pass  # Metrics module may not have this function yet
 
         # Hard limit threshold ($50/day)
         if (
@@ -733,16 +723,7 @@ class TieredReflectionService:
             )
             self._daily_limit_logged = True
 
-            # Track metric
-            try:
-                from src.observability.metrics import track_daily_cost_alert
-                track_daily_cost_alert(
-                    alert_type="limit_exceeded",
-                    cost_usd=self._daily_cost_usd,
-                    threshold_usd=self.DAILY_COST_LIMIT_USD,
-                )
-            except ImportError:
-                pass
+            # Intentionally no external telemetry here; logs are the source of truth.
 
     def _is_daily_budget_exceeded(self) -> bool:
         """

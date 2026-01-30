@@ -369,7 +369,7 @@ class IngestionPipeline:
         Reliability:
         - 3 retries with exponential backoff for persistence
         - Dead-letter queue for failed reflections
-        - Prometheus metrics for monitoring
+        - Structured logs for debugging and auditing
 
         This runs in the background after main ingestion completes,
         so it doesn't block the /capture API response.
@@ -634,14 +634,6 @@ class IngestionPipeline:
                 f"reason: {failure_reason}, path: {dead_letter_path}"
             )
 
-            # Track dead-letter metric
-            from src.observability.metrics import track_dead_letter_queue
-            track_dead_letter_queue(
-                episode_id=episode_id,
-                customer_id=customer_id,
-                failure_reason=failure_reason,
-            )
-
         except Exception as e:
             # Don't fail if logging to dead-letter queue fails
             logger.error(
@@ -655,28 +647,20 @@ class IngestionPipeline:
         attempt: int,
         success: bool,
     ) -> None:
-        """Track reflection persistence retry metrics."""
-        try:
-            from src.observability.metrics import track_reflection_persistence_retry
-            track_reflection_persistence_retry(
-                episode_id=episode_id,
-                attempt=attempt,
-                success=success,
-            )
-        except ImportError:
-            # Metrics module may not have this function yet
-            logger.debug(f"Persistence retry: episode={episode_id}, attempt={attempt}, success={success}")
+        """Track reflection persistence retries via structured logs."""
+        logger.debug(
+            "Reflection persistence retry",
+            extra={
+                "episode_id": episode_id,
+                "attempt": attempt,
+                "success": success,
+            },
+        )
 
     def _track_reflection_success(
         self, reflection: Reflection, generation_time: float
     ) -> None:
-        """Track successful reflection generation metrics."""
-        from src.observability.metrics import (
-            track_reflection_generation,
-            track_reflection_persistence,
-        )
-
-        # Track generation metrics
+        """Track successful reflection generation via structured logs."""
         consensus_method = (
             reflection.consensus.consensus_method
             if reflection.consensus
@@ -689,30 +673,25 @@ class IngestionPipeline:
             else 0
         )
 
-        track_reflection_generation(
-            consensus_method=consensus_method,
-            num_models=num_models,
-            duration_seconds=generation_time,
-            cost_usd=reflection.cost_usd,
-            confidence=reflection.confidence_score,
-            success=True,
+        logger.info(
+            "Reflection generated",
+            extra={
+                "consensus_method": consensus_method,
+                "num_models": num_models,
+                "duration_seconds": generation_time,
+                "cost_usd": reflection.cost_usd,
+                "confidence": reflection.confidence_score,
+            },
         )
-
-        # Track persistence (assumed successful if we reach here)
-        track_reflection_persistence(success=True)
 
     def _track_reflection_failure(self, reason: str) -> None:
-        """Track reflection failures for monitoring."""
-        from src.observability.metrics import (
-            track_reflection_failure,
-            track_reflection_persistence,
+        """Track reflection failures via structured logs."""
+        logger.warning(
+            "Reflection failed",
+            extra={
+                "reason": reason,
+            },
         )
-
-        track_reflection_failure(reason=reason)
-
-        # If failure was during persistence, track that separately
-        if reason == "persistence_failed":
-            track_reflection_persistence(success=False)
 
     async def bulk_capture(
         self, episodes: list[EpisodeCreate], generate_reflections: bool = False

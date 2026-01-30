@@ -53,14 +53,7 @@ from src.observability.logging_middleware import (
     SlowRequestLogger,
     StructuredLoggingMiddleware,
 )
-from src.observability.metrics import (
-    generate_metrics,
-    set_kyrodb_health,
-    track_ingestion_credits,
-    track_search_credits,
-    update_customer_quota_usage,
-)
-from src.observability.middleware import ErrorTrackingMiddleware, PrometheusMiddleware
+from src.observability.middleware import ErrorTrackingMiddleware
 from src.observability.request_limits import RequestSizeLimitMiddleware
 from src.rate_limits import (
     CAPTURE_RATE_LIMIT,
@@ -303,16 +296,14 @@ logger.info(
 # Order matters (processed in reverse order of registration):
 # 1. RequestSizeLimitMiddleware (innermost) - Rejects oversized requests first
 # 2. ErrorTrackingMiddleware - Classifies errors
-# 3. PrometheusMiddleware - Tracks metrics
-# 4. SlowRequestLogger - Logs slow requests
-# 5. StructuredLoggingMiddleware (outermost) - Sets request context
+# 3. SlowRequestLogger - Logs slow requests
+# 4. StructuredLoggingMiddleware (outermost) - Sets request context
 app.add_middleware(StructuredLoggingMiddleware)
 app.add_middleware(
     SlowRequestLogger,
     warning_threshold_ms=settings.logging.slow_request_warning_ms,
     error_threshold_ms=settings.logging.slow_request_error_ms,
 )
-app.add_middleware(PrometheusMiddleware)
 app.add_middleware(ErrorTrackingMiddleware)
 app.add_middleware(
     RequestSizeLimitMiddleware,
@@ -323,7 +314,6 @@ logger.info(
     middlewares=[
         "RequestSizeLimitMiddleware",
         "ErrorTrackingMiddleware",
-        "PrometheusMiddleware",
         "SlowRequestLogger",
         "StructuredLoggingMiddleware",
     ],
@@ -436,14 +426,6 @@ async def readiness_probe(response: Response):
         embedding_service=embedding_service,
     )
 
-    # Update Prometheus health metrics
-    for component in readiness.components:
-        if component.name == "kyrodb":
-            text_healthy = component.metadata.get("text_healthy", False)
-            image_healthy = component.metadata.get("image_healthy", False)
-            set_kyrodb_health("text", text_healthy)
-            set_kyrodb_health("image", image_healthy)
-
     # Set HTTP status code based on readiness
     if not readiness.ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -502,14 +484,6 @@ async def comprehensive_health_check():
         reflection_service=reflection_service,
     )
 
-    # Update Prometheus health metrics
-    for component in health.components:
-        if component.name == "kyrodb":
-            text_healthy = component.metadata.get("text_healthy", False)
-            image_healthy = component.metadata.get("image_healthy", False)
-            set_kyrodb_health("text", text_healthy)
-            set_kyrodb_health("image", image_healthy)
-
     logger.info(
         "Comprehensive health check completed",
         status=health.status.value,
@@ -548,40 +522,6 @@ async def get_stats():
         ingestion_stats=ingestion_stats,
         search_stats=search_stats,
     )
-
-
-# Prometheus metrics endpoint
-@app.get("/metrics", tags=["System"])
-async def metrics():
-    """
-    Prometheus metrics endpoint.
-
-    Returns metrics in Prometheus exposition format for scraping.
-
-    Metrics include:
-    - HTTP request latency (histogram)
-    - HTTP request count (counter)
-    - Active HTTP requests (gauge)
-    - API key cache hit/miss rate
-    - KyroDB operation latency
-    - Episode ingestion counts
-    - Search request counts
-    - Credit usage by customer
-    - Error rates by type
-
-    Configuration:
-        Prometheus scrape_interval: 15s (recommended)
-        Retention: 90 days
-
-    Example Prometheus config:
-        scrape_configs:
-          - job_name: 'episodic-memory'
-            scrape_interval: 15s
-            static_configs:
-              - targets: ['localhost:8000']
-    """
-    metrics_data, content_type = generate_metrics()
-    return Response(content=metrics_data, media_type=content_type)
 
 
 # Ingestion endpoint
@@ -744,30 +684,6 @@ async def capture_episode(
             # Log but don't fail the request if usage tracking fails
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
-        # Track business metrics
-        # Wrapped in try-except to prevent telemetry failures from breaking the request
-        try:
-            track_ingestion_credits(
-                customer_id=customer_id,
-                customer_tier=customer.subscription_tier.value,
-                credits_used=credits_used,
-                has_image=episode_data.screenshot_path is not None,
-                has_reflection=generate_reflection and reflection_service is not None,
-            )
-        except Exception as e:
-            logger.warning(f"Metrics tracking failed (non-fatal): {e}")
-
-        # Update customer quota gauge
-        try:
-            update_customer_quota_usage(
-                customer_id=customer_id,
-                customer_tier=customer.subscription_tier.value,
-                credits_used=customer.credits_used_current_month + int(credits_used),
-                monthly_limit=customer.monthly_credit_limit,
-            )
-        except Exception as e:
-            logger.warning(f"Quota gauge update failed (non-fatal): {e}")
-
         return CaptureResponse(
             episode_id=episode.episode_id,
             collection="failures",  # Only failures collection is supported
@@ -912,13 +828,6 @@ async def validate_fix(
             f"applications={episode.usage_stats.fix_applied_count}"
         )
 
-        # Track fix validation metrics
-        from src.observability.metrics import track_fix_validation
-
-        track_fix_validation(
-            customer_tier=customer.subscription_tier.value,
-            outcome=validation.outcome,
-        )
 
         # Step 4: Check if should promote to skill
         promoted = False
@@ -937,8 +846,6 @@ async def validate_fix(
             try:
                 import time
 
-                from src.observability.metrics import track_skill_promotion
-
                 start_time = time.perf_counter()
 
                 promotion_service = SkillPromotionService(
@@ -955,14 +862,7 @@ async def validate_fix(
                     promoted = True
                     skill_id = skill.skill_id
 
-                    # Track promotion metrics
                     promotion_duration = time.perf_counter() - start_time
-                    track_skill_promotion(
-                        customer_tier=customer.subscription_tier.value,
-                        error_class=episode.create_data.error_class.value,
-                        duration_seconds=promotion_duration,
-                    )
-
                     logger.info(
                         f"Episode {validation.episode_id} promoted to "
                         f"skill {skill_id}: {skill.name} "
@@ -1082,29 +982,6 @@ async def search_episodes(
         except Exception as e:
             # Log but don't fail the request if usage tracking fails
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
-
-        # Track business metrics
-        # Wrapped in try-except to prevent telemetry failures from breaking the request
-        try:
-            track_search_credits(
-                customer_id=customer_id,
-                customer_tier=customer.subscription_tier.value,
-                credits_used=credits_used,
-                results_returned=response.total_returned,
-            )
-        except Exception as e:
-            logger.warning(f"Metrics tracking failed (non-fatal): {e}")
-
-        # Update customer quota gauge
-        try:
-            update_customer_quota_usage(
-                customer_id=customer_id,
-                customer_tier=customer.subscription_tier.value,
-                credits_used=customer.credits_used_current_month + 1,  # Rounded to 1
-                monthly_limit=customer.monthly_credit_limit,
-            )
-        except Exception as e:
-            logger.warning(f"Quota gauge update failed (non-fatal): {e}")
 
         return response
 
@@ -1302,23 +1179,6 @@ async def skill_feedback(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Skill {skill_id} not found or access denied",
             )
-
-        # Track metrics
-        from src.observability.metrics import (
-            track_skill_application,
-            update_skill_success_rate,
-        )
-
-        track_skill_application(
-            skill_id=skill_id,
-            success=(feedback.outcome == "success"),
-        )
-
-        update_skill_success_rate(
-            skill_id=skill_id,
-            skill_name=skill.name,
-            success_rate=skill.success_rate,
-        )
 
         logger.info(
             f"Skill {skill_id} feedback recorded: "

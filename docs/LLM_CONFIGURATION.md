@@ -170,18 +170,7 @@ grep -E "(reflection|llm|openrouter)" logs/app.log
 grep "budget_warning\|limit_exceeded" logs/app.log
 ```
 
-Key metrics (Prometheus):
-
-```promql
-# Reflection rate by tier
-sum(rate(vritti_reflection_count_total[5m])) by (tier)
-
-# Average cost
-sum(rate(vritti_reflection_cost_usd_total[5m])) / sum(rate(vritti_reflection_count_total[5m]))
-
-# Cache hit rate
-sum(rate(vritti_reflection_count_total{tier="cached"}[5m])) / sum(rate(vritti_reflection_count_total[5m]))
-```
+Key signals live in logs (reflection success/failure, tier selection, and cost warnings).
 
 ## Security
 

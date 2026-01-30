@@ -28,7 +28,6 @@ bcrypt==4.1.1
 cachetools==5.3.2
 slowapi==0.1.9
 structlog==24.1.0
-prometheus-client==0.20.0
 
 # Resilience 
 pybreaker==1.0.1

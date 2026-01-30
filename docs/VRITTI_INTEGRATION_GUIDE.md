@@ -193,19 +193,6 @@ curl http://localhost:51052/health  # Image
 - Reduce `k` parameter in search (default: 20)
 - Only gate risky actions
 
-## Metrics
-
-Track prevention success:
-```bash
-# Prometheus metrics
-curl http://localhost:8000/metrics | grep prevention
-```
-
-Key metrics:
-- `vritti_gating_decision_total` - Total gating calls
-- `vritti_repeat_error_prevented_total` - Successful preventions
-- Success rate = prevented / total
-
 ## Support
 
 Email: kishan@kyrodb.com

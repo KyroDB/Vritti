@@ -399,46 +399,6 @@ class TestGatingThresholds:
             print(f"\n  Cleaned up episode {episode_id}")
 
 
-class TestGatingMetrics:
-    """Test that gating decisions are properly tracked in metrics."""
-
-    @pytest.mark.asyncio
-    async def test_gating_metrics_recorded(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
-        """
-        Verify that gating decisions record Prometheus metrics.
-        """
-        from src.observability.metrics import (
-            gating_decision_total,
-            gating_latency_seconds,
-            gating_confidence,
-        )
-        
-        print(f"\n{'='*60}")
-        print("Test: Gating Metrics Recording")
-        print(f"{'='*60}")
-        
-        # Get initial metric values
-        # Note: This is a simplified check - in production you'd use the Prometheus test client
-        
-        # The metrics are registered and should be incrementable
-        # We verify they exist and can be labeled
-        try:
-            gating_decision_total.labels(
-                recommendation="proceed",
-                customer_tier="test",
-            )
-            gating_latency_seconds.labels(
-                recommendation="proceed",
-            )
-            gating_confidence.labels(
-                recommendation="proceed",
-            )
-            print("\n  Gating metrics exist and can be labeled")
-            print("  Test PASSED: Metrics are properly registered")
-        except Exception as e:
-            pytest.fail(f"Metric registration failed: {e}")
-
-
 class TestSkillsInGating:
     """Test skill matching in gating decisions."""
 

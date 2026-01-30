@@ -52,7 +52,7 @@ SAMPLE_GOALS = [
     "Migrate PostgreSQL database to new server",
     "Implement authentication with OAuth2",
     "Optimize Docker image size for faster deployments",
-    "Configure monitoring with Prometheus and Grafana",
+    "Configure basic health checks",
     "Debug intermittent test failures in pytest suite",
 ]
 

@@ -65,7 +65,7 @@ class SearchRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, description="Required tags")
 
     # Search parameters
-    k: int = Field(default=5, ge=1, le=100, description="Number of results to return")
+    k: int = Field(default=5, ge=1, le=1000, description="Number of results to return")
     min_similarity: float = Field(
         default=0.6, ge=-1.0, le=1.0, description="Minimum cosine similarity"
     )

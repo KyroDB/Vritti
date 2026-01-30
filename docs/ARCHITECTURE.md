@@ -70,7 +70,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 - Retrieval pipeline: Precondition matching → vector search → ranking
 - Authentication: API key-based with bcrypt hashing
 - Rate limiting: Per-endpoint limits (50-500 req/min)
-- Observability: Prometheus middleware, structured logging
+- Observability: structured logging and health checks
 
 **Customer Database (SQLite)**:
 - Customer accounts and API keys
@@ -84,7 +84,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 - 73.5% cache hit rate (validated)
 
 **Observability**:
-- Prometheus: Metrics collection at `/metrics`
+- Health checks: `/health/liveness`, `/health/readiness`, `/health`
 - Structured JSON logging with request context
 
 ---

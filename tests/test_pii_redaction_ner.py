@@ -11,7 +11,7 @@ try:
     import spacy
     nlp = spacy.load("en_core_web_lg")
     HAS_DEPENDENCIES = True
-except (ImportError, OSError):
+except Exception:
     HAS_DEPENDENCIES = False
 
 

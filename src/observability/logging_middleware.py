@@ -224,7 +224,6 @@ class RequestLoggingFilter:
 
     Prevents log spam from:
     - /health (Kubernetes readiness probes every 5s)
-    - /metrics (Prometheus scraping every 15s)
     - /docs (Swagger UI static assets)
 
     Usage:
@@ -233,7 +232,6 @@ class RequestLoggingFilter:
 
     EXCLUDED_PATHS = {
         "/health",
-        "/metrics",
         "/docs",
         "/redoc",
         "/openapi.json",

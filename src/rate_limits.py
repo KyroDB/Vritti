@@ -218,15 +218,11 @@ def log_rate_limit_exceeded(
     tier: SubscriptionTier,
     endpoint_type: str,
 ) -> None:
-    """Log rate limit exceeded event for monitoring."""
-    from src.observability.metrics import track_rate_limit_exceeded
+    """Log rate limit exceeded event."""
     
     logger.warning(
         f"Rate limit exceeded: customer={customer_id}, tier={tier.value}, "
         f"endpoint={endpoint_type}"
     )
     
-    track_rate_limit_exceeded(
-        customer_id=customer_id,
-        customer_tier=tier.value,
-    )
+    # Intentionally no external telemetry here; logs are the source of truth.

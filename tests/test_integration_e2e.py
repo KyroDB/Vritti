@@ -263,33 +263,3 @@ async def test_e2e_lifecycle_failure_to_prevention(
     assert response.recommendation == ActionRecommendation.REWRITE
     assert response.confidence > 0.8
     assert "similar" in response.rationale.lower() or "found" in response.rationale.lower()
-
-@pytest.mark.asyncio
-async def test_e2e_reflection_consensus_metrics(
-    ingestion_pipeline,
-    mock_reflection_service
-):
-    """
-    Test that reflection generation triggers the correct metrics.
-    """
-    episode_data = EpisodeCreate(
-        episode_type=EpisodeType.FAILURE,
-        goal="Test metrics",
-        actions_taken=["cmd"],
-        error_class=ErrorClass.UNKNOWN,
-        error_trace="Error trace with sufficient length for validation",
-        tool_chain=["terminal"],
-        environment_info={},
-        customer_id="cust_test"
-    )
-    
-    # Mock the internal track function to verify it's called
-    with patch('src.observability.metrics.track_reflection_generation') as mock_track:
-        # We need to await the private method directly to ensure it runs in test context
-        await ingestion_pipeline._generate_and_update_reflection("ep_123", episode_data)
-        
-        mock_track.assert_called_once()
-        call_kwargs = mock_track.call_args[1]
-        assert call_kwargs['consensus_method'] == 'unanimous'
-        assert call_kwargs['num_models'] == 3
-        assert call_kwargs['success'] is True

@@ -209,13 +209,11 @@ def main():
     print("=" * 60)
     print("In production, these logs would be sent to:")
     print("- ELK Stack (Elasticsearch + Logstash + Kibana)")
-    print("- Grafana Loki")
     print("- AWS CloudWatch Logs")
     print("- Google Cloud Logging")
     print()
     print("Query examples:")
     print('- ELK: customer_id:"demo-customer" AND latency_ms:>100')
-    print('- Loki: {service="episodic-memory", customer_id="demo-customer"}')
     print("=" * 60)
 
 
