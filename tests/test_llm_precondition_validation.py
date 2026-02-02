@@ -4,12 +4,13 @@ Unit tests for LLM-based precondition validation.
 Tests semantic compatibility checking with mocked OpenRouter responses.
 """
 
-import pytest
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-import httpx
-from src.retrieval.preconditions import AdvancedPreconditionMatcher
+
+import pytest
+
 from src.models.episode import Episode, EpisodeCreate, ErrorClass, Reflection
-from src.models.search import PreconditionCheckResult
+from src.retrieval.preconditions import AdvancedPreconditionMatcher
 
 
 class TestAdvancedPreconditionMatcher:
@@ -49,7 +50,7 @@ class TestAdvancedPreconditionMatcher:
     @pytest.mark.asyncio
     async def test_llm_disabled_fallback(self, matcher_without_llm, sample_episode):
         """Test that matcher works without LLM."""
-        result = await matcher_without_llm.check_preconditions_with_llm(
+        await matcher_without_llm.check_preconditions_with_llm(
             candidate_episode=sample_episode,
             current_query="Delete old files",
             current_state={},
@@ -62,7 +63,7 @@ class TestAdvancedPreconditionMatcher:
     @pytest.mark.asyncio
     async def test_low_similarity_skips_llm(self, matcher_without_llm, sample_episode):
         """Test that LLM validation skipped for low similarity."""
-        result = await matcher_without_llm.check_preconditions_with_llm(
+        await matcher_without_llm.check_preconditions_with_llm(
             candidate_episode=sample_episode,
             current_query="Delete old files",
             current_state={},
@@ -651,7 +652,6 @@ class TestPerformanceRequirements:
     @pytest.mark.asyncio
     async def test_llm_validation_latency_under_300ms(self):
         """Test that LLM validation completes within reasonable time (with timeout)."""
-        import time
 
         episode = Episode(
             episode_id=1,

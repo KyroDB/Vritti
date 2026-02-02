@@ -17,14 +17,11 @@ Pillow==10.2.0
 
 # LLM clients (multi-perspective reflection)
 openai==1.10.0
-anthropic>=0.7.0
-google-generativeai>=0.3.0
 
 # Utilities
 python-dotenv==1.0.0
 aiofiles==23.2.1
 aiosqlite==0.19.0
-bcrypt==4.1.1
 cachetools==5.3.2
 slowapi==0.1.9
 structlog==24.1.0

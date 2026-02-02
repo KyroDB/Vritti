@@ -4,14 +4,13 @@ Unit tests for Phase 6 clustering logic.
 Tests HDBSCAN clustering, cluster matching, and centroid caching.
 """
 
+from unittest.mock import AsyncMock
+
 import numpy as np
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.hygiene.clustering import EpisodeClusterer
 from src.models.clustering import ClusterInfo, ClusterTemplate
-from src.models.episode import Episode, EpisodeCreate, ErrorClass
 
 
 class TestEpisodeClusterer:

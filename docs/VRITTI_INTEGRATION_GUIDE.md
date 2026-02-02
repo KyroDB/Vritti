@@ -144,7 +144,7 @@ KYRODB_IMAGE_HOST=localhost
 KYRODB_IMAGE_PORT=50052
 
 # LLM for reflections
-OPENROUTER_API_KEY=sk-or-v1-your-key
+LLM_OPENROUTER_API_KEY=sk-or-v1-your-key
 
 # Models (free tier)
 LLM_CHEAP_MODEL=x-ai/grok-4.1-fast:free
@@ -158,7 +158,7 @@ See [`API_GUIDE.md`](./API_GUIDE.md) for full API reference.
 
 **Core endpoints**:
 - `POST /api/v1/capture` - Report failures
-- `POST /api/v1/gate/reflect` - Check before action
+- `POST /api/v1/reflect` - Check before action
 - `POST /api/v1/search` - Find similar failures
 - `GET /health` - System status
 

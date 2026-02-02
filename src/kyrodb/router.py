@@ -9,14 +9,21 @@ Multi-tenancy: Uses customer-namespaced collections for data isolation.
 Namespace format: {customer_id}:failures (e.g., "acme-corp:failures")
 """
 
+import asyncio
 import logging
-from typing import Optional
+from datetime import UTC
+from typing import TYPE_CHECKING, Optional
 
 from src.config import KyroDBConfig
 from src.kyrodb.client import KyroDBClient
-from src.kyrodb.kyrodb_pb2 import SearchResponse
+from src.kyrodb.kyrodb_pb2 import SearchResponse, SearchResult
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from src.models.clustering import ClusterTemplate
+    from src.models.episode import Episode, Reflection
+    from src.models.skill import Skill
 
 
 def get_namespaced_collection(customer_id: str, collection: str) -> str:
@@ -86,6 +93,8 @@ class KyroDBRouter:
 
         self._text_connected = False
         self._image_connected = False
+        self._cluster_usage_locks: dict[str, asyncio.Lock] = {}
+        self._cluster_usage_locks_guard = asyncio.Lock()
 
     async def connect(self) -> None:
         """
@@ -130,8 +139,8 @@ class KyroDBRouter:
         customer_id: str,
         collection: str,
         text_embedding: list[float],
-        image_embedding: Optional[list[float]] = None,
-        metadata: Optional[dict[str, str]] = None,
+        image_embedding: list[float] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> tuple[bool, bool]:
         """
         Insert episode into appropriate KyroDB instances with customer namespace.
@@ -209,6 +218,165 @@ class KyroDBRouter:
         logger.debug(f"Episode {episode_id} inserted: text={text_success}, image={image_success}")
         return (text_success, image_success)
 
+    async def insert_cluster_template(
+        self,
+        customer_id: str,
+        cluster_id: int,
+        template_embedding: list[float],
+        template_metadata: dict[str, str],
+    ) -> bool:
+        """
+        Persist a cluster template (cached-tier) into KyroDB.
+
+        Templates are stored in the text instance under:
+            namespace = "{customer_id}:cluster_templates"
+
+        Args:
+            customer_id: Customer ID for namespace isolation
+            cluster_id: Cluster identifier (used as doc_id)
+            template_embedding: 384-dim template embedding (typically cluster centroid)
+            template_metadata: Metadata (must include template_reflection_json)
+
+        Returns:
+            bool: True if insert succeeded
+        """
+        namespace = get_namespaced_collection(customer_id, "cluster_templates")
+        metadata = dict(template_metadata)
+        metadata.setdefault("customer_id", customer_id)
+        metadata.setdefault("cluster_id", str(cluster_id))
+        metadata.setdefault("doc_type", "cluster_template")
+
+        response = await self.text_client.insert(
+            doc_id=cluster_id,
+            embedding=template_embedding,
+            namespace=namespace,
+            metadata=metadata,
+        )
+        if not response.success:
+            logger.error(
+                "Cluster template insert failed",
+                extra={
+                    "customer_id": customer_id,
+                    "cluster_id": cluster_id,
+                    "error": response.error,
+                },
+            )
+        return bool(response.success)
+
+    async def search_cluster_templates(
+        self,
+        query_embedding: list[float],
+        customer_id: str,
+        k: int = 5,
+        min_score: float = 0.85,
+    ) -> SearchResponse:
+        """
+        Search for the best matching cluster templates for cached-tier.
+
+        Args:
+            query_embedding: 384-dim query embedding
+            customer_id: Customer ID for namespace isolation
+            k: Number of templates to return
+            min_score: Minimum similarity threshold
+
+        Returns:
+            SearchResponse: KyroDB search response
+        """
+        namespace = get_namespaced_collection(customer_id, "cluster_templates")
+        return await self.text_client.search(
+            query_embedding=query_embedding,
+            k=k,
+            namespace=namespace,
+            min_score=min_score,
+            include_embeddings=False,
+            metadata_filters={"doc_type": "cluster_template"},
+        )
+
+    async def get_cluster_template(
+        self, customer_id: str, cluster_id: int
+    ) -> Optional["ClusterTemplate"]:
+        """
+        Retrieve a cluster template by cluster_id.
+
+        Returns:
+            ClusterTemplate if found, else None
+        """
+        from src.models.clustering import ClusterTemplate
+
+        namespace = get_namespaced_collection(customer_id, "cluster_templates")
+        response = await self.text_client.query(
+            doc_id=cluster_id,
+            namespace=namespace,
+            include_embedding=False,
+        )
+        if not response.found:
+            return None
+
+        return ClusterTemplate.from_metadata_dict(dict(response.metadata))
+
+    async def increment_cluster_template_usage(self, customer_id: str, cluster_id: int) -> bool:
+        """
+        Increment usage counters for a cluster template.
+
+        Uses KyroDB's update-by-reinsert mechanism with an in-process
+        per-cluster async lock to serialize `text_client.query` +
+        `text_client.insert` and avoid lost increments within this process.
+        Concurrent writers across multiple processes may still race.
+
+        - Query existing doc (with embedding)
+        - Update metadata fields
+        - Re-insert with same doc_id + embedding
+        """
+        from datetime import datetime
+
+        lock_key = f"{customer_id}:{cluster_id}"
+        lock = await self._get_cluster_usage_lock(lock_key)
+        async with lock:
+            return await self._increment_cluster_template_usage_locked(
+                customer_id=customer_id,
+                cluster_id=cluster_id,
+                timestamp_factory=lambda: datetime.now(UTC),
+            )
+
+    async def _get_cluster_usage_lock(self, lock_key: str) -> asyncio.Lock:
+        async with self._cluster_usage_locks_guard:
+            lock = self._cluster_usage_locks.get(lock_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._cluster_usage_locks[lock_key] = lock
+            return lock
+
+    async def _increment_cluster_template_usage_locked(
+        self,
+        customer_id: str,
+        cluster_id: int,
+        timestamp_factory,
+    ) -> bool:
+        namespace = get_namespaced_collection(customer_id, "cluster_templates")
+        existing = await self.text_client.query(
+            doc_id=cluster_id,
+            namespace=namespace,
+            include_embedding=True,
+        )
+        if not existing.found:
+            return False
+
+        metadata = dict(existing.metadata)
+        try:
+            current = int(metadata.get("usage_count", "0") or 0)
+        except Exception:
+            current = 0
+        metadata["usage_count"] = str(current + 1)
+        metadata["last_used_at"] = timestamp_factory().isoformat()
+
+        response = await self.text_client.insert(
+            doc_id=cluster_id,
+            embedding=list(existing.embedding),
+            namespace=namespace,
+            metadata=metadata,
+        )
+        return bool(response.success)
+
     async def search_text(
         self,
         query_embedding: list[float],
@@ -216,7 +384,7 @@ class KyroDBRouter:
         customer_id: str,
         collection: str,
         min_score: float = 0.6,
-        metadata_filters: Optional[dict[str, str]] = None,
+        metadata_filters: dict[str, str] | None = None,
     ) -> SearchResponse:
         """
         Search text instance for episodes with server-side filtering.
@@ -243,19 +411,54 @@ class KyroDBRouter:
             metadata_filters=metadata_filters,
         )
 
+    async def search_image(
+        self,
+        query_embedding: list[float],
+        k: int,
+        customer_id: str,
+        collection: str,
+        min_score: float = 0.6,
+        metadata_filters: dict[str, str] | None = None,
+    ) -> SearchResponse:
+        """
+        Search image instance for episodes with server-side filtering.
+
+        Args:
+            query_embedding: Query embedding vector (512-dim image)
+            k: Number of results to return
+            customer_id: Customer ID for namespace isolation
+            collection: Base collection name ("failures")
+            min_score: Minimum similarity score
+            metadata_filters: Server-side metadata filters
+
+        Returns:
+            SearchResponse: Filtered search results from KyroDB image instance
+        """
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+        image_namespace = f"{namespaced_collection}_images"
+
+        return await self.image_client.search(
+            query_embedding=query_embedding,
+            k=k,
+            namespace=image_namespace,
+            min_score=min_score,
+            include_embeddings=False,
+            metadata_filters=metadata_filters,
+        )
+
     async def search_episodes(
         self,
         query_embedding: list[float],
         customer_id: str,
         collection: str,
+        image_embedding: list[float] | None = None,
         k: int = 20,
         min_score: float = 0.6,
-        metadata_filters: Optional[dict[str, str]] = None,
-        include_image_search: bool = False,
+        metadata_filters: dict[str, str] | None = None,
         image_weight: float = 0.3,
     ) -> SearchResponse:
         """
-        Search for episodes using text (and optionally image) embeddings.
+        Search for episodes using text embeddings and optional image fusion.
 
         Security:
         - Customer namespace isolation enforced
@@ -268,8 +471,7 @@ class KyroDBRouter:
             k: Number of results to return
             min_score: Minimum similarity threshold
             metadata_filters: Optional metadata filters
-            include_image_search: Also search image embeddings
-            image_weight: Weight for image similarity (0-1)
+            image_weight: Weight for image similarity (0-1) if image_embedding is provided
 
         Returns:
             SearchResponse: Combined search results from text (and optionally images)
@@ -291,12 +493,62 @@ class KyroDBRouter:
             metadata_filters=metadata_filters,
         )
 
-        if not include_image_search:
+        if image_embedding is None:
             return text_response
 
-        
-        logger.warning("Image search fusion not yet implemented - returning text results only")
-        return text_response
+        # Secondary search: image embeddings
+        image_response = await self.image_client.search(
+            query_embedding=image_embedding,
+            k=k,
+            namespace=f"{namespaced_collection}_images",
+            min_score=min_score,
+            include_embeddings=False,
+            metadata_filters=metadata_filters,
+        )
+
+        # Fuse results: weighted average of text + image scores
+        combined: dict[int, tuple[SearchResult, float | None, float | None]] = {}
+
+        for result in text_response.results:
+            combined[result.doc_id] = (result, result.score, None)
+
+        for result in image_response.results:
+            if result.doc_id in combined:
+                existing, text_score, _ = combined[result.doc_id]
+                combined[result.doc_id] = (existing, text_score, result.score)
+            else:
+                combined[result.doc_id] = (result, None, result.score)
+
+        fused_results: list[SearchResult] = []
+        for result, text_score, image_score in combined.values():
+            if text_score is not None and image_score is not None:
+                fused_score = (1.0 - image_weight) * text_score + image_weight * image_score
+            elif text_score is not None:
+                fused_score = text_score
+            else:
+                fused_score = image_score if image_score is not None else 0.0
+
+            # Create new SearchResult with fused score (preserve metadata)
+            fused_results.append(
+                SearchResult(
+                    doc_id=result.doc_id,
+                    score=fused_score,
+                    metadata=result.metadata,
+                    embedding=result.embedding,
+                )
+            )
+
+        # Sort by fused score and limit to k
+        fused_results.sort(key=lambda r: r.score, reverse=True)
+        fused_results = fused_results[:k]
+
+        return SearchResponse(
+            results=fused_results,
+            total_found=len(fused_results),
+            search_latency_ms=text_response.search_latency_ms + image_response.search_latency_ms,
+            search_path=text_response.search_path,
+            error="",
+        )
 
     async def delete_episode(
         self, episode_id: int, customer_id: str, collection: str, delete_images: bool = True
@@ -352,19 +604,18 @@ class KyroDBRouter:
         episode_ids: list[int],
         customer_id: str,
         collection: str,
-        include_images: bool = False,
     ) -> list["Episode"]:
         """
         Batch retrieve multiple episodes by ID.
         
-        50-200x more efficient than individual get_episode() calls.
-        Use for clustering, decay analysis, and template matching.
+        KyroDB does not expose a server-side bulk query API. This helper issues
+        bounded concurrent point lookups via `KyroDBClient.bulk_query()` and
+        reconstructs `Episode` objects from stored metadata.
         
         Args:
             episode_ids: List of episode IDs to retrieve
             customer_id: Customer ID for namespace isolation
             collection: Base collection name ("failures")
-            include_images: Also fetch image embeddings (not implemented)
             
         Returns:
             list[Episode]: Successfully retrieved episodes (partial success)
@@ -434,7 +685,8 @@ class KyroDBRouter:
         """
         Batch delete multiple episodes by ID from text and optionally image instances.
         
-        10-100x more efficient than individual delete_episode() calls.
+        KyroDB does not expose a server-side batch delete API. This helper issues
+        bounded concurrent deletes and aggregates deletion counts.
         
         Args:
             episode_ids: List of episode IDs to delete
@@ -519,7 +771,7 @@ class KyroDBRouter:
 
     async def get_episode(
         self, episode_id: int, customer_id: str, collection: str, include_image: bool = False
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Retrieve episode by ID.
 
@@ -650,6 +902,40 @@ class KyroDBRouter:
             # Step 3: Merge with existing metadata (preserve all fields)
             updated_metadata = {**dict(existing.metadata), **reflection_metadata}
 
+            # Step 3.1: Update episode_json so reflection is visible on retrieval
+            episode_json_raw = updated_metadata.get("episode_json")
+            if episode_json_raw:
+                try:
+                    import base64
+                    import json
+                    import zlib
+
+                    if isinstance(episode_json_raw, str) and episode_json_raw.startswith("gz:"):
+                        compressed = base64.b64decode(episode_json_raw[3:])
+                        episode_json_str = zlib.decompress(compressed).decode("utf-8")
+                    else:
+                        episode_json_str = str(episode_json_raw)
+
+                    episode_payload = json.loads(episode_json_str)
+                    episode_payload["reflection"] = reflection.model_dump(mode="json")
+
+                    encoded = json.dumps(
+                        episode_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    compressed = zlib.compress(encoded.encode("utf-8"), level=9)
+                    updated_metadata["episode_json"] = (
+                        f"gz:{base64.b64encode(compressed).decode('utf-8')}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to update episode_json for episode {episode_id}: {e}",
+                        exc_info=True,
+                    )
+                    # Important: do not overwrite episode_json on fallback.
+                    # Reflection is already persisted via reflection_* metadata fields.
+
             # Step 4: Re-insert with updated metadata (KyroDB's update mechanism)
             logger.debug(
                 f"Re-inserting episode {episode_id} with reflection metadata..."
@@ -663,6 +949,48 @@ class KyroDBRouter:
             )
 
             if response.success:
+                # Best-effort: keep image instance metadata in sync so image-only hits
+                # still reconstruct the full episode (including reflection) from episode_json.
+                try:
+                    image_namespace = f"{namespaced_collection}_images"
+                    image_existing = await self.image_client.query(
+                        doc_id=episode_id,
+                        namespace=image_namespace,
+                        include_embedding=True,
+                    )
+                    if image_existing.found:
+                        image_customer = image_existing.metadata.get("customer_id")
+                        if image_customer != customer_id:
+                            logger.error(
+                                "Customer ID mismatch in image reflection update",
+                                extra={
+                                    "episode_id": episode_id,
+                                    "expected_customer_id": customer_id,
+                                    "found_customer_id": image_customer,
+                                },
+                            )
+                        else:
+                            image_response = await self.image_client.insert(
+                                doc_id=episode_id,
+                                embedding=list(image_existing.embedding),
+                                namespace=image_namespace,
+                                metadata=updated_metadata,
+                            )
+                            if not image_response.success:
+                                logger.warning(
+                                    "Failed to persist reflection metadata to image instance",
+                                    extra={
+                                        "episode_id": episode_id,
+                                        "customer_id": customer_id,
+                                        "error": image_response.error,
+                                    },
+                                )
+                except Exception as e:
+                    logger.warning(
+                        f"Image instance reflection update failed for episode {episode_id}: {e}",
+                        exc_info=True,
+                    )
+
                 logger.info(
                     f"Reflection persisted for episode {episode_id} "
                     f"(customer: {customer_id}, "

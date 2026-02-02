@@ -21,7 +21,6 @@ import logging
 import threading
 import time
 from datetime import datetime
-from typing import Optional
 
 import numpy as np
 from hdbscan import HDBSCAN
@@ -242,8 +241,9 @@ class EpisodeClusterer:
         self,
         episode_embedding: list[float],
         customer_id: str,
-        similarity_threshold: float = 0.85
-    ) -> Optional[ClusterTemplate]:
+        similarity_threshold: float = 0.85,
+        k: int = 5,
+    ) -> ClusterTemplate | None:
         """
         Find cluster that best matches the episode embedding.
         
@@ -261,14 +261,54 @@ class EpisodeClusterer:
         # Validate episode_embedding
         if not episode_embedding:
             raise ValueError("episode_embedding cannot be empty")
-        if not isinstance(episode_embedding, (list, np.ndarray)):
+        if not isinstance(episode_embedding, list | np.ndarray):
             raise ValueError("episode_embedding must be a list or numpy array")
-        if not all(isinstance(x, (int, float, np.number)) for x in episode_embedding):
+        if not all(isinstance(x, int | float | np.number) for x in episode_embedding):
             raise ValueError("episode_embedding must contain only numbers")
         
-        # Get cached centroids
+        # Preferred path: search persisted cluster templates in KyroDB (authoritative).
+        try:
+            search_fn = getattr(self.kyrodb_router, "search_cluster_templates", None)
+            if search_fn is not None:
+                response = await search_fn(
+                    query_embedding=episode_embedding,
+                    customer_id=customer_id,
+                    k=k,
+                    min_score=similarity_threshold,
+                )
+                raw_results = getattr(response, "results", None)
+                try:
+                    results = list(raw_results) if raw_results else []
+                except TypeError:
+                    results = []
+                if results:
+                    best = max(results, key=lambda r: float(getattr(r, "score", 0.0)))
+                    template = ClusterTemplate.from_metadata_dict(dict(best.metadata))
+                    template.match_similarity = float(best.score)
+                    # Ensure cluster_id matches KyroDB doc_id (authoritative).
+                    doc_id = getattr(best, "doc_id", None)
+                    if doc_id is not None:
+                        try:
+                            template.cluster_id = int(doc_id)
+                        except (TypeError, ValueError) as exc:
+                            logger.warning(
+                                "Failed to coerce cluster template doc_id to int",
+                                extra={
+                                    "customer_id": customer_id,
+                                    "doc_id": doc_id,
+                                    "error": str(exc),
+                                },
+                            )
+                    return template
+        except Exception as e:
+            logger.warning(
+                f"Cluster template search failed for customer {customer_id}: {e}. "
+                "Falling back to in-memory centroid cache.",
+                exc_info=True,
+            )
+
+        # Fallback: in-memory centroid cache matching (only if cache is populated).
         centroids = self._get_cached_centroids(customer_id)
-        
         if not centroids:
             logger.debug(f"No clusters cached for {customer_id}")
             return None
@@ -414,7 +454,9 @@ class EpisodeClusterer:
             This is a placeholder - actual implementation depends on
             KyroDB bulk fetch capabilities.
         """
-        # Use bulk fetch for efficiency (50-200x faster than individual queries)
+        # Full episode enumeration requires an index of episode IDs per customer
+        # (or a KyroDB server-side "scan" capability). Vritti does not implement
+        # this yet, so clustering jobs cannot run without external enumeration.
         # This would typically involve a separate query to get all episode IDs
         # for the customer, but for now we'll use a search to get candidates
         # In a real implementation, you'd maintain an index of active episodes
@@ -465,7 +507,7 @@ class EpisodeClusterer:
         self,
         customer_id: str,
         cluster_id: int
-    ) -> Optional[ClusterTemplate]:
+    ) -> ClusterTemplate | None:
         """
         Retrieve cluster template from database.
         
@@ -476,10 +518,14 @@ class EpisodeClusterer:
         Returns:
             ClusterTemplate if exists, else None
         """
-        # TODO: Implement template retrieval from database
-        # For now, return None
-        logger.debug(
-            f"Template retrieval not yet implemented for "
-            f"customer={customer_id}, cluster={cluster_id}"
-        )
-        return None
+        try:
+            get_fn = getattr(self.kyrodb_router, "get_cluster_template", None)
+            if get_fn is None:
+                return None
+            return await get_fn(customer_id=customer_id, cluster_id=cluster_id)
+        except Exception as e:
+            logger.warning(
+                f"Failed to fetch cluster template {cluster_id} for {customer_id}: {e}",
+                exc_info=True,
+            )
+            return None

@@ -16,7 +16,7 @@ Performance:
 """
 
 import logging
-from datetime import timezone, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode, ErrorClass
@@ -108,7 +108,7 @@ class MemoryDecayPolicy:
             raise ValueError(f"Invalid customer_id: {customer_id}")
         
         # Calculate cutoff dates
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         archive_cutoff = now - timedelta(days=self.archive_age_days)
         delete_cutoff = now - timedelta(days=self.delete_unused_days)
         
@@ -191,51 +191,26 @@ class MemoryDecayPolicy:
         Returns:
             True if episode should never be deleted/archived
         """
-        # Check 1: Permanent flag (check both new and legacy locations for migration compatibility)
-        if hasattr(episode, 'create_data') and episode.create_data:
-            if hasattr(episode.create_data, 'environment_info') and episode.create_data.environment_info:
-                # Accept boolean or string representations
-                if episode.create_data.environment_info.get("permanent") in (True, "true", "True", "1"):
-                    return True
+        # Check 1: Explicit permanent flag (stored in environment_info)
+        permanent_flag = episode.create_data.environment_info.get("permanent")
+        if permanent_flag in (True, "true", "True", "1", 1):
+            return True
+        
+        # Check 2: Critical error class
+        if episode.create_data.error_class.value in self.PERMANENT_ERROR_CLASSES:
+            return True
 
-        # MIGRATION FALLBACK: Check legacy metadata location for permanent flag
-        # This ensures episodes marked permanent before migration are still protected
-        if hasattr(episode, 'metadata') and episode.metadata:
-            if episode.metadata.get("permanent") in (True, "true", "True", "1"):
-                logger.info(
-                    f"Episode {episode.episode_id} has permanent flag in legacy metadata location "
-                    f"- consider migrating to environment_info"
-                )
-                return True
+        # Check 3: Critical tags
+        critical_tags = {"data_loss", "security_breach", "production_outage"}
+        if {tag.lower() for tag in episode.create_data.tags} & critical_tags:
+            return True
         
-        # Check 2: Critical error class (defensive nested access)
-        if hasattr(episode, 'create_data') and episode.create_data:
-            if hasattr(episode.create_data, 'error_class') and episode.create_data.error_class:
-                try:
-                    error_class_value = episode.create_data.error_class.value
-                    if error_class_value in self.PERMANENT_ERROR_CLASSES:
-                        return True
-                except AttributeError:
-                    logger.warning(f"Episode {episode.episode_id} has invalid error_class")
-            
-            # Check for custom critical error tags (defensive access)
-            if hasattr(episode.create_data, 'tags') and episode.create_data.tags:
-                critical_tags = {"data_loss", "security_breach", "production_outage"}
-                try:
-                    episode_tags = {tag.lower() for tag in episode.create_data.tags}
-                    if episode_tags & critical_tags:
-                        return True
-                except (AttributeError, TypeError):
-                    logger.warning(f"Episode {episode.episode_id} has invalid tags")
-        
-        # Check 3: High-performing skill (defensive access)
-        if hasattr(episode, 'usage_stats') and episode.usage_stats:
-            try:
-                if (episode.usage_stats.fix_success_count > 5 and
-                    episode.usage_stats.fix_success_rate > 0.75):
-                    return True
-            except (AttributeError, TypeError):
-                logger.warning(f"Episode {episode.episode_id} has invalid usage_stats")
+        # Check 4: High-performing fix (applied >5 times, success rate >75%)
+        if (
+            episode.usage_stats.fix_success_count > 5
+            and episode.usage_stats.fix_success_rate > 0.75
+        ):
+            return True
         
         return False
     

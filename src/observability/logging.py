@@ -25,16 +25,15 @@ import sys
 import time
 import uuid
 from contextvars import ContextVar
-from typing import Optional
 
 import structlog
 from structlog.types import EventDict, Processor
 
 # Context variables for request-scoped data
 # These propagate across async boundaries automatically
-request_id_var: Optional[ContextVar[str]] = ContextVar("request_id", default=None)
-customer_id_var: Optional[ContextVar[str]] = ContextVar("customer_id", default=None)
-trace_id_var: Optional[ContextVar[str]] = ContextVar("trace_id", default=None)
+request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+customer_id_var: ContextVar[str | None] = ContextVar("customer_id", default=None)
+trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
 
 
 # ============================================================================
@@ -344,9 +343,9 @@ class RequestContext:
 
     def __init__(
         self,
-        customer_id: Optional[str] = None,
-        trace_id: Optional[str] = None,
-        request_id: Optional[str] = None,
+        customer_id: str | None = None,
+        trace_id: str | None = None,
+        request_id: str | None = None,
     ):
         """
         Initialize request context.
@@ -368,18 +367,19 @@ class RequestContext:
     def __enter__(self):
         """Set context variables."""
         self._request_id_token = request_id_var.set(self.request_id)
-        if self.customer_id:
-            self._customer_id_token = customer_id_var.set(self.customer_id)
+        # Always set customer_id (even if None) so we can reliably reset it.
+        # Otherwise a later set_customer_id() call would leak across requests.
+        self._customer_id_token = customer_id_var.set(self.customer_id)
         self._trace_id_token = trace_id_var.set(self.trace_id)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Reset context variables."""
-        if self._request_id_token:
+        if self._request_id_token is not None:
             request_id_var.reset(self._request_id_token)
-        if self._customer_id_token:
+        if self._customer_id_token is not None:
             customer_id_var.reset(self._customer_id_token)
-        if self._trace_id_token:
+        if self._trace_id_token is not None:
             trace_id_var.reset(self._trace_id_token)
 
 
@@ -460,16 +460,16 @@ def set_trace_id(trace_id: str) -> None:
     trace_id_var.set(trace_id)
 
 
-def get_request_id() -> Optional[str]:
+def get_request_id() -> str | None:
     """Get request ID from current context."""
     return request_id_var.get()
 
 
-def get_customer_id() -> Optional[str]:
+def get_customer_id() -> str | None:
     """Get customer ID from current context."""
     return customer_id_var.get()
 
 
-def get_trace_id() -> Optional[str]:
+def get_trace_id() -> str | None:
     """Get trace ID from current context."""
     return trace_id_var.get()

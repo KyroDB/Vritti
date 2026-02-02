@@ -14,8 +14,7 @@ Optimized for <5ms latency per ranking operation.
 
 import logging
 import math
-from datetime import timezone, datetime
-from typing import Optional
+from datetime import UTC, datetime
 
 from src.models.episode import Episode
 from src.models.search import RankingWeights, SearchResult
@@ -48,9 +47,9 @@ class EpisodeRanker:
 
     def __init__(
         self,
-        decay_lambda: Optional[float] = None,
-        decay_beta: Optional[float] = None,
-        min_weight: Optional[float] = None,
+        decay_lambda: float | None = None,
+        decay_beta: float | None = None,
+        min_weight: float | None = None,
     ):
         """
         Initialize episode ranker.
@@ -71,7 +70,7 @@ class EpisodeRanker:
         precondition_scores: list[float],
         matched_preconditions_list: list[list[str]],
         weights: RankingWeights,
-        current_time: Optional[datetime] = None,
+        current_time: datetime | None = None,
     ) -> list[SearchResult]:
         """
         Rank episodes by weighted multi-signal scoring.
@@ -103,7 +102,7 @@ class EpisodeRanker:
             ... )
         """
         if current_time is None:
-            current_time = datetime.now(timezone.utc)
+            current_time = datetime.now(UTC)
 
         # Validate input lengths
         expected_len = len(episodes)
@@ -195,9 +194,9 @@ class EpisodeRanker:
         """
         # Ensure both times are timezone-aware
         if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+            created_at = created_at.replace(tzinfo=UTC)
         if current_time.tzinfo is None:
-            current_time = current_time.replace(tzinfo=timezone.utc)
+            current_time = current_time.replace(tzinfo=UTC)
         
         # Calculate age in days
         age_seconds = (current_time - created_at).total_seconds()
@@ -303,13 +302,13 @@ class EpisodeRanker:
 
 
 # Singleton instance
-_ranker: Optional[EpisodeRanker] = None
+_ranker: EpisodeRanker | None = None
 
 
 def get_ranker(
-    decay_lambda: Optional[float] = None,
-    decay_beta: Optional[float] = None,
-    min_weight: Optional[float] = None
+    decay_lambda: float | None = None,
+    decay_beta: float | None = None,
+    min_weight: float | None = None
 ) -> EpisodeRanker:
     """
     Get global ranker instance with Phase 6 power-law temporal weighting.

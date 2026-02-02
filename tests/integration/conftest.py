@@ -10,13 +10,13 @@ Prerequisites:
     3. Run tests: pytest tests/integration/ -v
 """
 
-import asyncio
 import socket
+
 import pytest
 
+from src.config import KyroDBConfig
 from src.kyrodb.client import KyroDBClient
 from src.kyrodb.router import KyroDBRouter
-from src.config import KyroDBConfig
 
 
 def is_kyrodb_running(host: str = "localhost", port: int = 50051) -> bool:
@@ -110,8 +110,8 @@ def test_customer_id() -> str:
     Uses millisecond precision and includes random suffix to prevent collisions
     when tests run in rapid succession.
     """
-    import time
     import random
+    import time
     timestamp_ms = int(time.time() * 1000)
     random_suffix = random.randint(1000, 9999)
     return f"test-customer-{timestamp_ms}-{random_suffix}"

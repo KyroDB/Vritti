@@ -21,22 +21,21 @@ Performance:
 import asyncio
 import json
 import logging
-import os
 import threading
 import time
-from datetime import timezone, datetime
-from typing import Optional
+from datetime import UTC, datetime
 
+import anyio
 import httpx
 
 from src.config import LLMConfig
-from src.models.episode import EpisodeCreate, Reflection, ReflectionTier
 from src.hygiene.clustering import EpisodeClusterer
 from src.hygiene.templates import TemplateGenerator
 from src.ingestion.multi_perspective_reflection import (
     MultiPerspectiveReflectionService,
     PromptInjectionDefense,
 )
+from src.models.episode import EpisodeCreate, Reflection, ReflectionTier
 
 logger = logging.getLogger(__name__)
 
@@ -92,15 +91,15 @@ Return ONLY valid JSON, no markdown."""
         """
         self.config = config
         
-        # Get OpenRouter API key from config or environment
-        self.openrouter_api_key = config.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        # Get OpenRouter API key from config (LLM_OPENROUTER_API_KEY)
+        self.openrouter_api_key = config.openrouter_api_key
         self.model = config.cheap_model
         self.enabled = bool(self.openrouter_api_key)
         
         if self.enabled:
             logger.info(f"Cheap reflection service initialized with OpenRouter ({self.model})")
         else:
-            logger.warning("OPENROUTER_API_KEY not set - cheap reflections disabled")
+            logger.warning("LLM_OPENROUTER_API_KEY not set - cheap reflections disabled")
         
         # Cost tracking (thread-safe)
         self._stats_lock = threading.Lock()
@@ -164,7 +163,7 @@ Return ONLY valid JSON, no markdown."""
                         generalization_score=float(data.get("generalization_score", 0.5)),
                         confidence_score=float(data.get("confidence_score", 0.6)),
                         llm_model=self.model,
-                        generated_at=datetime.now(timezone.utc),
+                        generated_at=datetime.now(UTC),
                         cost_usd=self.COST_PER_REFLECTION_USD,
                         generation_latency_ms=latency_ms,
                         tier=ReflectionTier.CHEAP.value  # Mark tier
@@ -251,7 +250,7 @@ Return ONLY valid JSON, no markdown."""
             error_class=episode.error_class,
             code_state_diff=PromptInjectionDefense.sanitize_text(episode.code_state_diff or "", "code_state_diff") if episode.code_state_diff else None,
             environment_info=episode.environment_info,
-            screenshot_path=episode.screenshot_path,
+            screenshot_base64=None,  # Never send raw image data to LLM
             resolution=PromptInjectionDefense.sanitize_text(episode.resolution or "", "resolution") if episode.resolution else None,
             time_to_resolve_seconds=episode.time_to_resolve_seconds,
             tags=PromptInjectionDefense.sanitize_list(episode.tags, "tags"),
@@ -317,7 +316,7 @@ Return ONLY valid JSON, no markdown."""
             generalization_score=0.3,
             confidence_score=0.4,  # Low confidence for fallback
             llm_model="fallback_heuristic",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.0,
             generation_latency_ms=0.0,
             tier=ReflectionTier.CHEAP.value
@@ -373,8 +372,8 @@ class TieredReflectionService:
     def __init__(
         self,
         config: LLMConfig,
-        kyrodb_router: Optional[object] = None,  # KyroDBRouter
-        embedding_service: Optional[object] = None  # EmbeddingService
+        kyrodb_router: object | None = None,  # KyroDBRouter
+        embedding_service: object | None = None  # EmbeddingService
     ):
         """
         Initialize tiered reflection service.
@@ -392,34 +391,42 @@ class TieredReflectionService:
         self.premium_service = MultiPerspectiveReflectionService(config)
         
         # Phase 6: Clustering services (optional)
-        self.clusterer: Optional[EpisodeClusterer] = None
-        self.template_generator: Optional[TemplateGenerator] = None
+        self.clusterer: EpisodeClusterer | None = None
+        self.template_generator: TemplateGenerator | None = None
         self.embedding_service = embedding_service
+        self._clustering_config = None
         
         # Thread-local storage for cached cluster templates (prevents race conditions)
         self._cached_template_local = threading.local()
         
         if kyrodb_router is not None:
             try:
-                from src.config import settings
-                clustering_config = settings.clustering if hasattr(settings, 'clustering') else None
-                
-                if clustering_config:
+                from src.config import get_settings
+
+                clustering_config = get_settings().clustering
+                self._clustering_config = clustering_config
+
+                if not clustering_config.enabled:
+                    logger.info("Clustering disabled (CLUSTERING_ENABLED=false)")
+                elif self.embedding_service is None:
+                    logger.warning(
+                        "Clustering enabled but embedding_service not provided; cached tier disabled"
+                    )
+                else:
                     self.clusterer = EpisodeClusterer(
                         kyrodb_router=kyrodb_router,
                         min_cluster_size=clustering_config.min_cluster_size,
                         min_samples=clustering_config.min_samples,
-                        metric='cosine'
+                        metric=clustering_config.metric,
+                        cluster_cache_ttl_seconds=clustering_config.cluster_cache_ttl_seconds,
                     )
                     self.template_generator = TemplateGenerator(
                         kyrodb_router=kyrodb_router,
-                        reflection_service=self
+                        reflection_service=self,
                     )
                     logger.info("Clustering services initialized for cached tier")
-                else:
-                    logger.info("Clustering config not found, cached tier disabled")
             except Exception as e:
-                logger.warning(f"Failed to initialize clustering services: {e}")
+                logger.warning(f"Failed to initialize clustering services: {e}", exc_info=True)
         
         # Cost tracking (thread-safe)
         self._stats_lock = threading.Lock()
@@ -437,7 +444,7 @@ class TieredReflectionService:
 
         # Daily cost tracking 
         self._daily_cost_usd = 0.0
-        self._daily_cost_date = datetime.now(timezone.utc).date()
+        self._daily_cost_date = datetime.now(UTC).date()
         self._daily_warning_logged = False
         self._daily_limit_logged = False
         
@@ -446,7 +453,7 @@ class TieredReflectionService:
     async def generate_reflection(
         self,
         episode: EpisodeCreate,
-        tier: Optional[ReflectionTier] = None
+        tier: ReflectionTier | None = None
     ) -> Reflection:
         """
         Generate reflection using appropriate tier.
@@ -587,19 +594,36 @@ class TieredReflectionService:
             try:
                 # Get episode embedding
                 text_content = f"{episode.goal}\n\n{episode.error_trace}"
-                episode_embedding = self.embedding_service.embed_text(text_content)
+                episode_embedding = await anyio.to_thread.run_sync(
+                    self.embedding_service.embed_text, text_content
+                )
                 
                 #Check for cluster match
+                if not episode.customer_id:
+                    raise ValueError("customer_id is required for cached tier matching")
+
+                similarity_threshold = (
+                    self._clustering_config.template_match_min_similarity
+                    if self._clustering_config is not None
+                    else 0.85
+                )
+                match_k = (
+                    self._clustering_config.template_match_k
+                    if self._clustering_config is not None
+                    else 5
+                )
                 cluster_template = await self.clusterer.find_matching_cluster(
                     episode_embedding=episode_embedding,
                     customer_id=episode.customer_id,
-                    similarity_threshold=0.85
+                    similarity_threshold=similarity_threshold,
+                    k=match_k,
                 )
                 
                 if cluster_template:
+                    match_similarity = cluster_template.match_similarity
                     logger.info(
                         f"Selected CACHED tier (cluster {cluster_template.cluster_id}, "
-                        f"similarity: {cluster_template.avg_similarity:.2f})"
+                        f"match_similarity: {(match_similarity if match_similarity is not None else 0.0):.2f})"
                     )
                     # Store template in thread-local storage (prevents race conditions)
                     self._cached_template_local.cluster_template = cluster_template
@@ -622,10 +646,13 @@ class TieredReflectionService:
                 return ReflectionTier.PREMIUM
         
         # Check 3: Explicit premium request
-        if hasattr(episode, 'tags') and episode.tags:
-            if "premium_reflection" in [t.lower() for t in episode.tags]:
-                logger.info("Selected PREMIUM tier (explicit tag)")
-                return ReflectionTier.PREMIUM
+        if (
+            hasattr(episode, "tags")
+            and episode.tags
+            and "premium_reflection" in [t.lower() for t in episode.tags]
+        ):
+            logger.info("Selected PREMIUM tier (explicit tag)")
+            return ReflectionTier.PREMIUM
         
         # Default: CHEAP tier (90% of episodes)
         logger.info("Selected CHEAP tier (default)")
@@ -682,7 +709,7 @@ class TieredReflectionService:
         Args:
             cost_usd: Cost of current reflection in USD
         """
-        current_date = datetime.now(timezone.utc).date()
+        current_date = datetime.now(UTC).date()
 
         # Reset daily tracking if date changed (midnight UTC)
         if current_date != self._daily_cost_date:
@@ -736,7 +763,7 @@ class TieredReflectionService:
         """
         with self._stats_lock:
             # Check if date changed (reset if needed)
-            current_date = datetime.now(timezone.utc).date()
+            current_date = datetime.now(UTC).date()
             if current_date != self._daily_cost_date:
                 return False  # New day, budget reset
 
@@ -752,7 +779,7 @@ class TieredReflectionService:
             Dict with daily cost metrics
         """
         with self._stats_lock:
-            current_date = datetime.now(timezone.utc).date()
+            current_date = datetime.now(UTC).date()
 
             # Check if date changed
             if current_date != self._daily_cost_date:
@@ -824,14 +851,14 @@ class TieredReflectionService:
 
 
 # Singleton instance (thread-safe)
-_tiered_service: Optional[TieredReflectionService] = None
+_tiered_service: TieredReflectionService | None = None
 _tiered_service_lock = threading.Lock()
 
 
 def get_tiered_reflection_service(
-    config: Optional[LLMConfig] = None,
-    kyrodb_router: Optional[object] = None,
-    embedding_service: Optional[object] = None
+    config: LLMConfig | None = None,
+    kyrodb_router: object | None = None,
+    embedding_service: object | None = None
 ) -> TieredReflectionService:
     """
     Get global tiered reflection service (singleton).
@@ -875,8 +902,8 @@ def get_tiered_reflection_service(
         
         # Load config if not provided
         if config is None:
-            from src.config import settings
-            config = settings.llm
+            from src.config import get_settings
+            config = get_settings().llm
         
         # Create service with Phase 6 clustering support
         _tiered_service = TieredReflectionService(

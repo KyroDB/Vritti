@@ -32,7 +32,7 @@ from enum import Enum
 
 class ActionRecommendation(str, Enum):
     """Vritti's recommendations."""
-    ALLOW = "allow"
+    PROCEED = "proceed"
     BLOCK = "block"
     REWRITE = "rewrite"
     HINT = "hint"
@@ -85,8 +85,8 @@ class VrittiAgent:
         
         Returns:
             {
-                'safe': bool,  # True if ALLOW, False otherwise
-                'recommendation': str,  # ALLOW/BLOCK/REWRITE/HINT
+                'safe': bool,  # True if proceed, False otherwise
+                'recommendation': str,  # proceed/block/rewrite/hint
                 'reason': str,  # Why this recommendation
                 'alternative': str,  # Suggested alternative (if REWRITE)
                 'similar_failure': dict,  # Past failure details (if found)
@@ -106,7 +106,7 @@ class VrittiAgent:
         """
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                f"{self.base_url}/api/v1/gate/reflect",
+                f"{self.base_url}/api/v1/reflect",
                 headers=self.headers,
                 json={
                     "proposed_action": action,
@@ -120,14 +120,14 @@ class VrittiAgent:
             data = response.json()
         
         # Parse response
-        recommendation = data.get('recommendation', 'ALLOW')
+        recommendation = data.get('recommendation', ActionRecommendation.PROCEED.value)
         
         return {
-            'safe': recommendation == ActionRecommendation.ALLOW,
+            'safe': recommendation == ActionRecommendation.PROCEED.value,
             'recommendation': recommendation,
-            'reason': data.get('reasoning', ''),
-            'alternative': data.get('suggested_alternative', ''),
-            'similar_failure': data.get('similar_episodes', [{}])[0] if data.get('similar_episodes') else None,
+            'reason': data.get('rationale', ''),
+            'alternative': data.get('suggested_action', ''),
+            'similar_failure': data.get('matched_failures', [{}])[0] if data.get('matched_failures') else None,
             'confidence': data.get('confidence', 0.0),
         }
     
@@ -156,9 +156,10 @@ class VrittiAgent:
         Returns:
             {
                 'episode_id': int,
-                'reflection_generated': bool,
-                'root_cause': str,  # If reflection generated
-                'resolution_strategy': str,  # If reflection generated
+                'reflection_queued': bool,
+                'collection': str,
+                'image_stored': bool,
+                'ingestion_latency_ms': float,
             }
         
         Example:
@@ -192,10 +193,11 @@ class VrittiAgent:
             data = response.json()
         
         return {
-            'episode_id': data.get('episode_id'),
-            'reflection_generated': data.get('reflection_generated', False),
-            'root_cause': data.get('reflection', {}).get('root_cause'),
-            'resolution_strategy': data.get('reflection', {}).get('resolution_strategy'),
+            "episode_id": data.get("episode_id"),
+            "reflection_queued": data.get("reflection_queued", False),
+            "collection": data.get("collection"),
+            "image_stored": data.get("image_stored", False),
+            "ingestion_latency_ms": data.get("ingestion_latency_ms", 0.0),
         }
     
     async def search_similar_failures(
@@ -208,7 +210,7 @@ class VrittiAgent:
         Search for similar past failures.
         
         Args:
-            query: Description of current issue
+            query: Description of current issue (used as goal for search)
             limit: Max results to return
             min_similarity: Minimum similarity threshold (0.0-1.0)
         
@@ -228,28 +230,35 @@ class VrittiAgent:
                 f"{self.base_url}/api/v1/search",
                 headers=self.headers,
                 json={
-                    "query": query,
+                    "goal": query,
                     "k": limit,
-                    "similarity_threshold": min_similarity,
-                    "include_reflection": True
+                    "min_similarity": min_similarity
                 }
             )
             response.raise_for_status()
             data = response.json()
         
-        return [
-            {
-                'episode_id': ep['episode_id'],
-                'goal': ep['goal'],
-                'error': ep['error_trace'],
-                'resolution': ep.get('resolution'),
-                'root_cause': ep.get('reflection', {}).get('root_cause'),
-                'fix_strategy': ep.get('reflection', {}).get('resolution_strategy'),
-                'similarity': ep.get('scores', {}).get('combined', 0.0),
-                'success_rate': ep.get('usage_stats', {}).get('fix_success_rate', 0.0)
-            }
-            for ep in data.get('results', [])
-        ]
+        results = []
+        for result in data.get("results", []):
+            episode = result.get("episode", {})
+            create_data = episode.get("create_data", {})
+            reflection = episode.get("reflection", {}) or {}
+            usage_stats = episode.get("usage_stats", {}) or {}
+
+            results.append(
+                {
+                    "episode_id": episode.get("episode_id"),
+                    "goal": create_data.get("goal"),
+                    "error": create_data.get("error_trace"),
+                    "resolution": create_data.get("resolution"),
+                    "root_cause": reflection.get("root_cause"),
+                    "fix_strategy": reflection.get("resolution_strategy"),
+                    "similarity": result.get("scores", {}).get("combined", 0.0),
+                    "success_rate": usage_stats.get("fix_success_rate", 0.0),
+                }
+            )
+
+        return results
     
     def _classify_error(self, error: str) -> str:
         """Simple error classification heuristic."""
@@ -340,9 +349,8 @@ async def example_coding_agent_workflow():
     )
     
     print(f"✅ Failure captured: Episode #{captured['episode_id']}")
-    if captured['reflection_generated']:
-        print(f"   Root Cause: {captured['root_cause']}")
-        print(f"   Fix: {captured['resolution_strategy']}")
+    if captured["reflection_queued"]:
+        print("   Reflection queued (available via search once generated)")
     
     # SCENARIO 3: Search for similar issues
     print("\n" + "=" * 60)

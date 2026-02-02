@@ -9,7 +9,7 @@ Tests end-to-end retrieval flow:
 - Weighted ranking
 """
 
-from datetime import timezone, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -97,7 +97,7 @@ class TestPreconditionMatcher:
             create_data=episode_data,
             episode_id=123,
             reflection=None,  # No reflection
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             retrieval_count=0,
         )
 
@@ -168,10 +168,10 @@ class TestEpisodeRanker:
         ranker = EpisodeRanker()
 
         # Recent episode
-        recent_time = datetime.now(timezone.utc)
+        recent_time = datetime.now(UTC)
 
         # Old episode (90 days ago)
-        old_time = datetime.now(timezone.utc) - timedelta(days=90)
+        old_time = datetime.now(UTC) - timedelta(days=90)
 
         recent_score = ranker._compute_recency_score(recent_time, recent_time)
         old_score = ranker._compute_recency_score(old_time, recent_time)
@@ -216,7 +216,7 @@ class TestEpisodeRanker:
             create_data=episode1_data,
             episode_id=1,
             reflection=None,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             retrieval_count=100,  # High usage
         )
 
@@ -232,7 +232,7 @@ class TestEpisodeRanker:
             create_data=episode2_data,
             episode_id=2,
             reflection=None,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             retrieval_count=5,  # Low usage
         )
 

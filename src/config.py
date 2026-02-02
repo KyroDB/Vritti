@@ -205,14 +205,7 @@ class LLMConfig(BaseSettings):
         description="Initial backoff for exponential retry"
     )
 
-    # Backward compatibility (legacy single API key)
-    api_key: str = Field(
-        default="",
-        description="Legacy OpenAI API key (deprecated, use openrouter_api_key)"
-    )
-
-
-    @field_validator("openrouter_api_key", "api_key")
+    @field_validator("openrouter_api_key")
     @classmethod
     def validate_api_key_security(cls, v: str, info) -> str:
         """
@@ -248,10 +241,7 @@ class LLMConfig(BaseSettings):
     @property
     def has_any_api_key(self) -> bool:
         """Check if at least one LLM provider is configured."""
-        return bool(
-            self.openrouter_api_key or
-            self.api_key  # Legacy fallback
-        )
+        return bool(self.openrouter_api_key)
 
     @property
     def use_openrouter(self) -> bool:
@@ -283,6 +273,55 @@ class HygieneConfig(BaseSettings):
     promotion_interval_hours: int = Field(default=720, ge=1)  # Monthly
     cluster_min_samples: int = Field(default=3, ge=2)
     cluster_eps: float = Field(default=0.3, ge=0.0, le=1.0)
+
+
+class ClusteringConfig(BaseSettings):
+    """Clustering configuration for cached-tier reflection templates."""
+
+    model_config = SettingsConfigDict(env_prefix="CLUSTERING_")
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable cached-tier via cluster template matching (experimental)",
+    )
+
+    # Template matching (online path)
+    template_match_min_similarity: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity score to reuse a cached cluster template",
+    )
+    template_match_k: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="How many cluster templates to consider when matching",
+    )
+
+    # Clustering parameters (offline clustering job / template generation)
+    min_cluster_size: int = Field(
+        default=5,
+        ge=3,
+        le=1000,
+        description="Minimum episodes required to form a cluster",
+    )
+    min_samples: int = Field(
+        default=3,
+        ge=1,
+        le=1000,
+        description="HDBSCAN min_samples parameter",
+    )
+    metric: Literal["cosine"] = Field(
+        default="cosine",
+        description="Distance metric for clustering (cosine recommended for embeddings)",
+    )
+    cluster_cache_ttl_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        description="Cluster centroid cache TTL in seconds",
+    )
 
 
 class SearchConfig(BaseSettings):
@@ -343,6 +382,25 @@ class SearchConfig(BaseSettings):
         return v
 
 
+class AuthConfig(BaseSettings):
+    """Authentication configuration (API key cache, headers)."""
+
+    model_config = SettingsConfigDict(env_prefix="AUTH_")
+
+    api_key_cache_ttl_seconds: int = Field(
+        default=300,
+        ge=1,
+        le=86400,
+        description="TTL for validated API key cache entries in seconds",
+    )
+    api_key_cache_max_size: int = Field(
+        default=10000,
+        ge=1,
+        le=1_000_000,
+        description="Maximum number of API keys to keep in the in-memory cache",
+    )
+
+
 class ServiceConfig(BaseSettings):
     """FastAPI service configuration."""
 
@@ -370,7 +428,6 @@ class ServiceConfig(BaseSettings):
     )
 
     # Storage paths
-    screenshot_storage_path: str = Field(default="./data/screenshots")
     archive_storage_path: str = Field(default="./data/archive")
     dead_letter_queue_path: str = Field(
         default="./data/failed_reflections.log",
@@ -383,6 +440,17 @@ class ServiceConfig(BaseSettings):
         ge=1,
         le=1000,
         description="Maximum size of dead letter queue file in MB before rotation"
+    )
+
+
+class StorageConfig(BaseSettings):
+    """Local storage configuration (SQLite paths, archival paths)."""
+
+    model_config = SettingsConfigDict(env_prefix="STORAGE_")
+
+    customer_db_path: str = Field(
+        default="./data/customers.db",
+        description="Path to the customer SQLite database file",
     )
 
 
@@ -636,8 +704,11 @@ class Settings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
     hygiene: HygieneConfig = Field(default_factory=HygieneConfig)
+    clustering: ClusteringConfig = Field(default_factory=ClusteringConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     service: ServiceConfig = Field(default_factory=ServiceConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     cors: CORSConfig = Field(default_factory=CORSConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     health: HealthCheckConfig = Field(default_factory=HealthCheckConfig)

@@ -7,14 +7,18 @@ Handles:
 - Model caching and batching for performance
 """
 
-import logging
-from pathlib import Path
-from typing import Optional, Union
+from __future__ import annotations
 
-import torch
+import logging
+from io import BytesIO
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
 from PIL import Image
-from sentence_transformers import SentenceTransformer
-from transformers import CLIPModel, CLIPProcessor
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
+    from transformers import CLIPModel, CLIPProcessor
 
 from src.config import EmbeddingConfig
 
@@ -37,9 +41,9 @@ class EmbeddingService:
             config: Embedding configuration
         """
         self.config = config
-        self._text_model: Optional[SentenceTransformer] = None
-        self._clip_model: Optional[CLIPModel] = None
-        self._clip_processor: Optional[CLIPProcessor] = None
+        self._text_model: SentenceTransformer | None = None
+        self._clip_model: CLIPModel | None = None
+        self._clip_processor: CLIPProcessor | None = None
         self._device = self._get_device()
 
         logger.info(f"EmbeddingService initialized (device: {self._device})")
@@ -53,6 +57,8 @@ class EmbeddingService:
         """
         if not self.config.enable_gpu:
             return "cpu"
+
+        import torch
 
         if self.config.device == "cuda" and torch.cuda.is_available():
             return "cuda"
@@ -70,6 +76,8 @@ class EmbeddingService:
             SentenceTransformer: Cached model instance
         """
         if self._text_model is None:
+            from sentence_transformers import SentenceTransformer
+
             logger.info(f"Loading text model: {self.config.text_model_name}")
             self._text_model = SentenceTransformer(self.config.text_model_name, device=self._device)
             actual_dim = self._text_model.get_sentence_embedding_dimension()
@@ -97,6 +105,8 @@ class EmbeddingService:
             tuple: (CLIPModel, CLIPProcessor)
         """
         if self._clip_model is None or self._clip_processor is None:
+            from transformers import CLIPModel, CLIPProcessor
+
             logger.info(f"Loading CLIP model: {self.config.image_model_name}")
 
             self._clip_processor = CLIPProcessor.from_pretrained(self.config.image_model_name)
@@ -127,6 +137,7 @@ class EmbeddingService:
         model = self._load_text_model()
 
         # Generate embedding
+        import torch
         with torch.no_grad():
             embedding = model.encode(
                 text,
@@ -161,6 +172,7 @@ class EmbeddingService:
         model = self._load_text_model()
 
         # Batch encode
+        import torch
         with torch.no_grad():
             embeddings = model.encode(
                 texts,
@@ -188,7 +200,7 @@ class EmbeddingService:
         # Code is treated as text (sentence-transformers handles it well)
         return self.embed_text(code)
 
-    def embed_image(self, image_path: Union[str, Path]) -> list[float]:
+    def embed_image(self, image_path: str | Path) -> list[float]:
         """
         Generate image embedding using CLIP.
 
@@ -219,6 +231,7 @@ class EmbeddingService:
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
         # Generate embedding
+        import torch
         with torch.no_grad():
             image_features = clip_model.get_image_features(**inputs)
             # Normalize for cosine similarity
@@ -240,7 +253,52 @@ class EmbeddingService:
 
         return embedding
 
-    def embed_images_batch(self, image_paths: list[Union[str, Path]]) -> list[list[float]]:
+    def embed_image_bytes(self, image_bytes: bytes) -> list[float]:
+        """
+        Generate image embedding from raw image bytes using CLIP.
+
+        Args:
+            image_bytes: Raw image bytes
+
+        Returns:
+            list[float]: Image embedding (512-dim)
+
+        Raises:
+            ValueError: If bytes cannot be decoded into an image
+        """
+        if not image_bytes:
+            raise ValueError("Image bytes are empty")
+
+        try:
+            image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        except Exception as e:
+            raise ValueError(f"Failed to decode image bytes: {e}") from e
+
+        clip_model, clip_processor = self._load_clip_models()
+
+        inputs = clip_processor(images=image, return_tensors="pt")
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+        import torch
+        with torch.no_grad():
+            image_features = clip_model.get_image_features(**inputs)
+            image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+        embedding = image_features[0].cpu().tolist()
+
+        if len(embedding) != self.config.image_dimension:
+            logger.error(
+                f"Image embedding dimension mismatch! "
+                f"Expected: {self.config.image_dimension}, Got: {len(embedding)}"
+            )
+            raise ValueError(
+                f"Image embedding dimension mismatch: "
+                f"expected {self.config.image_dimension}, got {len(embedding)}"
+            )
+
+        return embedding
+
+    def embed_images_batch(self, image_paths: list[str | Path]) -> list[list[float]]:
         """
         Generate embeddings for multiple images (batched).
 
@@ -275,6 +333,7 @@ class EmbeddingService:
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
         # Generate embeddings
+        import torch
         with torch.no_grad():
             image_features = clip_model.get_image_features(**inputs)
             # Normalize
@@ -295,7 +354,7 @@ class EmbeddingService:
         logger.info("Text model warmed up")
 
 
-    def get_info(self) -> dict[str, any]:
+    def get_info(self) -> dict[str, Any]:
         """
         Get information about loaded models.
 

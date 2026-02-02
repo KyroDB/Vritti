@@ -12,14 +12,13 @@ Prerequisites:
     ./target/release/kyrodb_server --port 50051 --data-dir ./data
 """
 
-import asyncio
-import os
 import time
+from datetime import UTC
+
 import pytest
 
-from src.kyrodb.client import KyroDBClient, KyroDBError, DocumentNotFoundError
+from src.kyrodb.client import KyroDBClient
 from src.kyrodb.router import KyroDBRouter
-from src.config import get_settings
 
 
 def is_kyrodb_running() -> bool:
@@ -85,7 +84,7 @@ class TestKyroDBConnection:
         """Test health check against real KyroDB."""
         response = await kyrodb_client.health_check()
         
-        print(f"\n--- KyroDB Health Check ---")
+        print("\n--- KyroDB Health Check ---")
         print(f"Status: {response.status}")
         print(f"Version: {response.version}")
         print(f"Uptime: {response.uptime_seconds}s")
@@ -112,7 +111,7 @@ class TestKyroDBConnection:
             "test_run": "real_integration",
         }
         
-        print(f"\n--- Insert Test ---")
+        print("\n--- Insert Test ---")
         print(f"Doc ID: {doc_id}")
         print(f"Namespace: {namespace}")
         print(f"Embedding dims: {len(embedding)}")
@@ -136,7 +135,7 @@ class TestKyroDBConnection:
                 include_embedding=True,
             )
             
-            print(f"\n--- Query Test ---")
+            print("\n--- Query Test ---")
             print(f"Found: {query_response.found}")
             print(f"Metadata keys: {list(query_response.metadata.keys())}")
             
@@ -147,7 +146,7 @@ class TestKyroDBConnection:
         finally:
             # Cleanup - always runs even if assertions fail
             delete_response = await kyrodb_client.delete(doc_id=doc_id, namespace=namespace)
-            print(f"\n--- Cleanup ---")
+            print("\n--- Cleanup ---")
             print(f"Delete success: {delete_response.success}")
 
     @pytest.mark.asyncio
@@ -158,7 +157,7 @@ class TestKyroDBConnection:
         base_time = int(time.time() * 1000) % (2**60)
         doc_ids = []
         
-        print(f"\n--- Inserting test vectors ---")
+        print("\n--- Inserting test vectors ---")
         for i in range(5):
             doc_id = base_time + i
             doc_ids.append(doc_id)
@@ -186,7 +185,7 @@ class TestKyroDBConnection:
                 min_score=-1.0,
             )
             
-            print(f"\n--- Search Results ---")
+            print("\n--- Search Results ---")
             print(f"Results found: {len(search_response.results)}")
             print(f"Search latency: {search_response.search_latency_ms:.2f}ms")
             
@@ -196,7 +195,7 @@ class TestKyroDBConnection:
             assert len(search_response.results) > 0, "No search results"
         finally:
             # Cleanup - always runs even if assertions fail
-            print(f"\n--- Cleanup ---")
+            print("\n--- Cleanup ---")
             for doc_id in doc_ids:
                 await kyrodb_client.delete(doc_id=doc_id, namespace=namespace)
             print(f"Deleted {len(doc_ids)} vectors")
@@ -210,7 +209,7 @@ class TestKyroDBRouterReal:
         """Test router health check."""
         health = await kyrodb_router.health_check()
         
-        print(f"\n--- Router Health ---")
+        print("\n--- Router Health ---")
         print(f"Text instance: {health.get('text', 'N/A')}")
         print(f"Image instance: {health.get('image', 'N/A')}")
         
@@ -234,7 +233,7 @@ class TestKyroDBRouterReal:
             "customer_id": customer_id,  # Include customer_id in metadata
         }
         
-        print(f"\n--- Insert Episode via Router ---")
+        print("\n--- Insert Episode via Router ---")
         print(f"Episode ID: {episode_id}")
         print(f"Customer: {customer_id}")
         print(f"Collection: {collection}")
@@ -261,7 +260,7 @@ class TestKyroDBRouterReal:
                 collection=collection,
             )
             
-            print(f"\n--- Query Episode ---")
+            print("\n--- Query Episode ---")
             print(f"Found: {result is not None}")
             
             assert result is not None, "Episode not found after insert"
@@ -283,7 +282,7 @@ class TestKyroDBRouterReal:
         base_time = int(time.time() * 1000) % (2**60)
         episode_ids = []
         
-        print(f"\n--- Inserting test episodes ---")
+        print("\n--- Inserting test episodes ---")
         
         # Insert test episodes
         for i in range(3):
@@ -320,7 +319,7 @@ class TestKyroDBRouterReal:
                 min_score=-1.0,  # Allow all scores for testing
             )
             
-            print(f"\n--- Search Results ---")
+            print("\n--- Search Results ---")
             print(f"Found: {len(response.results)} episodes")
             
             for result in response.results:
@@ -329,7 +328,7 @@ class TestKyroDBRouterReal:
             assert len(response.results) >= 3, f"Expected at least 3 results, got {len(response.results)}"
         finally:
             # Cleanup - always runs even if assertions fail
-            print(f"\n--- Cleanup ---")
+            print("\n--- Cleanup ---")
             for episode_id in episode_ids:
                 await kyrodb_router.delete_episode(
                     episode_id=episode_id,
@@ -345,8 +344,9 @@ class TestReflectionPersistence:
     @pytest.mark.asyncio
     async def test_update_episode_reflection(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
         """Test updating episode with reflection metadata."""
+        from datetime import datetime
+
         from src.models.episode import Reflection, ReflectionTier
-        from datetime import datetime, timezone
         
         episode_id = int(time.time() * 1000) % (2**63 - 1)
         customer_id = "test-reflection"
@@ -361,7 +361,7 @@ class TestReflectionPersistence:
                 "customer_id": customer_id,  # Required for update_episode_reflection ownership check
             }
             
-            print(f"\n--- Insert Episode ---")
+            print("\n--- Insert Episode ---")
             await kyrodb_router.insert_episode(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -382,14 +382,14 @@ class TestReflectionPersistence:
                 generalization_score=0.7,
                 confidence_score=0.85,
                 llm_model="openrouter-consensus",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=0.0,
                 generation_latency_ms=1500.0,
                 tier=ReflectionTier.PREMIUM.value,
             )
             
             # Update with reflection
-            print(f"\n--- Update with Reflection ---")
+            print("\n--- Update with Reflection ---")
             success = await kyrodb_router.update_episode_reflection(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -407,7 +407,7 @@ class TestReflectionPersistence:
                 collection=collection,
             )
             
-            print(f"\n--- Verify Reflection ---")
+            print("\n--- Verify Reflection ---")
             print(f"Metadata keys: {list(result.get('metadata', {}).keys())}")
             
             metadata = result.get("metadata", {})
@@ -434,8 +434,9 @@ class TestSkillsIntegration:
     @pytest.mark.asyncio
     async def test_insert_and_search_skill(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
         """Test skill insertion and search."""
+        from datetime import datetime
+
         from src.models.skill import Skill
-        from datetime import datetime, timezone
         
         skill_id = int(time.time() * 1000) % (2**63 - 1)
         customer_id = "test-skills"
@@ -454,13 +455,13 @@ class TestSkillsIntegration:
                 usage_count=5,
                 success_count=4,
                 failure_count=1,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             
             # Create embedding
             embedding = [0.15] * 384
             
-            print(f"\n--- Insert Skill ---")
+            print("\n--- Insert Skill ---")
             print(f"Skill ID: {skill_id}")
             print(f"Name: {skill.name}")
             
@@ -481,7 +482,7 @@ class TestSkillsIntegration:
                 k=5,
             )
             
-            print(f"\n--- Search Skills ---")
+            print("\n--- Search Skills ---")
             print(f"Found: {len(results)} skills")
             
             for skill_result, score in results:

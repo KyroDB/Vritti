@@ -24,7 +24,8 @@ When your agent fails, capture it:
   "error_trace": "ImagePullBackOff: image not found",
   "error_class": "resource_error",
   "resolution": "Fixed image tag",
-  "tags": ["kubernetes", "production"]
+  "tags": ["kubernetes", "production"],
+  "screenshot_base64": "<base64-encoded screenshot bytes>"
 }
 ```
 
@@ -32,12 +33,16 @@ When your agent fails, capture it:
 ```json
 {
   "episode_id": 12345,
-  "status": "captured"
+  "collection": "failures",
+  "ingestion_latency_ms": 42.7,
+  "text_stored": true,
+  "image_stored": true,
+  "reflection_queued": true
 }
 ```
 
 ### 2. Check Before Action (Gating)
-`POST /api/v1/gate/reflect`
+`POST /api/v1/reflect`
 
 Before risky actions, ask if it's safe:
 ```json
@@ -53,18 +58,23 @@ Before risky actions, ask if it's safe:
 **Response**:
 ```json
 {
-  "recommendation": "BLOCK",
-  "reasoning": "Similar action failed before (96% match). Image tag 'latest' not found",
-  "suggested_alternative": "Use specific tag: myapp:v1.2.3",
-  "confidence": 0.95
+  "recommendation": "block",
+  "rationale": "Similar action failed before (96% match). Image tag 'latest' not found",
+  "suggested_action": "Use specific tag: myapp:v1.2.3",
+  "confidence": 0.95,
+  "matched_failures": [],
+  "hints": [],
+  "relevant_skills": [],
+  "search_latency_ms": 12.4,
+  "total_latency_ms": 18.9
 }
 ```
 
 **Recommendations**:
-- `ALLOW` - Safe to proceed
-- `BLOCK` - Don't do it, use suggestion
-- `REWRITE` - Use alternative action
-- `HINT` - Warning, proceed with caution
+- `proceed` - Safe to proceed
+- `block` - Don't do it, use suggestion
+- `rewrite` - Use alternative action
+- `hint` - Warning, proceed with caution
 
 ### 3. Search Past Failures
 `POST /api/v1/search`
@@ -72,9 +82,18 @@ Before risky actions, ask if it's safe:
 Find similar problems you've solved:
 ```json
 {
-  "query": "Fix ImagePullBackOff error",
+  "goal": "Fix ImagePullBackOff error",
+  "k": 5
+}
+```
+
+**Multi-modal search** (include `image_base64` to enable image search):
+```json
+{
+  "goal": "UI screenshot error",
   "k": 5,
-  "include_reflection": true
+  "image_base64": "<base64-encoded image bytes>",
+  "image_weight": 0.3
 }
 ```
 
@@ -82,14 +101,22 @@ Find similar problems you've solved:
 ```json
 {
   "results": [{
-    "episode_id": 987,
-    "goal": "Deploy to Kubernetes",
-    "similarity": 0.89,
-    "reflection": {
-      "root_cause": "Image tag doesn't exist",
-      "resolution_strategy": "Verify tag exists before applying",
-      "confidence_score": 0.95
-    }
+    "episode": {
+      "episode_id": 987,
+      "create_data": {
+        "goal": "Deploy to Kubernetes"
+      },
+      "reflection": {
+        "root_cause": "Image tag doesn't exist",
+        "resolution_strategy": "Verify tag exists before applying",
+        "confidence_score": 0.95
+      }
+    },
+    "scores": {
+      "similarity": 0.89,
+      "combined": 0.91
+    },
+    "rank": 1
   }]
 }
 ```
@@ -115,7 +142,7 @@ async def check_action(action, goal):
     """Check if action is safe before executing."""
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8000/api/v1/gate/reflect",
+            "http://localhost:8000/api/v1/reflect",
             headers={"X-API-Key": "em_live_your_key"},
             json={
                 "proposed_action": action,
@@ -127,8 +154,8 @@ async def check_action(action, goal):
         )
         result = response.json()
         
-        if result['recommendation'] == 'BLOCK':
-            print(f"BLOCKED: {result['reasoning']}")
+        if result['recommendation'] == 'block':
+            print(f"BLOCKED: {result['rationale']}")
             return False
         
         return True

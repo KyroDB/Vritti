@@ -139,7 +139,7 @@ class TestIngestionPipeline:
             actions_taken=["action1"],
             error_trace="Error occurred during deployment",
             error_class="unknown",
-            screenshot_path="/tmp/test_screenshot.png",
+            screenshot_base64="ZmFrZS1pbWFnZS1ieXRlcw==",
         )
 
         pipeline = IngestionPipeline(
@@ -155,7 +155,7 @@ class TestIngestionPipeline:
 
         # Verify both text and image embeddings were generated
         mock_embedding_service.embed_text.assert_called_once()
-        mock_embedding_service.embed_image.assert_called_once()
+        mock_embedding_service.embed_image_bytes.assert_called_once()
 
         # Verify KyroDB insert was called with both embeddings
         call_args = mock_kyrodb_router.insert_episode.call_args

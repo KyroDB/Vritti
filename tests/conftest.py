@@ -8,8 +8,7 @@ Provides shared fixtures for:
 - FastAPI test client
 """
 
-import asyncio
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -24,6 +23,8 @@ from src.config import (
     LLMConfig,
     Settings,
 )
+from src.gating.service import GatingService
+from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.client import KyroDBClient
 from src.kyrodb.router import KyroDBRouter
@@ -34,9 +35,7 @@ from src.models.episode import (
     ErrorClass,
     Reflection,
 )
-from src.ingestion.capture import IngestionPipeline
 from src.retrieval.search import SearchPipeline
-from src.gating.service import GatingService
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -163,7 +162,7 @@ def sample_episode(sample_episode_create: EpisodeCreate) -> Episode:
         create_data=sample_episode_create,
         episode_id=1234567890,
         reflection=reflection,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         retrieval_count=0,
     )
 
@@ -280,6 +279,22 @@ def mock_embedding_service() -> EmbeddingService:
 
     service.embed_image = Mock(side_effect=mock_embed_image)
 
+    # Mock image embedding from bytes (512-dim)
+    def mock_embed_image_bytes(image_bytes: bytes) -> list[float]:
+        import random
+
+        random.seed(42)
+        return [random.random() for _ in range(512)]
+
+    service.embed_image_bytes = Mock(side_effect=mock_embed_image_bytes)
+
+    service.get_info = Mock(
+        return_value={
+            "text_model_loaded": True,
+            "clip_model_loaded": True,
+        }
+    )
+
     return service
 
 
@@ -291,15 +306,26 @@ def app_client(
     ingestion_pipeline: IngestionPipeline,
     search_pipeline: SearchPipeline,
     gating_service: GatingService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Create FastAPI test client with mocked dependencies."""
+    # Ensure tests never touch a developer's local customer DB.
+    monkeypatch.setenv("STORAGE_CUSTOMER_DB_PATH", str(tmp_path / "customers.db"))
+    import src.config as config_module
+    config_module._settings = None
+    import src.storage.database as customer_db_module
+    customer_db_module._db = None
+
     # Patch global instances
-    import src.main as main_module
-    from src.main import app
-    from src.auth.dependencies import get_authenticated_customer
-    from src.models.customer import Customer, SubscriptionTier, CustomerStatus
     from contextlib import asynccontextmanager
+
     from fastapi import FastAPI
+
+    import src.main as main_module
+    from src.auth.dependencies import get_authenticated_customer
+    from src.main import app
+    from src.models.customer import Customer, CustomerStatus, SubscriptionTier
 
     main_module.kyrodb_router = mock_kyrodb_router
     main_module.embedding_service = mock_embedding_service

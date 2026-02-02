@@ -5,18 +5,17 @@ Tests tier selection logic, cheap reflection service, quality validation,
 and cost tracking.
 """
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from src.config import LLMConfig
 from src.ingestion.tiered_reflection import (
-    ReflectionTier,
     CheapReflectionService,
     TieredReflectionService,
     get_tiered_reflection_service,
 )
 from src.models.episode import EpisodeCreate, ErrorClass, Reflection, ReflectionTier
-from src.config import LLMConfig
 
 
 @pytest.fixture

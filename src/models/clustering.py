@@ -4,7 +4,9 @@ Clustering data models for memory hygiene.
 Defines schemas for episode clusters, templates, and clustering metadata.
 """
 
-from datetime import timezone, datetime
+import json
+from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -48,11 +50,11 @@ class ClusterInfo(BaseModel):
     )
     
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     
     last_updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
 
@@ -105,13 +107,20 @@ class ClusterTemplate(BaseModel):
         le=1.0,
         description="Average intra-cluster similarity"
     )
+
+    match_similarity: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Similarity between query and this template (set at retrieval time)",
+    )
     
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     
     last_used_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     
     usage_count: int = Field(
@@ -125,6 +134,80 @@ class ClusterTemplate(BaseModel):
         ge=1,
         description="Template version for future updates"
     )
+
+    def to_metadata_dict(self) -> dict[str, str]:
+        """
+        Serialize template for KyroDB metadata (string-string map).
+
+        Note: match_similarity is intentionally excluded (query-specific, not persisted).
+        """
+        return {
+            "cluster_id": str(self.cluster_id),
+            "customer_id": self.customer_id,
+            "source_episode_id": str(self.source_episode_id),
+            "episode_count": str(self.episode_count),
+            "avg_similarity": f"{self.avg_similarity:.4f}",
+            "usage_count": str(self.usage_count),
+            "created_at": self.created_at.isoformat(),
+            "last_used_at": self.last_used_at.isoformat() if self.last_used_at else "",
+            "template_version": str(self.template_version),
+            "template_reflection_json": json.dumps(self.template_reflection),
+            "doc_type": "cluster_template",
+        }
+
+    @classmethod
+    def from_metadata_dict(cls, metadata: dict[str, str]) -> "ClusterTemplate":
+        """
+        Deserialize ClusterTemplate from KyroDB metadata.
+        """
+        from src.models.episode import Reflection
+
+        def _get_int(key: str, default: int = 0) -> int:
+            try:
+                return int(metadata.get(key, str(default)) or default)
+            except Exception:
+                return default
+
+        def _get_float(key: str, default: float = 0.0) -> float:
+            try:
+                return float(metadata.get(key, str(default)) or default)
+            except Exception:
+                return default
+
+        def _get_dt(key: str) -> datetime:
+            raw = (metadata.get(key) or "").strip()
+            if not raw:
+                return datetime.now(UTC)
+            try:
+                return datetime.fromisoformat(raw)
+            except Exception:
+                return datetime.now(UTC)
+
+        raw_reflection = (metadata.get("template_reflection_json") or "").strip()
+        if not raw_reflection:
+            raise ValueError("Missing template_reflection_json in cluster template metadata")
+
+        try:
+            template_payload: Any = json.loads(raw_reflection)
+        except Exception as e:
+            raise ValueError(f"Invalid template_reflection_json: {e}") from e
+
+        # Validate template payload against Reflection schema for safety.
+        reflection = Reflection.model_validate(template_payload)
+        template_reflection = reflection.model_dump(mode="json")
+
+        return cls(
+            cluster_id=_get_int("cluster_id"),
+            customer_id=(metadata.get("customer_id") or "").strip(),
+            template_reflection=template_reflection,
+            source_episode_id=_get_int("source_episode_id"),
+            episode_count=_get_int("episode_count", default=1),
+            avg_similarity=_get_float("avg_similarity", default=0.0),
+            usage_count=_get_int("usage_count", default=0),
+            created_at=_get_dt("created_at"),
+            last_used_at=_get_dt("last_used_at"),
+            template_version=_get_int("template_version", default=1),
+        )
 
 
 class ClusteringStats(BaseModel):

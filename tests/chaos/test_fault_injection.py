@@ -10,13 +10,14 @@ Tests system behavior under fault conditions:
 Run with: pytest tests/chaos/test_fault_injection.py -v -s
 """
 
-import pytest
 import asyncio
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
 import grpc
+import pytest
 
 from src.models.episode import EpisodeCreate, EpisodeType, ErrorClass
-from src.models.gating import ReflectRequest, ActionRecommendation
+from src.models.gating import ActionRecommendation, ReflectRequest
 from src.models.search import SearchRequest
 
 
@@ -107,7 +108,7 @@ class TestKyroDBFailures:
                 search_pipeline.search(request),
                 timeout=5.0  # Use shorter timeout for test
             )
-            assert False, "Should have timed out"
+            raise AssertionError("Should have timed out")
         except asyncio.TimeoutError:
             elapsed = asyncio.get_event_loop().time() - start
             print(f"\n Timed out after {elapsed:.1f}s (expected)")
@@ -128,6 +129,8 @@ class TestKyroDBFailures:
         print("\n" + "="*80)
         print("CHAOS TEST: KyroDB Partial Failure")
         print("="*80)
+
+        original_insert = ingestion_pipeline.kyrodb_router.insert_episode
 
         # Simulate text success, image failure
         async def mock_insert(*args, **kwargs):
@@ -237,7 +240,7 @@ class TestLLMFailures:
             # Should timeout and continue
             start = asyncio.get_event_loop().time()
 
-            result = await asyncio.wait_for(
+            await asyncio.wait_for(
                 ingestion_pipeline.capture_episode(episode, generate_reflection=True),
                 timeout=10.0
             )
@@ -385,7 +388,7 @@ class TestRecovery:
             )
 
             # First attempt fails
-            with pytest.raises(Exception):
+            with pytest.raises(grpc.aio.AioRpcError):
                 await ingestion_pipeline.capture_episode(episode1, generate_reflection=False)
 
             print("\n  First attempt failed (expected)")

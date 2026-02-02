@@ -9,21 +9,17 @@ Tests:
 """
 
 import json
-from datetime import timezone, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import (
-    EpisodeCreate,
-    ErrorClass,
-    EpisodeType,
     LLMPerspective,
     Reflection,
     ReflectionConsensus,
 )
-
 
 # ============================================================================
 # Fixtures
@@ -65,7 +61,7 @@ def sample_reflection_with_consensus():
         agreed_resolution="Update image tag and reapply manifest",
         consensus_confidence=1.0,
         disagreement_points=[],
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )
 
     return Reflection(
@@ -78,7 +74,7 @@ def sample_reflection_with_consensus():
         generalization_score=0.775,  # Average
         confidence_score=1.0,
         llm_model="multi-perspective",
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         cost_usd=0.065,
         generation_latency_ms=3500.0,
     )
@@ -97,7 +93,7 @@ def sample_reflection_single_llm():
         generalization_score=0.7,
         confidence_score=0.8,
         llm_model="gpt-4-turbo-preview",
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         cost_usd=0.043,
         generation_latency_ms=2100.0,
     )

@@ -4,17 +4,15 @@ Integration tests for cached tier workflow (Phase 6).
 Tests end-to-end flow: clustering → template generation → cached reflections.
 """
 
-import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-import numpy as np
 
-from src.ingestion.tiered_reflection import TieredReflectionService, ReflectionTier
-from src.hygiene.clustering import EpisodeClusterer
-from src.hygiene.templates import TemplateGenerator
-from src.models.clustering import ClusterInfo, ClusterTemplate
-from src.models.episode import EpisodeCreate, ErrorClass, Reflection
+import pytest
+
 from src.config import LLMConfig
+from src.ingestion.tiered_reflection import ReflectionTier, TieredReflectionService
+from src.models.clustering import ClusterTemplate
+from src.models.episode import EpisodeCreate, ErrorClass, Reflection
 
 
 # TODO(ISSUE-CACHED-TIER): Re-enable after clustering/template architecture implementation
@@ -55,24 +53,19 @@ class TestCachedTierIntegration:
         )
     
     @pytest.fixture
-    def tiered_service(self, llm_config, mock_kyrodb_router, mock_embedding_service):
+    def tiered_service(self, llm_config, mock_kyrodb_router, mock_embedding_service, monkeypatch):
         """Create tiered reflection service with clustering."""
-        # Mock settings to include clustering config
-        mock_clustering_config = MagicMock()
-        mock_clustering_config.min_samples = 3
-        mock_clustering_config.min_cluster_size = 5  # Required by EpisodeClusterer
-        mock_clustering_config.eps = 0.3
-        mock_clustering_config.metric = 'cosine'
+        monkeypatch.setenv("CLUSTERING_ENABLED", "true")
+        # Ensure Settings picks up the env var (Settings is cached as a singleton).
+        import src.config as config_module
+        config_module._settings = None
 
-        with patch('src.config.settings', create=True) as mock_settings:
-            mock_settings.clustering = mock_clustering_config
-
-            service = TieredReflectionService(
-                config=llm_config,
-                kyrodb_router=mock_kyrodb_router,
-                embedding_service=mock_embedding_service
-            )
-            yield service
+        service = TieredReflectionService(
+            config=llm_config,
+            kyrodb_router=mock_kyrodb_router,
+            embedding_service=mock_embedding_service
+        )
+        yield service
     
     def create_test_episode(self, error_msg: str = "Connection timeout") -> EpisodeCreate:
         """Helper to create test episode."""
@@ -156,7 +149,7 @@ class TestCachedTierIntegration:
             environment_factors=["production"],
             affected_components=["network"],
             llm_model="cached_template",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.0,  # Cached = $0
             generation_latency_ms=5.0,
             tier="cached"
@@ -188,7 +181,7 @@ class TestCachedTierIntegration:
             environment_factors=[],
             affected_components=[],
             llm_model="cached_template",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.0,
             generation_latency_ms=5.0,
             tier="cached"
@@ -207,7 +200,7 @@ class TestCachedTierIntegration:
             environment_factors=["env1"],
             affected_components=["comp1"],
             llm_model="openrouter-cheap-model",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.0003,
             generation_latency_ms=500.0,
             tier="cheap"
@@ -239,7 +232,7 @@ class TestCachedTierIntegration:
             environment_factors=["complex"],
             affected_components=["complex"],
             llm_model="gpt-4",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.096,
             generation_latency_ms=1000.0,
             tier="premium"
@@ -267,7 +260,7 @@ class TestCachedTierIntegration:
                     environment_factors=["production"],
                     affected_components=["network"],
                     llm_model="cached_template",
-                    generated_at=datetime.now(timezone.utc),
+                    generated_at=datetime.now(UTC),
                     cost_usd=0.0,
                     generation_latency_ms=5.0,
                     tier="cached"

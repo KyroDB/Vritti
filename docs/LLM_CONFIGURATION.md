@@ -12,15 +12,15 @@ Vritti uses LLMs to analyze failures and generate solutions.
 4. Add to `.env`:
 
 ```bash
-OPENROUTER_API_KEY=sk-or-v1-your-api-key
+LLM_OPENROUTER_API_KEY=sk-or-v1-your-api-key
 ```
 
 ### Optional Settings
 
 ```bash
-# LLM CONFIGURATION (OpenRouter - Free Tier)
-# OpenRouter unified API for all LLM calls
-LLM_OPENROUTER_API_KEY=your-openrouter-api-key
+# LLM CONFIGURATION (OpenRouter)
+# Unified API for all LLM calls
+LLM_OPENROUTER_API_KEY=sk-or-v1-your-api-key
 LLM_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 LLM_CHEAP_MODEL=x-ai/grok-4.1-fast:free
 LLM_CONSENSUS_MODEL_1=kwaipilot/kat-coder-pro:free
@@ -43,15 +43,70 @@ Vritti uses 3 tiers to balance cost and quality:
 
 | Tier | When Used | Cost | Model |
 |------|-----------|------|-------|
-| Cached | Identical failure seen before | $0.00 | N/A |
+| Cached | Cluster template match (experimental) | $0.00 | N/A |
 | Cheap | Most failures | ~$0.00 | OpenRouter free tier |
 | Premium | Complex failures | ~$0.00 | Multi-perspective (free tier) |
 
 ### Automatic Tier Selection
 
 **Cached tier** if:
-- Similar failure exists (>92% match)
-- Uses cached reflection (free)
+- Clustering is enabled and a matching cluster template exists
+- Otherwise cached tier is disabled and the system falls back to cheap/premium
+
+#### Enable Clustering (Cached Tier)
+
+Clustering/cached-tier is **off by default** because it requires you to persist cluster templates first.
+
+1) Enable clustering in `.env`:
+
+```bash
+# Cached tier toggle (experimental)
+CLUSTERING_ENABLED=true
+
+# Matching behavior
+CLUSTERING_TEMPLATE_MATCH_MIN_SIMILARITY=0.85
+CLUSTERING_TEMPLATE_MATCH_K=5
+```
+
+2) (Optional) Tune clustering parameters (used by the offline clustering job / template generation):
+
+```bash
+CLUSTERING_MIN_CLUSTER_SIZE=5
+CLUSTERING_MIN_SAMPLES=3
+CLUSTERING_METRIC=cosine
+```
+
+#### What is a “matching cluster template”?
+
+A **cluster template** is a saved reflection that Vritti can reuse at $0 cost when a new episode’s
+embedding is sufficiently similar to the template’s embedding.
+
+**Storage convention (required):**
+- Templates are stored in KyroDB text instance under the namespace: `{customer_id}:cluster_templates`
+- Each template must have:
+  - `doc_id`: the `cluster_id` (int)
+  - `embedding`: a 384-dim text embedding (typically the cluster centroid embedding)
+  - `metadata.template_reflection_json`: JSON string of a `Reflection` payload
+
+When clustering is enabled, Vritti searches this namespace using the incoming episode embedding and
+selects cached tier when the best match score ≥ `CLUSTERING_TEMPLATE_MATCH_MIN_SIMILARITY`.
+
+#### Where do templates come from?
+
+Templates can be created in two ways:
+1) **Generated** by an offline clustering + template-generation workflow (recommended for production).
+2) **Seeded** manually for known recurring failures (useful in early pilots).
+
+If you don’t have templates yet, cached tier will never trigger (it will fall back to cheap/premium).
+
+#### Troubleshooting
+
+If cached tier is not triggering:
+1) Confirm `CLUSTERING_ENABLED=true`.
+2) Confirm templates exist in KyroDB under `{customer_id}:cluster_templates`.
+3) Confirm template embeddings are 384-dim and normalized.
+4) Lower `CLUSTERING_TEMPLATE_MATCH_MIN_SIMILARITY` temporarily (e.g., `0.80`) to validate wiring.
+5) Check logs for “Selected CACHED tier” / “No cluster match”.
 
 **Premium tier** if:
 - Authentication errors
@@ -61,14 +116,14 @@ Vritti uses 3 tiers to balance cost and quality:
 **Cheap tier**:
 - Everything else (default)
 
-### Cache Settings
+### LLM Validation Settings
 
 ```bash
-# In .env
+# In .env (search LLM validation thresholds)
 SEARCH_LLM_SIMILARITY_THRESHOLD=0.92
 ```
 
-Cache hit when episode similarity >0.92. Higher threshold = fewer cache hits but better accuracy.
+Higher threshold = fewer LLM validations but better precision.
 
 ## Check Budget
 
@@ -94,8 +149,8 @@ Response:
 
 ## Cost Optimization
 
-1. **Enable caching** - Saves 30-40% on costs
-2. **Use cheap tier** - 80% of failures use cheap tier
+1. **Use cheap tier by default** - Most failures use cheap tier
+2. **Limit premium tier usage** - Keep premium for complex failures
 3. **Set budget limits** - Prevents runaway costs
 4. **Monitor daily spend** - Check budget endpoint
 
@@ -137,7 +192,7 @@ When daily limit reached:
 ### "Reflection generation disabled"
 
 Check:
-1. `OPENROUTER_API_KEY` is set in `.env`
+1. `LLM_OPENROUTER_API_KEY` is set in `.env`
 2. API key is valid
 3. Account has credits
 

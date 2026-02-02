@@ -1,10 +1,12 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from src.gating.service import GatingService
-from src.models.gating import ReflectRequest, ActionRecommendation
-from src.models.search import SearchResult, SearchResponse
 from src.models.episode import Episode, EpisodeCreate, Reflection
-from src.models.skill import Skill
+from src.models.gating import ActionRecommendation, ReflectRequest
+from src.models.search import SearchResponse, SearchResult
+
 
 @pytest.fixture
 def mock_search_pipeline():

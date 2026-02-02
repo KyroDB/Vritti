@@ -6,11 +6,10 @@ Customer IDs are used for namespace isolation in KyroDB and quota enforcement.
 """
 
 import re
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SubscriptionTier(str, Enum):
@@ -56,9 +55,9 @@ class Customer(BaseModel):
     credits_used_current_month: int = Field(default=0, ge=0)
 
     # Metadata
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_api_call_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_api_call_at: datetime | None = Field(default=None)
 
     @field_validator("customer_id")
     @classmethod
@@ -98,13 +97,13 @@ class Customer(BaseModel):
     def increment_usage(self, credits: int) -> None:
         """Increment credits used for current month."""
         self.credits_used_current_month += credits
-        self.last_api_call_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.last_api_call_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
 
     def reset_monthly_usage(self) -> None:
         """Reset monthly credit usage (called at start of new month)."""
         self.credits_used_current_month = 0
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def should_suspend(self) -> bool:
         """Check if customer should be suspended due to quota abuse."""
@@ -142,38 +141,46 @@ class CustomerCreate(BaseModel):
 class CustomerUpdate(BaseModel):
     """Schema for updating customer details."""
 
-    organization_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    email: Optional[str] = Field(default=None)
-    subscription_tier: Optional[SubscriptionTier] = Field(default=None)
-    status: Optional[CustomerStatus] = Field(default=None)
-    monthly_credit_limit: Optional[int] = Field(default=None, ge=0)
+    organization_name: str | None = Field(default=None, min_length=1, max_length=200)
+    email: str | None = Field(default=None)
+    subscription_tier: SubscriptionTier | None = Field(default=None)
+    status: CustomerStatus | None = Field(default=None)
+    monthly_credit_limit: int | None = Field(default=None, ge=0)
 
 
 class APIKey(BaseModel):
     """
     API key for customer authentication.
 
-    API keys are hashed before storage (bcrypt).
+    API keys are stored as SHA-256 digest (never plaintext).
     """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     key_id: str = Field(..., description="Unique key identifier (UUID)")
     customer_id: str = Field(..., description="Owner customer ID")
-    key_hash: str = Field(..., description="Bcrypt hash of API key")
+    key_hash_sha256: str = Field(
+        ...,
+        min_length=64,
+        max_length=64,
+        alias="key_hash",
+        description="SHA-256 digest of API key",
+    )
     key_prefix: str = Field(
         ..., min_length=8, max_length=8, description="First 8 chars for display"
     )
-    name: Optional[str] = Field(default=None, description="User-assigned key name")
+    name: str | None = Field(default=None, description="User-assigned key name")
 
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_used_at: Optional[datetime] = Field(default=None)
-    expires_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_used_at: datetime | None = Field(default=None)
+    expires_at: datetime | None = Field(default=None)
     is_active: bool = Field(default=True)
 
     def is_valid(self) -> bool:
         """Check if API key is valid (active and not expired)."""
         if not self.is_active:
             return False
-        if self.expires_at and datetime.now(timezone.utc) > self.expires_at:
+        if self.expires_at and datetime.now(UTC) > self.expires_at:
             return False
         return True
 
@@ -182,7 +189,7 @@ class APIKeyCreate(BaseModel):
     """Schema for creating new API key."""
 
     customer_id: str
-    name: Optional[str] = Field(default=None, max_length=100)
-    expires_in_days: Optional[int] = Field(
+    name: str | None = Field(default=None, max_length=100)
+    expires_in_days: int | None = Field(
         default=None, ge=1, le=365, description="Key expiration (1-365 days)"
     )

@@ -10,7 +10,7 @@ Provides:
 import hashlib
 import json
 import time
-from typing import Any, Optional
+from typing import Any
 
 
 class SnowflakeIDGenerator:
@@ -131,7 +131,7 @@ class SnowflakeIDGenerator:
 
 
 # Global generator instance (machine_id=0 for single-machine setup)
-_id_generator: Optional[SnowflakeIDGenerator] = None
+_id_generator: SnowflakeIDGenerator | None = None
 
 
 def initialize_id_generator(machine_id: int = 0) -> None:

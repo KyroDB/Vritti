@@ -11,16 +11,18 @@ Tests:
 """
 
 import json
-from datetime import timezone, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
 
-from src.models.episode import Episode, EpisodeCreate, ErrorClass, EpisodeType, UsageStats
+from src.models.episode import (
+    EpisodeType,
+    ErrorClass,
+    UsageStats,
+)
 from src.models.skill import Skill
 from src.skills.promotion import SkillPromotionService
-
 
 # Skill Model Tests
 
@@ -134,9 +136,9 @@ class TestSkillModel:
             "tags": '["test"]',
             "error_class": "unknown",
             "tools": '["python"]',
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "promoted_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "promoted_at": datetime.now(UTC).isoformat(),
         }
 
         skill = Skill.from_metadata_dict(doc_id=999, metadata=metadata)
@@ -215,7 +217,7 @@ kubectl get pods
             generalization_score=0.8,
             confidence_score=0.9,
             llm_model="test",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.05,
             generation_latency_ms=1000,
         )
@@ -250,7 +252,7 @@ This procedure ensures proper deployment recovery.
             generalization_score=0.8,
             confidence_score=0.9,
             llm_model="test",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.05,
             generation_latency_ms=1000,
         )
@@ -408,14 +410,15 @@ class TestSkillsKyroDBOperations:
 
     async def test_insert_skill_missing_customer_id(self):
         """Test that skill without customer_id fails."""
-        from src.kyrodb.router import KyroDBRouter
         from pydantic_core import ValidationError
 
-        router = KyroDBRouter(config=MagicMock())
+        from src.kyrodb.router import KyroDBRouter
+
+        KyroDBRouter(config=MagicMock())
 
         # Pydantic V2 should prevent creation of skill with empty customer_id
         with pytest.raises(ValidationError, match="String should have at least 1 character"):
-            skill = Skill(
+            Skill(
                 skill_id=123,
                 customer_id="",  # Empty!
                 name="test_skill",
@@ -447,9 +450,9 @@ class TestSkillsKyroDBOperations:
             "tags": "[]",
             "error_class": "unknown",
             "tools": "[]",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "promoted_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "promoted_at": datetime.now(UTC).isoformat(),
         }
 
         mock_response = MagicMock()
@@ -494,9 +497,9 @@ class TestSkillsKyroDBOperations:
             "tags": "[]",
             "error_class": "unknown",
             "tools": "[]",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "promoted_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "promoted_at": datetime.now(UTC).isoformat(),
         }
 
         mock_query_result = MagicMock()

@@ -30,13 +30,8 @@ Requirements:
 
 import os
 import random
-import time
-from datetime import datetime
-from typing import Optional
 
-from locust import HttpUser, task, between, tag, events
-from locust.runners import MasterRunner
-
+from locust import HttpUser, between, events, tag, task
 
 # Configuration
 API_KEY = os.environ.get("VRITTI_API_KEY", "test-api-key-for-load-testing")

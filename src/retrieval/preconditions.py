@@ -12,10 +12,15 @@ Uses:
 Optimized for <10-15ms latency per candidate.
 """
 
+import asyncio
+import hashlib
+import json
 import logging
 import re
-import hashlib
-from typing import Any, Optional
+import time
+from typing import Any
+
+import httpx
 
 from src.models.episode import Episode
 from src.models.search import PreconditionCheckResult
@@ -207,7 +212,7 @@ class PreconditionMatcher:
             return text.split(":", 1)[1].strip().strip("\"'")
         return ""
 
-    def _extract_version(self, text: str) -> Optional[str]:
+    def _extract_version(self, text: str) -> str | None:
         """Extract version number from text (e.g., '1.28.0')."""
         match = re.search(r"\d+\.\d+(?:\.\d+)?", text)
         return match.group(0) if match else None
@@ -243,7 +248,7 @@ class PreconditionMatcher:
 
 
 # Singleton instance
-_matcher: Optional[PreconditionMatcher] = None
+_matcher: PreconditionMatcher | None = None
 
 
 def get_precondition_matcher() -> PreconditionMatcher:
@@ -262,13 +267,6 @@ def get_precondition_matcher() -> PreconditionMatcher:
 # ===================================================================
 # Advanced LLM-Based Precondition Matching
 # ===================================================================
-
-import asyncio
-import json
-import os
-import time
-
-import httpx
 
 
 class AdvancedPreconditionMatcher:
@@ -305,7 +303,7 @@ class AdvancedPreconditionMatcher:
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
     DEFAULT_MODEL = "x-ai/grok-4.1-fast:free"  # Fast free model for validation
     
-    def __init__(self, openrouter_api_key: Optional[str] = None, enable_llm: bool = True, model: Optional[str] = None):
+    def __init__(self, openrouter_api_key: str | None = None, enable_llm: bool = True, model: str | None = None):
         """
         Initialize advanced precondition matcher with OpenRouter.
         
@@ -315,7 +313,7 @@ class AdvancedPreconditionMatcher:
             model: OpenRouter model to use (defaults to cheap free tier)
         """
         self.basic_matcher = PreconditionMatcher()
-        self.openrouter_api_key = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.openrouter_api_key = openrouter_api_key or ""
         self.model = model or self.DEFAULT_MODEL
         self.enable_llm = enable_llm and bool(self.openrouter_api_key)
         
@@ -344,7 +342,7 @@ class AdvancedPreconditionMatcher:
         current_query: str,
         current_state: dict[str, Any],
         threshold: float = 0.7,
-        similarity_score: Optional[float] = None
+        similarity_score: float | None = None
     ) -> PreconditionCheckResult:
         """
         Check preconditions with LLM semantic validation.
@@ -611,7 +609,7 @@ If the goals have opposite meanings or would require different solutions, return
     _cache: dict[str, tuple[bool, float]] = {}  # key -> (result, timestamp)
     _cache_ttl = 300  # 5 minutes
     
-    def _get_from_cache(self, key: str) -> Optional[bool]:
+    def _get_from_cache(self, key: str) -> bool | None:
         """Get from cache if not expired."""
         if key in self._cache:
             result, timestamp = self._cache[key]
@@ -654,11 +652,11 @@ If the goals have opposite meanings or would require different solutions, return
 
 
 # Singleton instance for advanced matcher
-_advanced_matcher: Optional[AdvancedPreconditionMatcher] = None
+_advanced_matcher: AdvancedPreconditionMatcher | None = None
 
 
 def get_advanced_precondition_matcher(
-    openrouter_api_key: Optional[str] = None,
+    openrouter_api_key: str | None = None,
     enable_llm: bool = True
 ) -> AdvancedPreconditionMatcher:
     """

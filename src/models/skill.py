@@ -14,8 +14,7 @@ Security:
 """
 
 import json
-from datetime import timezone, datetime
-from typing import Optional
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -51,19 +50,19 @@ class Skill(BaseModel):
     )
 
     # The actual fix (one of these must be present)
-    code: Optional[str] = Field(
+    code: str | None = Field(
         default=None,
         max_length=10000,
         description="Executable code snippet"
     )
 
-    procedure: Optional[str] = Field(
+    procedure: str | None = Field(
         default=None,
         max_length=5000,
         description="Step-by-step procedure"
     )
 
-    language: Optional[str] = Field(
+    language: str | None = Field(
         default=None,
         max_length=50,
         description="Programming language (python, bash, yaml, etc.)"
@@ -117,15 +116,15 @@ class Skill(BaseModel):
 
     # Metadata
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
     promoted_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When this skill was promoted from episodes"
     )
 
@@ -139,7 +138,7 @@ class Skill(BaseModel):
 
     @field_validator("code", "procedure")
     @classmethod
-    def validate_at_least_one_fix(cls, v: Optional[str], info) -> Optional[str]:
+    def validate_at_least_one_fix(cls, v: str | None, info) -> str | None:
         """Ensure at least one of code or procedure is provided."""
         if v is None:
             other_field = "code" if info.field_name == "procedure" else "procedure"
@@ -178,12 +177,11 @@ class Skill(BaseModel):
                         f"success_count ({v}) + failure_count ({failure}) "
                         f"cannot exceed usage_count ({usage})"
                     )
-            elif info.field_name == "failure_count":
-                if success + v > usage:
-                    raise ValueError(
-                        f"success_count ({success}) + failure_count ({v}) "
-                        f"cannot exceed usage_count ({usage})"
-                    )
+            elif info.field_name == "failure_count" and success + v > usage:
+                raise ValueError(
+                    f"success_count ({success}) + failure_count ({v}) "
+                    f"cannot exceed usage_count ({usage})"
+                )
         return v
 
     def to_metadata_dict(self) -> dict[str, str]:

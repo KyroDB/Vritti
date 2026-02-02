@@ -19,7 +19,7 @@ Performance:
 
 Consensus Algorithm:
 - Semantic similarity (not string equality) for root cause comparison
-- Uses sentence-transformers embeddings with cosine similarity
+- Uses TF-IDF cosine similarity (lightweight, deterministic)
 - Weighted voting based on model confidence scores
 - Threshold-based agreement detection (>0.85 = semantic match)
 """
@@ -30,8 +30,7 @@ import logging
 import threading
 import time
 from collections import Counter
-from datetime import timezone, datetime
-from typing import Optional
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -41,13 +40,6 @@ try:
 except Exception:
     OPENAI_AVAILABLE = False
     AsyncOpenAI = None
-
-try:
-    from sentence_transformers import SentenceTransformer
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-    SentenceTransformer = None
 
 from pydantic import ValidationError
 
@@ -213,19 +205,12 @@ IMPORTANT RULES:
 
 Return ONLY valid JSON, no markdown."""
 
-    # Singleton embedding model for semantic similarity (lazy-loaded, thread-safe)
-    _embedding_model = None  # SentenceTransformer instance
-    _embedding_lock = threading.Lock()
-
     def __init__(self, config: LLMConfig):
         """
         Initialize multi-perspective reflection service with OpenRouter.
 
         Args:
             config: LLM configuration with OpenRouter API key
-
-        Raises:
-            ValueError: If no LLM provider is configured
         """
         self.config = config
 
@@ -253,23 +238,6 @@ Return ONLY valid JSON, no markdown."""
             else:
                 logger.warning("OpenRouter not configured (no API key)")
 
-        # Fallback: Direct OpenAI client (legacy via api_key field)
-        if config.api_key and OPENAI_AVAILABLE and not config.use_openrouter:
-            self.openai_client = AsyncOpenAI(
-                api_key=config.api_key,
-                timeout=config.timeout_seconds,
-                max_retries=0,
-            )
-            logger.info("Direct OpenAI client initialized (legacy mode)")
-        else:
-            self.openai_client = None
-
-        if not config.has_any_api_key:
-            raise ValueError(
-                "At least one LLM API key must be configured "
-                "(openrouter_api_key or api_key)"
-            )
-
         # Cost tracking (thread-safe)
         self._stats_lock = threading.Lock()
         self.total_cost_usd = 0.0
@@ -284,7 +252,7 @@ Return ONLY valid JSON, no markdown."""
     async def generate_multi_perspective_reflection(
         self,
         episode: EpisodeCreate,
-        max_retries: Optional[int] = None,
+        max_retries: int | None = None,
         use_cheap_tier: bool = False,
     ) -> Reflection:
         """
@@ -340,12 +308,9 @@ Return ONLY valid JSON, no markdown."""
                 )
             )
             task_names.append(self.config.consensus_model_2)
-        elif self.openai_client:
-            tasks.append(self._call_direct_openai(user_prompt, max_retries))
-            task_names.append(self.config.openai_model_name)
 
         if not tasks:
-            logger.error("No LLM clients available")
+            logger.warning("Premium reflection disabled (OpenRouter not configured); returning fallback")
             return self._create_fallback_reflection(episode)
 
         try:
@@ -392,7 +357,7 @@ Return ONLY valid JSON, no markdown."""
                 / len(perspectives),
                 confidence_score=consensus.consensus_confidence,
                 llm_model="openrouter-consensus",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=cost_usd,
                 generation_latency_ms=latency_ms,
             )
@@ -424,8 +389,6 @@ Return ONLY valid JSON, no markdown."""
                 perspective = await self._call_openrouter_model(
                     self.config.cheap_model, user_prompt, max_retries
                 )
-            elif self.openai_client:
-                perspective = await self._call_direct_openai(user_prompt, max_retries)
             else:
                 return self._create_fallback_reflection(episode)
 
@@ -448,7 +411,7 @@ Return ONLY valid JSON, no markdown."""
                 generalization_score=perspective.generalization_score,
                 confidence_score=perspective.confidence_score * 0.8,  # Discount for single model
                 llm_model=f"openrouter-cheap:{self.config.cheap_model}",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=0.0,
                 generation_latency_ms=latency_ms,
             )
@@ -468,7 +431,7 @@ Return ONLY valid JSON, no markdown."""
 
     async def _call_openrouter_model(
         self, model: str, user_prompt: str, max_retries: int
-    ) -> Optional[LLMPerspective]:
+    ) -> LLMPerspective | None:
         """
         Call a model via OpenRouter with retry logic and validation.
 
@@ -618,48 +581,6 @@ Return ONLY valid JSON, no markdown."""
         )
         return None
 
-    async def _call_direct_openai(
-        self, user_prompt: str, max_retries: int
-    ) -> Optional[LLMPerspective]:
-        """Call OpenAI directly (legacy fallback)."""
-        for attempt in range(max_retries):
-            try:
-                response = await self.openai_client.chat.completions.create(
-                    model=self.config.openai_model_name,
-                    messages=[
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    response_format={"type": "json_object"},
-                    timeout=self.config.timeout_seconds,
-                )
-
-                content = response.choices[0].message.content
-                data = json.loads(content)
-                perspective = LLMPerspective(
-                    model_name=self.config.openai_model_name, **data
-                )
-
-                return perspective
-
-            except (json.JSONDecodeError, ValidationError) as e:
-                logger.error(f"OpenAI output validation failed: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-                return None
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-                logger.error(f"OpenAI call failed: {e}")
-                return None
-
-        return None
-
     def _sanitize_episode(self, episode: EpisodeCreate) -> EpisodeCreate:
         """
         Security: Sanitize all episode fields to prevent prompt injection.
@@ -686,7 +607,7 @@ Return ONLY valid JSON, no markdown."""
             if episode.code_state_diff
             else None,
             environment_info=episode.environment_info,  # Dict, handled separately
-            screenshot_path=episode.screenshot_path,  # Path, not user-controlled text
+            screenshot_base64=None,  # Never send raw image data to LLM
             resolution=PromptInjectionDefense.sanitize_text(
                 episode.resolution or "", "resolution"
             )
@@ -773,7 +694,7 @@ Return ONLY valid JSON, no markdown."""
                 agreed_resolution=p.resolution_strategy,
                 consensus_confidence=p.confidence_score * 0.8,  # Discount for single model
                 disagreement_points=[],
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
             )
 
         # Compute semantic similarity matrix for root causes
@@ -883,7 +804,7 @@ Return ONLY valid JSON, no markdown."""
             agreed_resolution=agreed_resolution,
             consensus_confidence=consensus_confidence,
             disagreement_points=disagreement_points,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
         )
 
     def _reconcile_multiple_perspectives(
@@ -964,39 +885,8 @@ Return ONLY valid JSON, no markdown."""
             agreed_resolution=best_resolution_perspective.resolution_strategy,
             consensus_confidence=consensus_confidence,
             disagreement_points=disagreement_points,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
         )
-
-    @classmethod
-    def _get_embedding_model(cls):
-        """
-        Get or lazily load the embedding model (thread-safe singleton).
-
-        Returns:
-            SentenceTransformer model for semantic similarity
-
-        Raises:
-            RuntimeError: If sentence-transformers not available
-        """
-        if cls._embedding_model is not None:
-            return cls._embedding_model
-
-        with cls._embedding_lock:
-            # Double-check after acquiring lock
-            if cls._embedding_model is not None:
-                return cls._embedding_model
-
-            if not SENTENCE_TRANSFORMERS_AVAILABLE:
-                raise RuntimeError(
-                    "sentence-transformers required for semantic consensus. "
-                    "Install with: pip install sentence-transformers"
-                )
-
-            logger.info("Loading embedding model for semantic consensus...")
-            # Use same model as EmbeddingService for consistency
-            cls._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Embedding model loaded for semantic consensus")
-            return cls._embedding_model
 
     def _compute_semantic_similarity_matrix(
         self, texts: list[str]
@@ -1019,18 +909,13 @@ Return ONLY valid JSON, no markdown."""
             return np.array([[1.0]])
 
         try:
-            model = self._get_embedding_model()
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.metrics.pairwise import cosine_similarity
 
-            # Encode all texts at once (batched for performance)
-            embeddings = model.encode(
-                texts,
-                convert_to_tensor=False,
-                normalize_embeddings=True,  # L2 normalization for cosine sim
-                show_progress_bar=False,
-            )
-
-            # Compute cosine similarity matrix (embeddings are normalized, so dot product = cosine)
-            similarity_matrix = np.dot(embeddings, embeddings.T)
+            normalized = [" ".join(t.lower().split()) for t in texts]
+            vectorizer = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+            vectors = vectorizer.fit_transform(normalized)
+            similarity_matrix = cosine_similarity(vectors)
 
             return similarity_matrix
 
@@ -1073,30 +958,13 @@ Return ONLY valid JSON, no markdown."""
             return all_preconditions
 
         try:
-            model = self._get_embedding_model()
-
-            # Encode all preconditions
-            embeddings = model.encode(
-                all_preconditions,
-                convert_to_tensor=False,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
+            similarity = self._compute_semantic_similarity_matrix(all_preconditions)
 
             # Greedy deduplication: keep precondition if not similar to any kept one
-            kept_indices = [0]  # Always keep first
-            kept_embeddings = [embeddings[0]]
-
-            for i in range(1, len(all_preconditions)):
-                emb = embeddings[i]
-                # Check similarity to all kept embeddings
-                max_similarity = max(
-                    np.dot(emb, kept_emb) for kept_emb in kept_embeddings
-                )
-
-                if max_similarity < self.SEMANTIC_MATCH_THRESHOLD:
+            kept_indices: list[int] = []
+            for i in range(len(all_preconditions)):
+                if all(similarity[i, j] < self.SEMANTIC_MATCH_THRESHOLD for j in kept_indices):
                     kept_indices.append(i)
-                    kept_embeddings.append(emb)
 
             merged = [all_preconditions[i] for i in kept_indices]
             logger.debug(
@@ -1156,7 +1024,7 @@ Return ONLY valid JSON, no markdown."""
             generalization_score=0.3,
             confidence_score=0.4,  # Low confidence for heuristic
             llm_model="fallback_heuristic",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cost_usd=0.0,  # Free
             generation_latency_ms=0.0,
         )

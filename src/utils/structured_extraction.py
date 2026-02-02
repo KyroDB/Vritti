@@ -13,9 +13,8 @@ Security:
 import logging
 import re
 from enum import Enum
-from typing import Optional
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -46,24 +45,27 @@ class TimeCondition(BaseModel):
     unit: str  # "days", "hours", "minutes", "months", "years"
     negated: bool = False  # if preceded by NOT/EXCEPT
     
-    @validator('operator')
-    def validate_operator(cls, v):
+    @field_validator("operator")
+    @classmethod
+    def validate_operator(cls, v: str) -> str:
         """Validate operator is one of the allowed values."""
         allowed = {"older_than", "newer_than", "exactly", "between"}
         if v not in allowed:
             raise ValueError(f"Invalid operator: {v}. Must be one of {allowed}")
         return v
     
-    @validator('unit')
-    def validate_unit(cls, v):
+    @field_validator("unit")
+    @classmethod
+    def validate_unit(cls, v: str) -> str:
         """Validate unit is one of the allowed time units."""
         allowed = {"day", "days", "hour", "hours", "minute", "minutes", "month", "months", "year", "years"}
         if v not in allowed:
             raise ValueError(f"Invalid unit: {v}. Must be one of {allowed}")
         return v
     
-    @validator('value')
-    def validate_value(cls, v):
+    @field_validator("value")
+    @classmethod
+    def validate_value(cls, v: int) -> int:
         """Validate value is positive."""
         if v <= 0:
             raise ValueError(f"Value must be positive, got {v}")
@@ -79,15 +81,16 @@ class StructuredGoal(BaseModel):
     
     # Modifiers
     has_negation: bool = False  # If goal contains NOT/EXCEPT/WITHOUT
-    environment: Optional[str] = None  # "production", "staging", "dev", etc.
-    time_condition: Optional[TimeCondition] = None
+    environment: str | None = None  # "production", "staging", "dev", etc.
+    time_condition: TimeCondition | None = None
     
     # Metadata
     original_text: str
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)  # Parser confidence
     
-    @validator('target')
-    def validate_target(cls, v):
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, v: str) -> str:
         """Ensure target is not empty and reasonably sized."""
         if not v or len(v.strip()) == 0:
             raise ValueError("Target cannot be empty")
@@ -255,14 +258,14 @@ class GoalParser:
                 return True
         return False
     
-    def _extract_environment(self, goal: str) -> Optional[str]:
+    def _extract_environment(self, goal: str) -> str | None:
         """Extract environment from goal."""
         for pattern, env_name in self.ENVIRONMENT_PATTERNS:
             if re.search(pattern, goal, re.IGNORECASE):
                 return env_name
         return None
     
-    def _extract_time_condition(self, goal: str) -> Optional[TimeCondition]:
+    def _extract_time_condition(self, goal: str) -> TimeCondition | None:
         """Extract time-based conditions."""
         for pattern, operator in self.TIME_PATTERNS:
             match = re.search(pattern, goal, re.IGNORECASE)
@@ -292,8 +295,8 @@ class GoalParser:
         action: ActionType,
         target: str,
         has_negation: bool,
-        environment: Optional[str],
-        time_condition: Optional[TimeCondition]
+        environment: str | None,
+        time_condition: TimeCondition | None
     ) -> float:
         """
         Calculate parser confidence score.
@@ -352,13 +355,12 @@ class GoalParser:
                 return False
         
         # Check 2: Different environments (if both specified)
-        if goal1.environment and goal2.environment:
-            if goal1.environment != goal2.environment:
-                logger.debug(
-                    f"Goals incompatible: different environments "
-                    f"{goal1.environment} vs {goal2.environment}"
-                )
-                return False
+        if goal1.environment and goal2.environment and goal1.environment != goal2.environment:
+            logger.debug(
+                f"Goals incompatible: different environments "
+                f"{goal1.environment} vs {goal2.environment}"
+            )
+            return False
         
         # Check 3: Negation mismatch
         if goal1.has_negation != goal2.has_negation:

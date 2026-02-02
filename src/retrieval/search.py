@@ -12,9 +12,11 @@ Implements end-to-end retrieval pipeline:
 Designed for <50ms P99 latency.
 """
 
+import base64
+import binascii
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
 
 from src.config import get_settings
@@ -113,8 +115,41 @@ class SearchPipeline:
         try:
             # Stage 1: Generate query embedding (~5-10ms)
             stage_start = time.perf_counter()
-            query_embedding = self.embedding_service.embed_text(request.goal)
+            import anyio
+            query_embedding = await anyio.to_thread.run_sync(
+                self.embedding_service.embed_text, request.goal
+            )
             latency_breakdown["embedding_ms"] = (time.perf_counter() - stage_start) * 1000
+
+            # Optional image embedding for multimodal search
+            image_embedding = None
+            if request.image_base64:
+                try:
+                    b64 = request.image_base64.strip()
+                    # Accept data URLs (e.g., "data:image/png;base64,...") for convenience.
+                    if b64.startswith("data:"):
+                        if "," not in b64:
+                            raise ValueError("Invalid data URL: missing ',' separator")
+                        _, b64 = b64.split(",", 1)
+                    max_size = get_settings().service.max_file_upload_size
+                    padding = b64[-2:].count("=") if len(b64) >= 2 else b64.count("=")
+                    decoded_estimate = (len(b64) * 3) // 4 - padding
+                    if decoded_estimate > max_size:
+                        raise ValueError(
+                            f"Image too large: {decoded_estimate} bytes (max {max_size} bytes)"
+                        )
+                    image_bytes = base64.b64decode(b64, validate=True)
+                except (binascii.Error, ValueError) as e:
+                    raise ValueError(f"Invalid image_base64: {e}") from e
+
+                if len(image_bytes) > max_size:
+                    raise ValueError(
+                        f"Image too large: {len(image_bytes)} bytes (max {max_size} bytes)"
+                    )
+
+                image_embedding = await anyio.to_thread.run_sync(
+                    self.embedding_service.embed_image_bytes, image_bytes
+                )
 
             # Stage 2: KyroDB search with server-side filtering (~1-3ms)
             stage_start = time.perf_counter()
@@ -133,11 +168,13 @@ class SearchPipeline:
             
             candidates = await self._fetch_candidates(
                 query_embedding=query_embedding,
+                image_embedding=image_embedding,
                 customer_id=request.customer_id,
                 collection=request.collection,
                 k=fetch_k,
                 min_similarity=request.min_similarity,
                 metadata_filters=kyrodb_filters,
+                image_weight=request.image_weight,
             )
             latency_breakdown["search_ms"] = (time.perf_counter() - stage_start) * 1000
 
@@ -187,7 +224,7 @@ class SearchPipeline:
                 breakdown=latency_breakdown,
                 collection=request.collection,
                 query_embedding_dimension=len(query_embedding),
-                searched_at=datetime.now(timezone.utc),
+                searched_at=datetime.now(UTC),
             )
 
             logger.info(
@@ -223,25 +260,26 @@ class SearchPipeline:
         if request.tool_filter:
             filters["tool"] = request.tool_filter.lower()
             
-        if request.min_timestamp is not None:
-            filters["min_timestamp"] = str(request.min_timestamp)
-            
-        if request.max_timestamp is not None:
-            filters["max_timestamp"] = str(request.max_timestamp)
-            
+        # KyroDB metadata filtering is exact match only.
+        # Timestamp range filters are applied client-side.
         if request.tags:
-            filters["tags"] = ",".join(sorted(request.tags))
+            for tag in request.tags:
+                safe_tag = str(tag).strip().lower().replace(" ", "_")
+                if safe_tag:
+                    filters[f"tag:{safe_tag}"] = "1"
             
         return filters
 
     async def _fetch_candidates(
         self,
         query_embedding: list[float],
+        image_embedding: list[float] | None,
         customer_id: str,
         collection: str,
         k: int,
         min_similarity: float,
         metadata_filters: dict[str, str] | None = None,
+        image_weight: float = 0.3,
     ) -> list[tuple[Episode, float]]:
         """
         Fetch candidate episodes from KyroDB with server-side filtering.
@@ -263,8 +301,8 @@ class SearchPipeline:
                 "customer_id is required for search - multi-tenancy violation detected"
             )
 
-        # Search with server-side metadata filtering
-        search_results = await self.kyrodb_router.search_text(
+        # Search text embeddings with server-side metadata filtering
+        text_results = await self.kyrodb_router.search_text(
             query_embedding=query_embedding,
             k=k,
             customer_id=customer_id,
@@ -273,22 +311,56 @@ class SearchPipeline:
             metadata_filters=metadata_filters,
         )
 
-        # Parse episode metadata from KyroDB results
-        candidates = []
-        for result in search_results.results:
+        # Optionally search image embeddings and fuse
+        image_results = None
+        if image_embedding is not None:
+            image_results = await self.kyrodb_router.search_image(
+                query_embedding=image_embedding,
+                k=k,
+                customer_id=customer_id,
+                collection=collection,
+                min_score=min_similarity,
+                metadata_filters=metadata_filters,
+            )
+
+        # Build candidate map: doc_id -> (episode, text_score, image_score)
+        candidate_map: dict[int, tuple[Episode, float | None, float | None]] = {}
+
+        for result in text_results.results:
             try:
-                # Deserialize episode from metadata
                 episode = Episode.from_metadata_dict(doc_id=result.doc_id, metadata=result.metadata)
-                similarity_score = result.score
-
-                candidates.append((episode, similarity_score))
-
+                candidate_map[result.doc_id] = (episode, result.score, None)
             except Exception as e:
                 logger.warning(
-                    f"Failed to parse episode from search result {result.doc_id}: {e}",
+                    f"Failed to parse episode from text result {result.doc_id}: {e}",
                     exc_info=True,
                 )
-                # Skip malformed results
+
+        if image_results:
+            for result in image_results.results:
+                try:
+                    if result.doc_id in candidate_map:
+                        episode, text_score, _ = candidate_map[result.doc_id]
+                        candidate_map[result.doc_id] = (episode, text_score, result.score)
+                    else:
+                        episode = Episode.from_metadata_dict(doc_id=result.doc_id, metadata=result.metadata)
+                        candidate_map[result.doc_id] = (episode, None, result.score)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to parse episode from image result {result.doc_id}: {e}",
+                        exc_info=True,
+                    )
+
+        # Compute fused similarity score
+        candidates: list[tuple[Episode, float]] = []
+        for episode, text_score, image_score in candidate_map.values():
+            if text_score is not None and image_score is not None:
+                combined = (1.0 - image_weight) * text_score + image_weight * image_score
+            elif text_score is not None:
+                combined = text_score
+            else:
+                combined = image_score if image_score is not None else 0.0
+            candidates.append((episode, combined))
 
         return candidates
 
@@ -325,11 +397,11 @@ class SearchPipeline:
 
         # Validate timestamp range
         if request.min_timestamp is not None:
-            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=timezone.utc)
+            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=UTC)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at >= min_dt]
 
         if request.max_timestamp is not None:
-            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=timezone.utc)
+            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=UTC)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at <= max_dt]
 
         # Validate tags
@@ -473,7 +545,7 @@ class SearchPipeline:
             precondition_scores=precondition_scores,
             matched_preconditions_list=matched_preconditions_list,
             weights=request.ranking_weights,
-            current_time=datetime.now(timezone.utc),
+            current_time=datetime.now(UTC),
         )
 
         return ranked_results

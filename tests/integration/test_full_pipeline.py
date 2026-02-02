@@ -11,16 +11,14 @@ Run with:
     pytest tests/integration/test_full_pipeline.py -v -s
 """
 
-import asyncio
 import time
-import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
 
-from src.kyrodb.router import KyroDBRouter
-from src.kyrodb.client import KyroDBClient
+import pytest
+
 from src.config import KyroDBConfig
-from src.models.episode import Episode, EpisodeCreate, Reflection, ReflectionTier
+from src.kyrodb.router import KyroDBRouter
+from src.models.episode import Reflection, ReflectionTier
 
 
 def is_kyrodb_running() -> bool:
@@ -62,7 +60,6 @@ async def kyrodb_router():
 
 def generate_embedding(seed: float = 0.1, dim: int = 384) -> list[float]:
     """Generate a 384-dimensional test embedding."""
-    import math
     # Create varied embedding by using seed to offset values
     return [seed + (i * 0.0001) for i in range(dim)]
 
@@ -100,7 +97,7 @@ class TestFullPipelineWithRealKyroDB:
                 "tool_chain": "kubectl,docker",
                 "error_class": "ImagePullBackOff",
                 "error_trace": "Error: ImagePullBackOff - manifest not found",
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             }
             
             text_success, _ = await kyrodb_router.insert_episode(
@@ -127,7 +124,7 @@ class TestFullPipelineWithRealKyroDB:
                 generalization_score=0.75,
                 confidence_score=0.85,
                 llm_model="openrouter-consensus",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=0.0025,
                 generation_latency_ms=1200.0,
                 tier=ReflectionTier.PREMIUM.value,
@@ -218,9 +215,9 @@ class TestFullPipelineWithRealKyroDB:
                 
                 # Would trigger BLOCK or REWRITE recommendation
                 if top_result.score > 0.9:
-                    print(f"    Recommendation: BLOCK (high similarity)")
+                    print("    Recommendation: BLOCK (high similarity)")
                 elif top_result.score > 0.7:
-                    print(f"    Recommendation: REWRITE or HINT")
+                    print("    Recommendation: REWRITE or HINT")
             
             print(f"\n{'='*60}")
             print("Full Pipeline Test PASSED")
@@ -285,7 +282,7 @@ class TestFullPipelineWithRealKyroDB:
                 query_embedding = generate_embedding(0.1 + (i * 0.002))
                 
                 start = time.perf_counter()
-                response = await kyrodb_router.search_episodes(
+                await kyrodb_router.search_episodes(
                     query_embedding=query_embedding,
                     customer_id=customer_id,
                     collection=collection,
@@ -306,9 +303,9 @@ class TestFullPipelineWithRealKyroDB:
             min_latency = latencies[0]
             max_latency = latencies[-1]
             
-            print(f"\n--- Search Latency Results ---")
-            print(f"  Queries: 50")
-            print(f"  Episodes: 100")
+            print("\n--- Search Latency Results ---")
+            print("  Queries: 50")
+            print("  Episodes: 100")
             print(f"  Min: {min_latency:.2f}ms")
             print(f"  Avg: {avg_latency:.2f}ms")
             print(f"  P50: {p50_latency:.2f}ms")
@@ -379,7 +376,7 @@ class TestFullPipelineWithRealKyroDB:
                 generalization_score=0.8,
                 confidence_score=0.9,
                 llm_model="test-model",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=0.001,
                 generation_latency_ms=500.0,
                 tier=ReflectionTier.CHEAP.value,
@@ -391,7 +388,7 @@ class TestFullPipelineWithRealKyroDB:
                 collection=collection,
                 reflection=reflection,
             )
-            print(f"  Added reflection to episode")
+            print("  Added reflection to episode")
             
             # Search and verify reflection fields in results
             search_response = await kyrodb_router.search_episodes(
@@ -407,7 +404,7 @@ class TestFullPipelineWithRealKyroDB:
             top_result = search_response.results[0]
             result_metadata = dict(top_result.metadata)
             
-            print(f"\n  Search result metadata fields:")
+            print("\n  Search result metadata fields:")
             for key in sorted(result_metadata.keys()):
                 if key.startswith("reflection_"):
                     value = result_metadata[key]
@@ -420,7 +417,7 @@ class TestFullPipelineWithRealKyroDB:
             assert "reflection_resolution" in result_metadata
             assert "reflection_confidence" in result_metadata
             
-            print(f"\n  Reflection searchability: VERIFIED")
+            print("\n  Reflection searchability: VERIFIED")
             
         finally:
             await kyrodb_router.delete_episode(
@@ -498,7 +495,7 @@ class TestPreconditionMatching:
                 k=3,
             )
             
-            print(f"\n  Results (ordered by similarity):")
+            print("\n  Results (ordered by similarity):")
             for i, result in enumerate(results.results):
                 goal = result.metadata.get("goal", "N/A")
                 preconditions = result.metadata.get("preconditions", "N/A")

@@ -30,7 +30,7 @@ Vritti learns from failures and blocks similar actions before they fail:
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.11+
 - KyroDB server running (ports 50051 for text, 50052 for images)
 
 ### Installation
@@ -47,7 +47,7 @@ cp .env.production.example .env
 
 Edit `.env` and set:
 - `KYRODB_TEXT_HOST` - Your KyroDB instance for vector storage
-- `OPENROUTER_API_KEY` - LLM API key for reflection generation
+- `LLM_OPENROUTER_API_KEY` - LLM API key for reflection generation
 
 ### Run
 
@@ -67,7 +67,7 @@ When your AI agent makes a mistake, send it to Vritti:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/capture \
-  -H "X-API-Key: your_api_key" \
+  -H "X-API-Key: em_live_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
     "episode_type": "failure",
@@ -88,7 +88,7 @@ Before your AI agent does something risky, ask Vritti:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/reflect \
-  -H "X-API-Key: your_api_key" \
+  -H "X-API-Key: em_live_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
     "proposed_action": "kubectl apply -f deployment.yaml",
@@ -106,7 +106,12 @@ Response:
   "recommendation": "block",
   "confidence": 0.92,
   "rationale": "Similar action failed: ImagePullBackOff error. Verify image exists in registry first.",
-  "suggested_action": "Verify image exists in registry before applying"
+  "suggested_action": "Verify image exists in registry before applying",
+  "matched_failures": [],
+  "hints": [],
+  "relevant_skills": [],
+  "search_latency_ms": 12.4,
+  "total_latency_ms": 18.9
 }
 ```
 
@@ -122,7 +127,7 @@ Find similar problems you've solved before:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/search \
-  -H "X-API-Key: your_api_key" \
+  -H "X-API-Key: em_live_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
     "goal": "kubectl deployment image pull error",
@@ -150,7 +155,7 @@ Uses OpenRouter API (Grok, Deepseek, or other models) to generate:
 - Preconditions that must match for this solution to apply
 
 ### Caching
-LLM responses cached for 5 minutes to reduce cost and latency.
+LLM semantic precondition validation results are cached for 5 minutes to reduce cost and latency.
 
 ---
 
@@ -202,7 +207,7 @@ Key settings in `.env`:
 # Required
 KYRODB_TEXT_HOST=localhost
 KYRODB_TEXT_PORT=50051
-OPENROUTER_API_KEY=sk-or-v1-...
+LLM_OPENROUTER_API_KEY=sk-or-v1-...
 
 # Optional
 LOG_LEVEL=INFO

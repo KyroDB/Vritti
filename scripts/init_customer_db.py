@@ -19,6 +19,8 @@ import logging
 import sys
 from pathlib import Path
 
+import aiosqlite
+
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -54,28 +56,27 @@ async def init_database(db_path: str) -> bool:
         # Initialize schema (creates tables)
         await db.initialize()
 
-        # Verify connection (use regular context manager, not async)
-        with db._get_connection() as conn:
-            # Check tables exist
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-            tables = [row[0] for row in cursor.fetchall()]
+        # Verify tables exist
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+
+            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            rows = await cursor.fetchall()
+            tables = {row["name"] for row in rows}
 
             expected_tables = {"customers", "api_keys", "audit_log"}
-            missing = expected_tables - set(tables)
-
+            missing = expected_tables - tables
             if missing:
-                logger.error(f"Missing tables: {missing}")
+                logger.error(f"Missing tables: {sorted(missing)}")
                 return False
 
             logger.info(f"✓ Found tables: {', '.join(sorted(tables))}")
 
             # Check row counts
-            for table in ["customers", "api_keys", "audit_log"]:
-                cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
-                count = cursor.fetchone()[0]
-                logger.info(f"  {table}: {count} rows")
+            for table in sorted(expected_tables):
+                cursor = await conn.execute(f"SELECT COUNT(*) AS count FROM {table}")
+                row = await cursor.fetchone()
+                logger.info(f"  {table}: {row['count']} rows")
 
         logger.info("✓ Database initialization complete")
         return True
@@ -99,6 +100,7 @@ async def create_demo_customer(db_path: str) -> bool:
         from src.models.customer import CustomerCreate, APIKeyCreate
 
         db = CustomerDatabase(db_path=db_path)
+        await db.initialize()
 
         logger.info("Creating demo customer 'demo-customer'...")
 

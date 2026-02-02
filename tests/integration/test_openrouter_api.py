@@ -18,6 +18,7 @@ Run specific test:
 import asyncio
 import os
 import time
+
 import pytest
 
 from src.config import LLMConfig
@@ -172,7 +173,7 @@ class TestOpenRouterAPI:
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-        print(f"\n--- Single Model Test Results ---")
+        print("\n--- Single Model Test Results ---")
         print(f"Latency: {elapsed_ms:.0f}ms")
         print(f"Model: {reflection.llm_model}")
         print(f"Root Cause: {reflection.root_cause}")
@@ -187,7 +188,7 @@ class TestOpenRouterAPI:
         assert 0 <= reflection.generalization_score <= 1, "Generalization should be 0-1"
         # Verify LLM was actually called (not fallback heuristic)
         assert reflection.llm_model != "fallback_heuristic", \
-            f"Should use real LLM, not fallback. Check API key and model availability."
+            "Should use real LLM, not fallback. Check API key and model availability."
         # Verify cost tracking (should be >= 0 for real API call, even for free models)
         assert reflection.generation_latency_ms > 0, "Should have non-zero latency from real API call"
 
@@ -222,7 +223,7 @@ class TestOpenRouterAPI:
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-        print(f"\n--- Consensus Test Results ---")
+        print("\n--- Consensus Test Results ---")
         print(f"Latency: {elapsed_ms:.0f}ms")
         print(f"Model: {reflection.llm_model}")
 
@@ -295,7 +296,7 @@ class TestOpenRouterAPI:
             use_cheap_tier=False,
         )
 
-        print(f"\n--- Error Handling Test ---")
+        print("\n--- Error Handling Test ---")
         print(f"Model: {reflection.llm_model}")
         print(f"Confidence: {reflection.confidence_score}")
 
@@ -336,7 +337,7 @@ class TestOpenRouterAPI:
         similar_score = similar_matrix[0, 1]
         different_score = different_matrix[0, 1]
 
-        print(f"\n--- Semantic Similarity Test ---")
+        print("\n--- Semantic Similarity Test ---")
         print(f"Similar texts similarity: {similar_score:.3f}")
         print(f"Different texts similarity: {different_score:.3f}")
 
@@ -385,7 +386,7 @@ class TestOpenRouterRateLimits:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-        print(f"\n--- Parallel Requests Test ---")
+        print("\n--- Parallel Requests Test ---")
         print(f"Total latency for 3 requests: {elapsed_ms:.0f}ms")
 
         # Count successes and failures

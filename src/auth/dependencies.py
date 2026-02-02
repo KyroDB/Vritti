@@ -2,7 +2,7 @@
 FastAPI dependencies for authentication and authorization.
 
 Security:
-- API key validation with bcrypt
+- API key validation via SHA-256 indexed lookup (never store plaintext keys)
 - customer_id injection from validated key (prevents spoofing)
 - Rate limiting per customer
 - Request tracking for usage tracking
@@ -10,31 +10,60 @@ Security:
 Performance:
 - API key validation cached in-memory (5 minute TTL)
 - Async validation
-- Minimal latency overhead (<1ms for cache hit, ~300ms for cache miss)
+- Minimal latency overhead (<1ms for cache hit, single indexed query on cache miss)
 """
 
+import hashlib
 import logging
 import time
-from typing import Optional
+from threading import Lock
 
 from cachetools import TTLCache
 from fastapi import Header, HTTPException, Request, status
 
-from src.models.customer import Customer
+from src.config import get_settings
+from src.models.customer import Customer, CustomerStatus
+from src.observability.logging import set_customer_id
 from src.storage.database import get_customer_db
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache for validated API keys (5 minute TTL)
-# Trade-off: 5 min stale data vs. ~300ms bcrypt validation on every request
-# Format: {api_key: (customer, expire_time)}
-API_KEY_CACHE = TTLCache(maxsize=1000, ttl=300)  # 5 minutes
+_API_KEY_CACHE: TTLCache[str, Customer] | None = None
+_API_KEY_CACHE_LOCK = Lock()
+
+
+def _get_api_key_cache() -> TTLCache[str, Customer]:
+    """Lazy-init API key cache using Settings.auth.*."""
+    global _API_KEY_CACHE
+    if _API_KEY_CACHE is None:
+        with _API_KEY_CACHE_LOCK:
+            if _API_KEY_CACHE is None:
+                settings = get_settings()
+                _API_KEY_CACHE = TTLCache(
+                    maxsize=settings.auth.api_key_cache_max_size,
+                    ttl=settings.auth.api_key_cache_ttl_seconds,
+                )
+    return _API_KEY_CACHE
+
+
+def get_api_key_from_cache(key: str) -> Customer | None:
+    """Thread-safe cache read for API key lookups."""
+    cache = _get_api_key_cache()
+    with _API_KEY_CACHE_LOCK:
+        return cache.get(key)
+
+
+def set_api_key_in_cache(key: str, value: Customer) -> None:
+    """Thread-safe cache write for API key lookups."""
+    cache = _get_api_key_cache()
+    with _API_KEY_CACHE_LOCK:
+        cache[key] = value
 
 
 async def get_authenticated_customer(
     request: Request,
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
 ) -> Customer:
     """
     Validate API key and return authenticated customer.
@@ -57,15 +86,14 @@ async def get_authenticated_customer(
         HTTPException 403: Customer inactive or quota exceeded
 
     Security:
-        - API key validated with bcrypt (constant-time comparison)
+        - API key validated via SHA-256 indexed lookup (constant-time compare not needed)
         - customer_id extracted from validated key (cannot be spoofed)
-        - Cache prevents bcrypt DOS (5 min TTL)
+        - Cache prevents DB hot-spot under high QPS
         - Inactive/suspended customers rejected
 
     Performance:
         - Cache hit: <1ms
-        - Cache miss: ~300ms (bcrypt cost=12)
-        - Cache size: 1000 keys (memory: ~100KB)
+        - Cache miss: single indexed SELECT
     """
     # Extract API key from headers
     api_key = None
@@ -96,24 +124,31 @@ async def get_authenticated_customer(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key format. Must start with 'em_live_'",
         )
+    if len(api_key) > 256:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key format.",
+        )
+
+    # Cache key: digest (avoid keeping plaintext keys in memory)
+    api_key_sha256 = hashlib.sha256(api_key.encode()).hexdigest()
 
     # Check cache first (performance optimization)
-    cached = API_KEY_CACHE.get(api_key)
-    if cached:
-        customer, expire_time = cached
-        if time.time() < expire_time:
-            logger.debug(f"API key cache hit for customer: {customer.customer_id}")
+    cached_customer = get_api_key_from_cache(api_key_sha256)
+    if cached_customer:
+        logger.debug(f"API key cache hit for customer: {cached_customer.customer_id}")
 
-            # Verify customer is still active
-            if customer.status != "active":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Customer account is {customer.status}",
-                )
+        # Verify customer is still active
+        if cached_customer.status != CustomerStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Customer account not authorized",
+            )
 
-            # Attach customer to request state (accessible in route handlers)
-            request.state.customer = customer
-            return customer
+        # Attach customer to request state (accessible in route handlers)
+        request.state.customer = cached_customer
+        set_customer_id(cached_customer.customer_id)
+        return cached_customer
 
     # Cache miss or expired - validate with database
     logger.debug("API key cache miss - validating with database")
@@ -141,18 +176,18 @@ async def get_authenticated_customer(
     )
 
     # Verify customer is active
-    if customer.status != "active":
+    if customer.status != CustomerStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Customer account is {customer.status}",
+            detail="Customer account not authorized",
         )
 
     # Cache validated key (5 minute TTL)
-    expire_time = time.time() + 300  # 5 minutes
-    API_KEY_CACHE[api_key] = (customer, expire_time)
+    set_api_key_in_cache(api_key_sha256, customer)
 
     # Attach customer to request state
     request.state.customer = customer
+    set_customer_id(customer.customer_id)
 
     return customer
 
@@ -190,10 +225,10 @@ async def require_active_customer(
         )
 
     # Verify customer is active
-    if customer.status != "active":
+    if customer.status != CustomerStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Customer account is {customer.status}",
+            detail="Customer account not authorized",
         )
 
     # Verify quota (soft limit - log warning, hard limit would reject)
@@ -246,7 +281,7 @@ def get_customer_id_from_request(request: Request) -> str:
 
 
 async def require_admin_access(
-    x_admin_api_key: Optional[str] = Header(None, alias="X-Admin-API-Key"),
+    x_admin_api_key: str | None = Header(None, alias="X-Admin-API-Key"),
 ) -> None:
     """
     Validate admin API key for admin-only endpoints.

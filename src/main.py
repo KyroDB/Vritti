@@ -11,9 +11,9 @@ Designed for <50ms P99 latency.
 
 import time
 from contextlib import asynccontextmanager
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -98,12 +98,12 @@ limiter = Limiter(key_func=get_customer_id_for_rate_limit)
 
 
 # Global service instances (initialized in lifespan)
-kyrodb_router: Optional[KyroDBRouter] = None
-embedding_service: Optional[EmbeddingService] = None
-reflection_service: Optional[TieredReflectionService] = None
-ingestion_pipeline: Optional[IngestionPipeline] = None
-search_pipeline: Optional[SearchPipeline] = None
-gating_service: Optional[GatingService] = None
+kyrodb_router: KyroDBRouter | None = None
+embedding_service: EmbeddingService | None = None
+reflection_service: TieredReflectionService | None = None
+ingestion_pipeline: IngestionPipeline | None = None
+search_pipeline: SearchPipeline | None = None
+gating_service: GatingService | None = None
 
 
 @asynccontextmanager
@@ -144,7 +144,11 @@ async def lifespan(app: FastAPI):
         # Initialize tiered reflection service
         if settings.llm.has_any_api_key:
             logger.info("Initializing tiered LLM reflection service...")
-            reflection_service = get_tiered_reflection_service(config=settings.llm)
+            reflection_service = get_tiered_reflection_service(
+                config=settings.llm,
+                kyrodb_router=kyrodb_router,
+                embedding_service=embedding_service,
+            )
             logger.info(
                 f"[OK] Tiered reflection service initialized "
                 f"(providers: {settings.llm.enabled_providers})"
@@ -152,7 +156,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning(
                 "No LLM API keys configured - reflection generation disabled\n"
-                "  Set OPENROUTER_API_KEY environment variable"
+                "  Set LLM_OPENROUTER_API_KEY environment variable"
             )
             reflection_service = None
 
@@ -556,7 +560,7 @@ class SuccessValidationRequest(BaseModel):
         ...,
         description="Whether the agent actually applied the suggested fix"
     )
-    notes: Optional[str] = Field(
+    notes: str | None = Field(
         default=None,
         max_length=1000,
         description="Optional notes about the fix application"
@@ -570,7 +574,7 @@ class SuccessValidationResponse(BaseModel):
     new_success_rate: float
     total_applications: int
     promoted_to_skill: bool = False
-    skill_id: Optional[int] = None
+    skill_id: int | None = None
 
 
 @app.post(
@@ -587,7 +591,7 @@ async def capture_episode(
     customer_id: str = Depends(get_customer_id_from_request),
     db: CustomerDatabase = Depends(get_customer_db),
     generate_reflection: bool = True,
-    tier: Optional[str] = None,  # NEW: Optional tier override (cheap/cached/premium)
+    tier: str | None = None,  # NEW: Optional tier override (cheap/cached/premium)
 ):
     """
     Capture and store an episode.
@@ -621,7 +625,7 @@ async def capture_episode(
     Security:
         - customer_id extracted from validated API key (cannot be spoofed)
         - User-provided customer_id in request body is IGNORED
-        - API key validated with bcrypt
+        - API key validated via SHA-256 digest lookup
         - Quota enforcement (soft limit with warning)
 
     Usage Tracking:
@@ -668,7 +672,7 @@ async def capture_episode(
 
         # Calculate usage credits
         credits_used = 1.0  # Base cost
-        if episode_data.screenshot_path:
+        if episode.image_embedding_id is not None:
             credits_used += 0.2  # Image embedding cost
         if generate_reflection and reflection_service:
             credits_used += 0.5  # LLM reflection cost
@@ -689,10 +693,15 @@ async def capture_episode(
             collection="failures",  # Only failures collection is supported
             ingestion_latency_ms=latency_ms,
             text_stored=True,  # Always stored in text instance
-            image_stored=episode_data.screenshot_path is not None,
+            image_stored=episode.image_embedding_id is not None,
             reflection_queued=generate_reflection and reflection_service is not None,
         )
 
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error(f"Episode capture failed: {e}", exc_info=True)
         raise HTTPException(
@@ -942,7 +951,7 @@ async def search_episodes(
     Security:
         - customer_id extracted from validated API key (cannot be spoofed)
         - User-provided customer_id in request body is IGNORED
-        - API key validated with bcrypt
+        - API key validated via SHA-256 digest lookup
         - Namespace isolation (only searches customer's episodes)
 
     Usage Tracking:
@@ -973,8 +982,10 @@ async def search_episodes(
         # Track usage (async, non-blocking)
         # Credit cost is fractional to encourage search over re-ingestion
         credits_used = 0.1  # Base search cost
+        if search_request.image_base64:
+            credits_used += 0.2  # Image search cost
         try:
-            await db.increment_usage(customer_id, 1)  # Round to 1 credit
+            await db.increment_usage(customer_id, max(1, int(round(credits_used))))
             logger.debug(
                 f"Usage tracked: customer={customer_id}, search, "
                 f"credits={credits_used}, results={response.total_returned}"
@@ -1019,10 +1030,10 @@ async def reflect_before_action(
     BEFORE executing potentially risky actions.
 
     Returns:
-        - BLOCK: High confidence this will fail (similarity > 0.9, preconditions match)
-        - REWRITE: Likely to fail, suggest alternative
-        - HINT: Might fail, show hints
-        - PROCEED: No known issues
+        - block: High confidence this will fail (similarity > 0.9, preconditions match)
+        - rewrite: Likely to fail, suggest alternative
+        - hint: Might fail, show hints
+        - proceed: No known issues
 
     Usage tracking:
         - Base cost: 0.2 credits (2x search cost, since this prevents failures)
@@ -1077,7 +1088,7 @@ class SkillFeedbackRequest(BaseModel):
         pattern="^(success|failure)$",
         description="Whether skill application worked: 'success' or 'failure'"
     )
-    notes: Optional[str] = Field(
+    notes: str | None = Field(
         default=None,
         max_length=1000,
         description="Optional notes about the skill application"
@@ -1438,7 +1449,7 @@ async def get_budget_status(_: None = Depends(require_admin_access)):
     """
     if not reflection_service:
         return BudgetResponse(
-            date=str(datetime.now(timezone.utc).date()),
+            date=str(datetime.now(UTC).date()),
             daily_cost_usd=0.0,
             warning_threshold_usd=10.0,
             limit_threshold_usd=50.0,
@@ -1454,7 +1465,7 @@ async def get_budget_status(_: None = Depends(require_admin_access)):
     daily = stats.get("daily_cost", {})
 
     return BudgetResponse(
-        date=daily.get("date", str(datetime.now(timezone.utc).date())),
+        date=daily.get("date", str(datetime.now(UTC).date())),
         daily_cost_usd=daily.get("daily_cost_usd", 0.0),
         warning_threshold_usd=daily.get("warning_threshold_usd", 10.0),
         limit_threshold_usd=daily.get("limit_threshold_usd", 50.0),

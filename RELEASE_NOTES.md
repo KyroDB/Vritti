@@ -29,7 +29,7 @@ Vritti is an episodic memory system that helps AI coding agents:
 ```bash
 cd Vritti
 cp .env.production.example .env
-# Edit .env and set OPENROUTER_API_KEY
+# Edit .env and set LLM_OPENROUTER_API_KEY
 ```
 
 ### 3. Start Vritti
@@ -65,7 +65,7 @@ if await agent.check_action("rm -rf /", "Clean files"):
 
 ### 🛡️ Intelligent Gating
 - Check actions before execution
-- Recommendations: ALLOW, BLOCK, REWRITE, HINT
+- Recommendations: proceed, block, rewrite, hint
 - Precondition matching for context-aware decisions
 - <50ms latency (P99)
 

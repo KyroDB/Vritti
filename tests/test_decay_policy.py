@@ -8,9 +8,10 @@ The decay policy checks episode.metadata but should check episode.create_data.en
 This is a pre-existing issue that will be fixed in a future update.
 """
 
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
+
 import pytest
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
 
 from src.hygiene.decay import MemoryDecayPolicy
 from src.models.episode import Episode, EpisodeCreate, ErrorClass, UsageStats
@@ -91,7 +92,7 @@ class TestMemoryDecayPolicy:
     
     def test_is_permanent_critical_error(self, decay_policy):
         """Test permanent protection for critical error classes."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         
         # Configuration error (in PERMANENT_ERROR_CLASSES)
         episode = self.create_episode(
@@ -104,7 +105,7 @@ class TestMemoryDecayPolicy:
     
     def test_is_permanent_manual_flag(self, decay_policy):
         """Test permanent protection via manual flag."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         
         episode = self.create_episode(
             episode_id=1,
@@ -121,7 +122,7 @@ class TestMemoryDecayPolicy:
         not a stored field. The rate passed to create_episode is ignored.
         With fix_success_count=10 and fix_failure_count=0 (default), rate = 10/10 = 1.0.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         
         episode = self.create_episode(
             episode_id=1,
@@ -134,7 +135,7 @@ class TestMemoryDecayPolicy:
     
     def test_is_permanent_critical_tags(self, decay_policy):
         """Test permanent protection via critical tags."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         
         episode = self.create_episode(
             episode_id=1,
@@ -156,7 +157,7 @@ class TestMemoryDecayPolicy:
         - rate = 2 / (2 + 2) = 0.5 which is <= 0.75 ✓
         - count = 2 which is <= 5 ✓
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         
         episode = self.create_episode(
             episode_id=1,
@@ -171,7 +172,7 @@ class TestMemoryDecayPolicy:
     @pytest.mark.asyncio
     async def test_apply_decay_policy_archives_old(self, decay_policy, mock_kyrodb_router):
         """Test that old episodes are archived."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_date = now - timedelta(days=200)
         
         old_episode = self.create_episode(
@@ -191,7 +192,7 @@ class TestMemoryDecayPolicy:
     @pytest.mark.asyncio
     async def test_apply_decay_policy_deletes_unused(self, decay_policy, mock_kyrodb_router):
         """Test that unused old episodes are deleted."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         unused_date = now - timedelta(days=100)
         
         unused_episode = self.create_episode(
@@ -211,7 +212,7 @@ class TestMemoryDecayPolicy:
     @pytest.mark.asyncio
     async def test_apply_decay_policy_protects_critical(self, decay_policy, mock_kyrodb_router):
         """Test that critical episodes are protected."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_date = now - timedelta(days=300)  # Very old
         
         critical_episode = self.create_episode(
@@ -232,7 +233,7 @@ class TestMemoryDecayPolicy:
     @pytest.mark.asyncio
     async def test_apply_decay_policy_dry_run(self, decay_policy, mock_kyrodb_router):
         """Test dry-run mode."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_date = now - timedelta(days=200)
         
         old_episode = self.create_episode(
@@ -262,7 +263,7 @@ class TestMemoryDecayPolicy:
     @pytest.mark.asyncio
     async def test_apply_decay_policy_mixed_episodes(self, decay_policy, mock_kyrodb_router):
         """Test policy with mixed episode types."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         
         episodes = [
             # Archive (old, used)

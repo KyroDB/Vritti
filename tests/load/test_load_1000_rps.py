@@ -8,16 +8,16 @@ Run with: pytest tests/load/test_load_1000_rps.py -v -s
 
 import asyncio
 import os
-import time
-import statistics
 import random
-from typing import List
+import statistics
+import time
 from dataclasses import dataclass
+
 import pytest
 
 from src.models.episode import EpisodeCreate, EpisodeType, ErrorClass
-from src.models.search import SearchRequest
 from src.models.gating import ReflectRequest
+from src.models.search import SearchRequest
 
 
 @dataclass
@@ -25,7 +25,7 @@ class LoadMetrics:
     total_requests: int
     successful: int
     failed: int
-    latencies_ms: List[float]
+    latencies_ms: list[float]
     duration_seconds: float
 
     @property
@@ -73,7 +73,7 @@ class Test1000RPSLoad:
         target_rps = 1000
         total_requests = duration_seconds * target_rps
 
-        print(f"\nConfiguration:")
+        print("\nConfiguration:")
         print(f"  Duration: {duration_seconds}s")
         print(f"  Target RPS: {target_rps}")
         print(f"  Total requests: {total_requests}")

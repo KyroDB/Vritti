@@ -5,14 +5,14 @@ Tests end-to-end search pipeline integration with LLM semantic validation.
 Uses OpenRouter API for LLM access.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
-from src.retrieval.search import SearchPipeline
-from src.retrieval.preconditions import PreconditionMatcher, AdvancedPreconditionMatcher
+import pytest
+
 from src.models.episode import Episode, EpisodeCreate, ErrorClass, Reflection
 from src.models.search import SearchRequest, SearchResponse
+from src.retrieval.preconditions import AdvancedPreconditionMatcher
+from src.retrieval.search import SearchPipeline
 
 
 class TestSearchPipelineBasic:

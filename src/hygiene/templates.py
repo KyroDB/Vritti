@@ -14,15 +14,12 @@ Performance:
 - Batch operations
 """
 
-import json
 import logging
-from datetime import timezone, datetime
-from typing import Optional
+from datetime import UTC, datetime
 
-from src.ingestion.tiered_reflection import ReflectionTier
 from src.kyrodb.router import KyroDBRouter
 from src.models.clustering import ClusterInfo, ClusterTemplate
-from src.models.episode import Episode, Reflection
+from src.models.episode import Episode, Reflection, ReflectionTier
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +37,7 @@ class TemplateGenerator:
     def __init__(
         self,
         kyrodb_router: KyroDBRouter,
-        reflection_service: Optional[object] = None  # TieredReflectionService
+        reflection_service: object | None = None  # TieredReflectionService
     ):
         """
         Initialize template generator.
@@ -97,14 +94,20 @@ class TemplateGenerator:
             )
         
         # Find episode with best reflection (highest confidence)
-        best_reflection: Optional[Reflection] = None
-        source_episode_id: Optional[int] = None
+        best_reflection: Reflection | None = None
+        source_episode_id: int | None = None
         
         for episode in episodes:
-            if episode.reflection and episode.reflection.confidence_score:
-                if best_reflection is None or episode.reflection.confidence_score > best_reflection.confidence_score:
-                    best_reflection = episode.reflection
-                    source_episode_id = episode.episode_id
+            if (
+                episode.reflection
+                and episode.reflection.confidence_score
+                and (
+                    best_reflection is None
+                    or episode.reflection.confidence_score > best_reflection.confidence_score
+                )
+            ):
+                best_reflection = episode.reflection
+                source_episode_id = episode.episode_id
         
         # If no good reflection exists, generate one with premium tier
         if best_reflection is None:
@@ -144,8 +147,8 @@ class TemplateGenerator:
             usage_count=0
         )
         
-        # Persist template
-        await self._persist_template(template)
+        # Persist template using the cluster centroid embedding for matching.
+        await self._persist_template(template, template_embedding=cluster_info.centroid_embedding)
         
         logger.info(
             f"Template generated for cluster {cluster_info.cluster_id} "
@@ -174,20 +177,16 @@ class TemplateGenerator:
         """
         # Deserialize template reflection
         template_refl_dict = cluster_template.template_reflection
-        template_refl = Reflection(**template_refl_dict)
+        template_refl = Reflection.model_validate(template_refl_dict)
         
         # Clone and update
         cached_reflection = template_refl.model_copy(deep=True)
-        
-        # Assign to new episode (critical fix)
-        if hasattr(cached_reflection, 'episode_id'):
-            cached_reflection.episode_id = episode_id
         
         # Mark as cached
         cached_reflection.tier = ReflectionTier.CACHED.value
         cached_reflection.cost_usd = 0.0  # $0 for cached reflections
         cached_reflection.llm_model = f"cluster-template-{cluster_template.cluster_id}"
-        cached_reflection.generated_at = datetime.now(timezone.utc)
+        cached_reflection.generated_at = datetime.now(UTC)
         
         # Track template usage
         await self._track_template_usage(
@@ -228,16 +227,13 @@ class TemplateGenerator:
     
     async def _fetch_cluster_episodes(self, cluster_info: ClusterInfo) -> list[Episode]:
         """
+        Fetch all episodes for a cluster.
         
         Args:
             cluster_info: Cluster information
         
         Returns:
             list[Episode]: Episodes in cluster
-            
-        Note:
-            This is a temporary workaround. In production, this should use
-            kyrodb_router.bulk_fetch_episodes() for better performance.
         """
         # Use bulk fetch for efficiency
         try:
@@ -245,7 +241,6 @@ class TemplateGenerator:
                 episode_ids=cluster_info.episode_ids,
                 customer_id=cluster_info.customer_id,
                 collection="failures",
-                include_images=False,
             )
             
             logger.info(
@@ -262,7 +257,9 @@ class TemplateGenerator:
             )
             raise  # Re-raise so caller knows fetch failed vs no episodes found
     
-    async def _persist_template(self, cluster_template: ClusterTemplate) -> bool:
+    async def _persist_template(
+        self, cluster_template: ClusterTemplate, template_embedding: list[float]
+    ) -> bool:
         """
         Persist cluster template to KyroDB for reuse across restarts.
         
@@ -277,24 +274,8 @@ class TemplateGenerator:
         """
         try:
             # Serialize template to metadata
-            template_metadata = {
-                "cluster_id": str(cluster_template.cluster_id),
-                "customer_id": cluster_template.customer_id,
-                "source_episode_id": str(cluster_template.source_episode_id),
-                "episode_count": str(cluster_template.episode_count),
-                "avg_similarity": f"{cluster_template.avg_similarity:.4f}",
-                "usage_count": str(cluster_template.usage_count),
-                "created_at": cluster_template.created_at.isoformat(),
-                "last_used_at": cluster_template.last_used_at.isoformat() if cluster_template.last_used_at else "",
-                # Store template reflection as JSON
-                "template_reflection_json": json.dumps(cluster_template.template_reflection),
-            }
-            
-            # Use cluster centroid as embedding (for similarity matching)
-            # In production, this would come from cluster_info.centroid_embedding
-            # For now, use a placeholder (actual clustering will provide real centroids)
-            template_embedding = cluster_template.template_reflection.get("embedding", [0.0] * 384)
-            
+            template_metadata = cluster_template.to_metadata_dict()
+
             # Persist to KyroDB cluster_templates namespace
             success = await self.kyrodb_router.insert_cluster_template(
                 customer_id=cluster_template.customer_id,
@@ -325,7 +306,14 @@ class TemplateGenerator:
     async def _track_template_usage(self, cluster_id: int, customer_id: str):
         """
         Increment template usage counter.
-        
-        TODO: Implement in database
         """
-        logger.debug(f"Would track usage for cluster {cluster_id} (customer: {customer_id}) (not yet implemented)")
+        try:
+            await self.kyrodb_router.increment_cluster_template_usage(
+                customer_id=customer_id,
+                cluster_id=cluster_id,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to track template usage for cluster {cluster_id} (customer: {customer_id}): {e}",
+                exc_info=True,
+            )

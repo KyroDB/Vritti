@@ -7,8 +7,8 @@ Uses regex patterns optimized for performance with compilation caching.
 
 import logging
 import re
+import threading
 from re import Match, Pattern
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -230,15 +230,10 @@ def redact_home_paths(text: str, replacement: str = "[USER]") -> str:
 
 
 # --- Advanced NER-based Redaction ---
-
-try:
-    from presidio_analyzer import AnalyzerEngine
-    from presidio_anonymizer import AnonymizerEngine
-    from presidio_anonymizer.entities import OperatorConfig
-
-    _HAS_PRESIDIO = True
-except Exception:
-    _HAS_PRESIDIO = False
+#
+# Presidio/spacy are intentionally imported lazily to avoid importing heavy native
+# dependencies at module import time (and to keep regex-only redaction fast and
+# reliable in minimal deployments).
 
 
 class AdvancedPIIRedactor:
@@ -250,10 +245,16 @@ class AdvancedPIIRedactor:
     """
 
     def __init__(self):
-        if not _HAS_PRESIDIO:
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            from presidio_anonymizer import AnonymizerEngine
+            from presidio_anonymizer.entities import OperatorConfig
+        except ImportError as e:
             raise ImportError(
                 "Presidio not installed. Install 'presidio-analyzer' and 'presidio-anonymizer'."
-            )
+            ) from e
+
+        self._operator_config = OperatorConfig
         
         # Initialize engines (loads NLP model, so do this once)
         self.analyzer = AnalyzerEngine()
@@ -303,7 +304,7 @@ class AdvancedPIIRedactor:
     def redact(
         self,
         text: str,
-        entities: Optional[list[str]] = None,
+        entities: list[str] | None = None,
         language: str = "en",
     ) -> str:
         """
@@ -356,7 +357,7 @@ class AdvancedPIIRedactor:
         # Define anonymization operators
         # We use "replace" with the entity type name
         operators = {
-            entity: OperatorConfig("replace", {"new_value": f"[{entity}]"})
+            entity: self._operator_config("replace", {"new_value": f"[{entity}]"})
             for entity in entities_to_check
         }
 
@@ -371,19 +372,33 @@ class AdvancedPIIRedactor:
 
 
 # Global instance (lazy loaded)
-_REDACTOR_INSTANCE: Optional[AdvancedPIIRedactor] = None
+_REDACTOR_INSTANCE: AdvancedPIIRedactor | None = None
+_REDACTOR_INIT_ATTEMPTED = False
+_REDACTOR_LOCK = threading.Lock()
 
 
-def get_redactor() -> Optional[AdvancedPIIRedactor]:
+def get_redactor() -> AdvancedPIIRedactor | None:
     """Get or create global AdvancedPIIRedactor instance."""
-    global _REDACTOR_INSTANCE
-    if _REDACTOR_INSTANCE is None and _HAS_PRESIDIO:
+    global _REDACTOR_INSTANCE, _REDACTOR_INIT_ATTEMPTED
+    if _REDACTOR_INSTANCE is not None:
+        return _REDACTOR_INSTANCE
+    if _REDACTOR_INIT_ATTEMPTED:
+        return None
+
+    with _REDACTOR_LOCK:
+        # Double-checked locking to prevent races under concurrency.
+        if _REDACTOR_INSTANCE is not None:
+            return _REDACTOR_INSTANCE
+        if _REDACTOR_INIT_ATTEMPTED:
+            return None
+
+        _REDACTOR_INIT_ATTEMPTED = True
         try:
             _REDACTOR_INSTANCE = AdvancedPIIRedactor()
         except Exception as e:
-            # Fallback if model not downloaded (e.g., en_core_web_lg)
+            # Fallback if model not downloaded/available (or Presidio not installed).
             logger.warning("Failed to initialize Presidio: %s", e, exc_info=True)
-            return None
+            _REDACTOR_INSTANCE = None
     return _REDACTOR_INSTANCE
 
 
@@ -399,7 +414,7 @@ def redact_all(
     redact_ssns: bool = True,
     redact_phones: bool = False,
     redact_paths: bool = True,
-    use_ner: bool = True, 
+    use_ner: bool = False,
 ) -> str:
     """
     Apply comprehensive PII redaction.
@@ -436,17 +451,21 @@ def redact_all(
             # Use NER for Names, Locations, and other entities
             # We skip entities already handled well by regex if we want,
             # but Presidio is often better at avoiding false positives for things like phones.
-            # However, for consistency with legacy behavior, we can let Presidio handle
-            # the complex ones.
+            # For consistency and better coverage, let Presidio handle complex entities too.
             
             ner_entities = ["PERSON", "LOCATION", "US_DRIVER_LICENSE", "IBAN_CODE"]
             
             # If regex flags are on, let NER handle them too for better coverage
-            if redact_emails: ner_entities.append("EMAIL_ADDRESS")
-            if redact_ips: ner_entities.append("IP_ADDRESS")
-            if redact_cards: ner_entities.append("CREDIT_CARD")
-            if redact_ssns: ner_entities.append("US_SSN")
-            if redact_phones: ner_entities.append("PHONE_NUMBER")
+            if redact_emails:
+                ner_entities.append("EMAIL_ADDRESS")
+            if redact_ips:
+                ner_entities.append("IP_ADDRESS")
+            if redact_cards:
+                ner_entities.append("CREDIT_CARD")
+            if redact_ssns:
+                ner_entities.append("US_SSN")
+            if redact_phones:
+                ner_entities.append("PHONE_NUMBER")
 
             text = redactor.redact(text, entities=ner_entities)
             

@@ -22,21 +22,20 @@ Performance targets:
 - False positive rate: <10% (block correct actions)
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timezone
 
+import pytest
+
+from src.gating.service import GatingService
+from src.ingestion.capture import IngestionPipeline
 from src.models.episode import (
-    Episode,
     EpisodeCreate,
     EpisodeType,
     ErrorClass,
     Reflection,
 )
-from src.models.gating import ReflectRequest, ActionRecommendation
-from src.models.search import SearchResult, SearchResponse
-from src.ingestion.capture import IngestionPipeline
-from src.gating.service import GatingService
+from src.models.gating import ActionRecommendation, ReflectRequest
+from src.models.search import SearchResponse, SearchResult
 from src.retrieval.search import SearchPipeline
 
 

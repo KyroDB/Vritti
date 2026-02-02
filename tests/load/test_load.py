@@ -10,16 +10,16 @@ Run with: pytest tests/load/test_load.py -v --log-cli-level=INFO
 """
 
 import asyncio
-import time
-import statistics
 import random
-from typing import List, Dict, Any
+import statistics
+import time
 from dataclasses import dataclass
+
 import pytest
 
 from src.models.episode import EpisodeCreate
-from src.models.search import SearchRequest
 from src.models.gating import ReflectRequest
+from src.models.search import SearchRequest
 
 
 @dataclass
@@ -28,7 +28,7 @@ class LoadTestMetrics:
     total_requests: int
     successful: int
     failed: int
-    latencies_ms: List[float]
+    latencies_ms: list[float]
     throughput_rps: float
     duration_seconds: float
     
@@ -342,7 +342,7 @@ class TestEndToEndLoad(LoadTester):
             concurrency=concurrency
         )
         
-        print(f"\nOperation Distribution:")
+        print("\nOperation Distribution:")
         print(f"  Search: {operation_counts['search']}")
         print(f"  Ingest: {operation_counts['ingest']}")
         print(f"  Gate: {operation_counts['gate']}")

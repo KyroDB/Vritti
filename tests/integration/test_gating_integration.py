@@ -13,17 +13,14 @@ Run with:
     pytest tests/integration/test_gating_integration.py -v -s
 """
 
-import asyncio
 import time
-import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
 
-from src.kyrodb.router import KyroDBRouter
-from src.kyrodb.client import KyroDBClient
+import pytest
+
 from src.config import KyroDBConfig
-from src.models.episode import Episode, EpisodeCreate, Reflection, ReflectionTier
-from src.models.gating import ActionRecommendation
+from src.kyrodb.router import KyroDBRouter
+from src.models.episode import Reflection, ReflectionTier
 
 
 def is_kyrodb_running() -> bool:
@@ -119,7 +116,7 @@ class TestGatingThresholds:
                 generalization_score=0.8,
                 confidence_score=0.95,
                 llm_model="test-model",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=0.001,
                 generation_latency_ms=500.0,
                 tier=ReflectionTier.CHEAP.value,
@@ -131,7 +128,7 @@ class TestGatingThresholds:
                 collection=collection,
                 reflection=reflection,
             )
-            print(f"  Added reflection with root cause")
+            print("  Added reflection with root cause")
             
             # Search with identical embedding (should get very high similarity)
             query_embedding = generate_embedding(0.1)  # Same as failure
@@ -144,7 +141,7 @@ class TestGatingThresholds:
                 min_score=0.5,
             )
             
-            print(f"\n  Search Results:")
+            print("\n  Search Results:")
             for result in search_response.results:
                 print(f"    Doc {result.doc_id}: score={result.score:.4f}")
             
@@ -156,13 +153,10 @@ class TestGatingThresholds:
                 # BLOCK threshold is 0.9 similarity
                 if similarity_score >= 0.9:
                     print(f"\n  Expected Recommendation: BLOCK (similarity={similarity_score:.4f} >= 0.9)")
-                    expected_recommendation = ActionRecommendation.BLOCK
                 elif similarity_score >= 0.8:
                     print(f"\n  Expected Recommendation: REWRITE (similarity={similarity_score:.4f} >= 0.8)")
-                    expected_recommendation = ActionRecommendation.REWRITE
                 else:
                     print(f"\n  Expected Recommendation: HINT (similarity={similarity_score:.4f})")
-                    expected_recommendation = ActionRecommendation.HINT
                 
                 # With identical embeddings, should get 1.0 similarity
                 assert similarity_score >= 0.9, f"Expected high similarity, got {similarity_score}"
@@ -221,7 +215,7 @@ class TestGatingThresholds:
                 generalization_score=0.7,
                 confidence_score=0.85,
                 llm_model="test-model",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=0.001,
                 generation_latency_ms=500.0,
                 tier=ReflectionTier.CHEAP.value,
@@ -233,7 +227,7 @@ class TestGatingThresholds:
                 collection=collection,
                 reflection=reflection,
             )
-            print(f"  Added reflection with resolution")
+            print("  Added reflection with resolution")
             
             # Search with slightly different embedding (medium similarity)
             query_embedding = generate_embedding(0.11)  # Slightly different
@@ -246,7 +240,7 @@ class TestGatingThresholds:
                 min_score=0.5,
             )
             
-            print(f"\n  Search Results:")
+            print("\n  Search Results:")
             for result in search_response.results:
                 print(f"    Doc {result.doc_id}: score={result.score:.4f}")
             
@@ -259,7 +253,7 @@ class TestGatingThresholds:
                 # With our test embeddings, we get high similarity but in real scenario
                 # similar but not identical embeddings would give 0.8-0.9 similarity
                 assert similarity_score > 0.5, f"Expected match, got {similarity_score}"
-                print(f"  Test PASSED: Resolution available for similar failure")
+                print("  Test PASSED: Resolution available for similar failure")
             
         finally:
             await kyrodb_router.delete_episode(
@@ -298,8 +292,8 @@ class TestGatingThresholds:
         
         # Should find nothing in empty namespace
         if len(search_response.results) == 0:
-            print(f"  Expected Recommendation: PROCEED (no similar failures)")
-            print(f"  Test PASSED: Novel action proceeds safely")
+            print("  Expected Recommendation: PROCEED (no similar failures)")
+            print("  Test PASSED: Novel action proceeds safely")
         else:
             # If there are matches, they should be low similarity
             top_score = search_response.results[0].score if search_response.results else 0.0
@@ -352,7 +346,7 @@ class TestGatingThresholds:
                 generalization_score=0.6,
                 confidence_score=0.75,
                 llm_model="test-model",
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 cost_usd=0.001,
                 generation_latency_ms=500.0,
                 tier=ReflectionTier.CHEAP.value,
@@ -376,7 +370,7 @@ class TestGatingThresholds:
                 min_score=0.5,
             )
             
-            print(f"\n  Search Results:")
+            print("\n  Search Results:")
             for result in search_response.results:
                 print(f"    Doc {result.doc_id}: score={result.score:.4f}")
             
@@ -388,7 +382,7 @@ class TestGatingThresholds:
                 if 0.7 <= similarity_score < 0.8:
                     print(f"\n  Expected Recommendation: HINT (0.7 <= {similarity_score:.4f} < 0.8)")
                 
-                print(f"  Test PASSED: Moderate similarity shows hints")
+                print("  Test PASSED: Moderate similarity shows hints")
             
         finally:
             await kyrodb_router.delete_episode(
@@ -432,7 +426,7 @@ class TestSkillsInGating:
                 usage_count=10,
                 success_count=9,
                 failure_count=1,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             
             skill_embedding = generate_embedding(0.2)
@@ -466,8 +460,8 @@ class TestSkillsInGating:
             assert top_score >= 0.85, f"Expected high skill match, got {top_score}"
             
             print(f"\n  High-confidence skill match (score={top_score:.4f})")
-            print(f"  Expected Recommendation: REWRITE with skill code")
-            print(f"  Test PASSED: Skills properly matched for gating")
+            print("  Expected Recommendation: REWRITE with skill code")
+            print("  Test PASSED: Skills properly matched for gating")
             
         finally:
             # Cleanup skill

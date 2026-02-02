@@ -15,11 +15,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.config import ServiceConfig, Settings, get_settings
+from src.config import Settings, get_settings
 from src.gating.service import GatingService
 from src.ingestion.capture import IngestionPipeline
-from src.models.episode import Episode, EpisodeCreate, ErrorClass, Reflection, ReflectionTier
-from src.models.search import SearchRequest, SearchResponse
+from src.models.episode import (
+    Reflection,
+    ReflectionTier,
+)
+from src.models.search import SearchRequest
 from src.retrieval.search import SearchPipeline
 
 
@@ -93,7 +96,7 @@ class TestSearchFetchKValidation:
         
         mock_search_pipeline._fetch_candidates = track_fetch_k
         
-        response = await mock_search_pipeline.search(request)
+        await mock_search_pipeline.search(request)
         
         # Verify k was capped
         assert len(called_with_k) > 0

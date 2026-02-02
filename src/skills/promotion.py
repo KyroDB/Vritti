@@ -14,7 +14,8 @@ Security:
 
 import logging
 import re
-from typing import Optional
+
+import anyio
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
@@ -72,7 +73,7 @@ class SkillPromotionService:
         self,
         episode_id: int,
         customer_id: str,
-    ) -> Optional[Skill]:
+    ) -> Skill | None:
         """
         Check if episode should be promoted to skill.
 
@@ -155,7 +156,7 @@ class SkillPromotionService:
 
     async def _fetch_episode(
         self, episode_id: int, customer_id: str
-    ) -> Optional[Episode]:
+    ) -> Episode | None:
         """
         Fetch episode from KyroDB.
 
@@ -253,7 +254,9 @@ class SkillPromotionService:
         try:
             # Generate embedding for episode goal
             query_text = f"{episode.create_data.goal}\n\n{episode.create_data.error_trace[:500]}"
-            query_embedding = self.embedding_service.embed_text(query_text)
+            query_embedding = await anyio.to_thread.run_sync(
+                self.embedding_service.embed_text, query_text
+            )
 
             # Search for similar episodes
             response = await self.kyrodb_router.text_client.search(
@@ -332,12 +335,12 @@ class SkillPromotionService:
         res2_normalized = res2.lower().strip()
 
         # Extract key terms (words > 5 chars)
-        words1 = set(
+        words1 = {
             word for word in re.findall(r"\w+", res1_normalized) if len(word) > 5
-        )
-        words2 = set(
+        }
+        words2 = {
             word for word in re.findall(r"\w+", res2_normalized) if len(word) > 5
-        )
+        }
 
         if not words1 or not words2:
             return False
@@ -391,11 +394,11 @@ class SkillPromotionService:
         # Extract categorization
         tags = self._extract_tags(all_episodes)
         tools = list(
-            set(
+            {
                 tool
                 for ep in all_episodes
                 for tool in ep.create_data.tool_chain[:2]  # Top 2 tools
-            )
+            }
         )
 
         # Create skill
@@ -418,7 +421,9 @@ class SkillPromotionService:
         embedding_text = f"{skill.name}\n\n{skill.docstring}"
         if skill.code:
             embedding_text += f"\n\n{skill.code[:500]}"  # Include code snippet
-        skill_embedding = self.embedding_service.embed_text(embedding_text)
+        skill_embedding = await anyio.to_thread.run_sync(
+            self.embedding_service.embed_text, embedding_text
+        )
 
         # Store in KyroDB
         success = await self.kyrodb_router.insert_skill(skill, skill_embedding)
@@ -511,7 +516,7 @@ class SkillPromotionService:
 
     def _extract_code_or_procedure(
         self, resolution: str
-    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None, str | None]:
         """
         Extract code, procedure, and language from resolution.
 

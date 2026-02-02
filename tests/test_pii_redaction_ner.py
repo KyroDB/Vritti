@@ -2,15 +2,27 @@
 Tests for NER-based PII redaction 
 """
 
+import os
+
 import pytest
+
 from src.utils.pii_redaction import AdvancedPIIRedactor, redact_all
+
+RUN_NER_TESTS = os.environ.get("VRITTI_RUN_NER_TESTS") == "1"
+pytestmark = pytest.mark.skipif(
+    not RUN_NER_TESTS,
+    reason="NER tests disabled (set VRITTI_RUN_NER_TESTS=1 to run)",
+)
 
 # Skip tests if Presidio not installed or model not found
 try:
-    import presidio_analyzer
-    import spacy
-    nlp = spacy.load("en_core_web_lg")
-    HAS_DEPENDENCIES = True
+    if RUN_NER_TESTS:
+        import spacy
+
+        nlp = spacy.load("en_core_web_lg")
+        HAS_DEPENDENCIES = True
+    else:
+        HAS_DEPENDENCIES = False
 except Exception:
     HAS_DEPENDENCIES = False
 

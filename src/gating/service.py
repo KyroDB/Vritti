@@ -6,7 +6,9 @@ Analyzes proposed actions against historical episodes to prevent repeat failures
 
 import logging
 import time
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple
+
+import anyio
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
@@ -30,7 +32,7 @@ class GatingRecommendationResult(NamedTuple):
     recommendation: ActionRecommendation
     confidence: float
     rationale: str
-    suggested_action: Optional[str]
+    suggested_action: str | None
     hints: list[str]
 
 
@@ -94,7 +96,9 @@ class GatingService:
             # 2. Search for relevant skills (if any)
             # We need to embed the query first - using search pipeline's embedding service
             # This assumes search_pipeline has access to embedding service
-            query_embedding = self.search_pipeline.embedding_service.embed_text(search_query)
+            query_embedding = await anyio.to_thread.run_sync(
+                self.search_pipeline.embedding_service.embed_text, search_query
+            )
             
             matched_skills = await self.kyrodb_router.search_skills(
                 query_embedding=query_embedding,

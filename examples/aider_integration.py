@@ -51,7 +51,7 @@ class AiderWithVritti:
             return False, f"Blocked by Vritti: {check['reason']}"
         
         # Step 2: Execute (Aider would do this)
-        print(f"✅ Vritti ALLOWED - executing: {command}")
+        print(f"✅ Vritti PROCEED - executing: {command}")
         
         # Simulate execution (in real integration, Aider executes command)
         import subprocess

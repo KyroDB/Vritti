@@ -8,8 +8,9 @@ Day 12: Skills Collection Setup
 - Test skills used in gating recommendations
 """
 
+import contextlib
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -41,7 +42,7 @@ def _make_skill(
         language="python",
         error_class=error_class,
         source_episodes=[skill_id - 100, skill_id - 200],
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -78,10 +79,8 @@ class TestSkillsCollection:
         finally:
             # Cleanup
             namespace = f"{customer_id}:skills"
-            try:
+            with contextlib.suppress(Exception):
                 await kyrodb_router.text_client.delete(doc_id=skill_id, namespace=namespace)
-            except Exception:
-                pass
 
     @pytest.mark.asyncio
     async def test_search_skills_finds_inserted(self, kyrodb_router: KyroDBRouter):
@@ -119,10 +118,8 @@ class TestSkillsCollection:
             assert found_skills[0].name == skill.name
         finally:
             namespace = f"{customer_id}:skills"
-            try:
+            with contextlib.suppress(Exception):
                 await kyrodb_router.text_client.delete(doc_id=skill_id, namespace=namespace)
-            except Exception:
-                pass
 
     @pytest.mark.asyncio
     async def test_search_skills_semantic_similarity(self, kyrodb_router: KyroDBRouter):
@@ -306,10 +303,8 @@ class TestSkillsCollection:
         finally:
             namespace = f"{customer_id}:skills"
             for skill_id in skill_ids:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.text_client.delete(doc_id=skill_id, namespace=namespace)
-                except Exception:
-                    pass
 
 
 @pytest.mark.integration
@@ -368,7 +363,7 @@ class TestSkillsSearchPerformance:
             p99_ms = latencies[p99_idx]
             avg_ms = sum(latencies) / len(latencies)
             
-            print(f"\nSkills search latency:")
+            print("\nSkills search latency:")
             print(f"  Average: {avg_ms:.2f}ms")
             print(f"  P99: {p99_ms:.2f}ms")
             print(f"  Min: {min(latencies):.2f}ms")
@@ -379,10 +374,8 @@ class TestSkillsSearchPerformance:
         finally:
             namespace = f"{customer_id}:skills"
             for skill_id in skill_ids:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.text_client.delete(doc_id=skill_id, namespace=namespace)
-                except Exception:
-                    pass
 
 
 @pytest.mark.integration
@@ -394,6 +387,7 @@ class TestSkillsInGating:
     async def test_gating_uses_skills_for_hints(self, kyrodb_router: KyroDBRouter):
         """Test that gating service uses skills to provide hints."""
         from unittest.mock import MagicMock
+
         from src.gating.service import GatingService
         from src.retrieval.search import SearchPipeline
         
@@ -466,7 +460,5 @@ class TestSkillsInGating:
                     print(f"  - {s.get('name')}")
         finally:
             namespace = f"{customer_id}:skills"
-            try:
+            with contextlib.suppress(Exception):
                 await kyrodb_router.text_client.delete(doc_id=skill_id, namespace=namespace)
-            except Exception:
-                pass

@@ -30,7 +30,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 
 **API Endpoints**
 - `POST /api/v1/capture` - Capture failure episodes
-- `POST /api/v1/gate/reflect` - Pre-action gating
+- `POST /api/v1/reflect` - Reflection gate (proceed/block/rewrite/hint)
 - `POST /api/v1/search` - Semantic search
 - `GET /health` - Health checks
 
@@ -61,7 +61,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 ### Technical Details
 
 **Dependencies**
-- Python 3.9+
+- Python 3.11+
 - FastAPI, SQLAlchemy, Pydantic
 - OpenRouter API (free tier)
 - KyroDB v0.1.0
@@ -69,7 +69,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 
 **Performance Targets**
 - Search latency: <50ms P99
-- Gating decision: <100ms P99
+- Reflection decision: <100ms P99
 - Episode capture: <200ms P99
 - Health checks: <5ms
 

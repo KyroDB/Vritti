@@ -4,10 +4,10 @@ Tests for admin endpoints.
 Tests the /admin/budget and /admin/reflection/stats endpoints.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
-from fastapi.testclient import TestClient
 
+import pytest
+from fastapi.testclient import TestClient
 
 # Test admin key (must be at least 32 chars to pass validation)
 TEST_ADMIN_KEY = "test-admin-key-for-testing-purposes-only-at-least-32-chars"

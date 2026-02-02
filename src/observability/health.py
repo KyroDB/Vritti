@@ -42,9 +42,9 @@ readinessProbe:
 """
 
 import time
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -72,12 +72,12 @@ class ComponentHealth(BaseModel):
 
     name: str = Field(description="Component name")
     status: HealthStatus = Field(description="Component health status")
-    message: Optional[str] = Field(default=None, description="Status message")
-    latency_ms: Optional[float] = Field(
+    message: str | None = Field(default=None, description="Status message")
+    latency_ms: float | None = Field(
         default=None, description="Health check latency in milliseconds"
     )
     last_check: datetime = Field(description="Last health check timestamp")
-    metadata: Optional[dict[str, Any]] = Field(
+    metadata: dict[str, Any] | None = Field(
         default=None, description="Additional component metadata"
     )
 
@@ -131,7 +131,7 @@ class HealthChecker:
     - Readiness probe: <100ms (with I/O)
     """
 
-    def __init__(self, config: Optional[HealthCheckConfig] = None):
+    def __init__(self, config: HealthCheckConfig | None = None):
         """
         Initialize health checker with optional configuration.
         
@@ -146,7 +146,7 @@ class HealthChecker:
         self.config = config or HealthCheckConfig()
 
         # Cached health status (configurable TTL)
-        self._health_cache: Optional[HealthCheckResponse] = None
+        self._health_cache: HealthCheckResponse | None = None
         self._health_cache_time: float = 0.0
         self._health_cache_ttl: float = self.config.cache_ttl_seconds
 
@@ -249,7 +249,7 @@ class HealthChecker:
         """
         return LivenessResponse(
             status="alive",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
     async def check_readiness(
@@ -311,7 +311,7 @@ class HealthChecker:
 
         return ReadinessResponse(
             status=overall_status,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             ready=ready,
             components=components,
         )
@@ -383,7 +383,7 @@ class HealthChecker:
         # Build response
         response = HealthCheckResponse(
             status=overall_status,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             uptime_seconds=self.get_uptime_seconds(),
             version=self.version,
             components=components,
@@ -452,7 +452,7 @@ class HealthChecker:
                 status=status,
                 message=message,
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
                 metadata={
                     "text_healthy": text_healthy,
                     "image_healthy": image_healthy,
@@ -475,7 +475,7 @@ class HealthChecker:
                 status=HealthStatus.UNHEALTHY,
                 message=f"Health check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
                 metadata={
                     "circuit_open": self._is_circuit_open("kyrodb"),
                     "consecutive_failures": self._consecutive_failures.get("kyrodb", 0),
@@ -496,9 +496,11 @@ class HealthChecker:
         try:
             # Perform simple query to verify database is responsive
             # This is a minimal check - just verify we can connect and query
-            with customer_db._get_connection() as conn:
-                cursor = conn.execute("SELECT 1")
-                cursor.fetchone()
+            import aiosqlite
+
+            async with aiosqlite.connect(str(customer_db.db_path)) as conn:
+                async with conn.execute("SELECT 1") as cursor:
+                    await cursor.fetchone()
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -507,7 +509,7 @@ class HealthChecker:
                 status=HealthStatus.HEALTHY,
                 message="Database responsive",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
         except Exception as e:
@@ -520,7 +522,7 @@ class HealthChecker:
                 status=HealthStatus.UNHEALTHY,
                 message=f"Database check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
     async def _check_embedding_service_health(self, embedding_service) -> ComponentHealth:
@@ -535,15 +537,10 @@ class HealthChecker:
         start_time = time.perf_counter()
 
         try:
-            # Check if models are loaded
-            text_model_loaded = (
-                hasattr(embedding_service, "text_model")
-                and embedding_service.text_model is not None
-            )
-            image_model_loaded = (
-                hasattr(embedding_service, "image_model")
-                and embedding_service.image_model is not None
-            )
+            # Check if models are loaded via service metadata
+            info = embedding_service.get_info()
+            text_model_loaded = bool(info.get("text_model_loaded"))
+            image_model_loaded = bool(info.get("clip_model_loaded"))
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -562,7 +559,7 @@ class HealthChecker:
                 status=status,
                 message=message,
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
                 metadata={
                     "text_model_loaded": text_model_loaded,
                     "image_model_loaded": image_model_loaded,
@@ -577,7 +574,7 @@ class HealthChecker:
                 status=HealthStatus.DEGRADED,  # Non-critical
                 message=f"Health check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
     async def _check_reflection_service_health(self, reflection_service) -> ComponentHealth:
@@ -610,7 +607,7 @@ class HealthChecker:
                 status=status,
                 message=message,
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
                 metadata={
                     "api_key_configured": api_key_configured,
                 },
@@ -624,7 +621,7 @@ class HealthChecker:
                 status=HealthStatus.DEGRADED,  # Non-critical
                 message=f"Health check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
-                last_check=datetime.now(timezone.utc),
+                last_check=datetime.now(UTC),
             )
 
 
@@ -633,10 +630,10 @@ class HealthChecker:
 # ============================================================================
 
 # Global health checker instance
-_health_checker: Optional[HealthChecker] = None
+_health_checker: HealthChecker | None = None
 
 
-def get_health_checker(config: Optional[HealthCheckConfig] = None) -> HealthChecker:
+def get_health_checker(config: HealthCheckConfig | None = None) -> HealthChecker:
     """
     Get global health checker instance.
     

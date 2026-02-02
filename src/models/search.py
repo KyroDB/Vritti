@@ -8,8 +8,8 @@ store success episodes to prevent memory bloat and maintain focus on learning
 from mistakes.
 """
 
-from datetime import timezone, datetime
-from typing import Any, Literal, Optional
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -41,7 +41,7 @@ class SearchRequest(BaseModel):
     """
 
     # Multi-tenancy (set by middleware, not user-provided)
-    customer_id: Optional[str] = Field(
+    customer_id: str | None = Field(
         default=None,
         description="Customer ID for tenant isolation (set automatically from API key)",
     )
@@ -57,11 +57,11 @@ class SearchRequest(BaseModel):
         default="failures",
         description="Collection to search (only 'failures' supported)",
     )
-    tool_filter: Optional[str] = Field(default=None, description="Filter by primary tool")
-    min_timestamp: Optional[int] = Field(
+    tool_filter: str | None = Field(default=None, description="Filter by primary tool")
+    min_timestamp: int | None = Field(
         default=None, ge=0, description="Unix timestamp - only return episodes after this"
     )
-    max_timestamp: Optional[int] = Field(default=None, ge=0)
+    max_timestamp: int | None = Field(default=None, ge=0)
     tags: list[str] = Field(default_factory=list, description="Required tags")
 
     # Search parameters
@@ -77,8 +77,9 @@ class SearchRequest(BaseModel):
     ranking_weights: RankingWeights = Field(default_factory=RankingWeights)
 
     # Multi-modal
-    include_image_search: bool = Field(
-        default=False, description="Also search image embeddings"
+    image_base64: str | None = Field(
+        default=None,
+        description="Base64-encoded image bytes for multimodal search (if provided, image search is automatically enabled)",
     )
     image_weight: float = Field(
         default=0.3, ge=0.0, le=1.0, description="Weight for image similarity if enabled"
@@ -86,7 +87,7 @@ class SearchRequest(BaseModel):
 
     @field_validator("max_timestamp")
     @classmethod
-    def validate_timestamp_range(cls, v: Optional[int], info) -> Optional[int]:
+    def validate_timestamp_range(cls, v: int | None, info) -> int | None:
         if v is not None:
             min_ts = info.data.get("min_timestamp")
             if min_ts is not None and v < min_ts:
@@ -112,7 +113,7 @@ class SearchResult(BaseModel):
     matched_preconditions: list[str] = Field(
         default_factory=list, description="Which preconditions matched"
     )
-    similarity_explanation: Optional[str] = Field(
+    similarity_explanation: str | None = Field(
         default=None, description="Why this result is relevant"
     )
 
@@ -138,7 +139,7 @@ class SearchResponse(BaseModel):
     collection: str
     query_embedding_dimension: int
     searched_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
     @property
@@ -162,4 +163,4 @@ class PreconditionCheckResult(BaseModel):
     match_score: float = Field(ge=0.0, le=1.0)
     matched_preconditions: list[str] = Field(default_factory=list)
     missing_preconditions: list[str] = Field(default_factory=list)
-    explanation: Optional[str] = Field(default=None)
+    explanation: str | None = Field(default=None)

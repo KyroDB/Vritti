@@ -6,13 +6,12 @@ to tiered reflection generation.
 """
 
 import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock, MagicMock
 
-from src.models.episode import EpisodeCreate, ErrorClass, Reflection, ReflectionTier
+import pytest
+
 from src.ingestion.capture import IngestionPipeline
-from src.config import LLMConfig
+from src.models.episode import EpisodeCreate, ErrorClass, Reflection, ReflectionTier
 
 
 class TestTieredIntegration:
@@ -256,7 +255,6 @@ class TestAPITierParameter:
     
     def test_tier_validation_invalid(self):
         """Test that invalid tier values are rejected."""
-        from fastapi import HTTPException
         from src.models.episode import ReflectionTier
         
         # Test invalid tier

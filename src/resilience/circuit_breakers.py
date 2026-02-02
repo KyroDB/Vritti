@@ -165,8 +165,10 @@ def with_kyrodb_circuit_breaker(func):
         except Exception as e:
             # Register failure with the circuit breaker by calling sync path
             # with a function that raises the same exception type
-            def raise_original():
-                raise e
+            exc = e
+
+            def raise_original() -> None:
+                raise exc
 
             try:
                 kyrodb_breaker.call(raise_original)

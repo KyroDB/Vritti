@@ -2,27 +2,28 @@
 Customer and API key storage using SQLite .
 
 Security features:
-- API keys hashed with bcrypt (cost factor 12)
+- API keys are never stored in plaintext (only SHA-256 digest is stored)
 - Prepared statements (SQL injection protection)
 - Row-level security ready (when migrating to Postgres)
 - Audit logging for all mutations
 
 Performance features:
 - Async operations with aiosqlite (non-blocking)
-- Indexes on customer_id, api_key_hash, email
+- O(1) API key validation via SHA-256 indexed lookup
+- Indexes on customer_id, key_hash_sha256, email
 - Connection pooling ready
 - Efficient queries with covering indexes
 """
 
+import hashlib
 import logging
 import secrets
-from datetime import timezone, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import aiosqlite
-import bcrypt
 
+from src.config import get_settings
 from src.models.customer import (
     APIKey,
     APIKeyCreate,
@@ -44,7 +45,7 @@ class CustomerDatabase:
     Migration path to PostgreSQL documented for production scale.
 
     Security:
-    - API keys hashed with bcrypt (cost=12, ~0.3s per hash)
+    - API keys stored as SHA-256 digest (keys are 256-bit random; digest is not reversible)
     - Customer data isolated by customer_id
     - Prepared statements prevent SQL injection
     - Audit log for compliance
@@ -52,8 +53,7 @@ class CustomerDatabase:
     Performance:
     - Async operations with aiosqlite (non-blocking)
     - Indexes on all foreign keys and lookup columns
-    - Connection pooling ready
-    - Efficient upsert operations
+    - O(1) API key validation via indexed digest lookup
     """
 
     def __init__(self, db_path: str = "./data/customers.db"):
@@ -67,7 +67,7 @@ class CustomerDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Connection will be created lazily
-        self._conn: Optional[aiosqlite.Connection] = None
+        self._conn: aiosqlite.Connection | None = None
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -121,7 +121,7 @@ class CustomerDatabase:
                     CREATE TABLE IF NOT EXISTS api_keys (
                         key_id TEXT PRIMARY KEY,
                         customer_id TEXT NOT NULL,
-                        key_hash TEXT NOT NULL UNIQUE,
+                        key_hash_sha256 TEXT NOT NULL UNIQUE,
                         key_prefix TEXT NOT NULL,
                         name TEXT,
                         created_at TEXT NOT NULL,
@@ -131,10 +131,21 @@ class CustomerDatabase:
 
                         FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
                             ON DELETE CASCADE,
-                        CHECK (is_active IN (0, 1))
+                        CHECK (is_active IN (0, 1)),
+                        CHECK (length(key_hash_sha256) = 64),
+                        CHECK (key_hash_sha256 NOT GLOB '*[^0-9a-f]*')
                     )
                 """
                 )
+
+                # Schema guardrail: we don't support legacy API key schemas in code.
+                cursor = await conn.execute("PRAGMA table_info(api_keys)")
+                api_key_columns = {row["name"] for row in await cursor.fetchall()}
+                if "key_hash" in api_key_columns or "key_hash_sha256" not in api_key_columns:
+                    raise RuntimeError(
+                        "Unsupported api_keys schema detected. "
+                        "Delete the customer DB file and re-initialize it."
+                    )
 
                 # Create audit log table (compliance: track all mutations)
                 await conn.execute(
@@ -166,7 +177,7 @@ class CustomerDatabase:
                     "CREATE INDEX IF NOT EXISTS idx_api_keys_customer ON api_keys(customer_id)"
                 )
                 await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)"
+                    "CREATE INDEX IF NOT EXISTS idx_api_keys_hash_sha256 ON api_keys(key_hash_sha256)"
                 )
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active)"
@@ -194,7 +205,7 @@ class CustomerDatabase:
             await self._conn.execute("PRAGMA foreign_keys = ON")
         return self._conn
 
-    async def create_customer(self, customer_create: CustomerCreate) -> Optional[Customer]:
+    async def create_customer(self, customer_create: CustomerCreate) -> Customer | None:
         """
         Create new customer.
 
@@ -215,7 +226,7 @@ class CustomerDatabase:
         }
         quota = tier_quotas.get(customer_create.subscription_tier, 1000)
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         customer = Customer(
             customer_id=customer_create.customer_id,
@@ -225,8 +236,8 @@ class CustomerDatabase:
             status=CustomerStatus.ACTIVE,
             monthly_credit_limit=quota,
             credits_used_current_month=0,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         conn = await self._get_connection()
@@ -270,7 +281,7 @@ class CustomerDatabase:
                 return None
             raise
 
-    async def get_customer(self, customer_id: str) -> Optional[Customer]:
+    async def get_customer(self, customer_id: str) -> Customer | None:
         """
         Get customer by ID.
 
@@ -302,7 +313,7 @@ class CustomerDatabase:
             ),
         )
 
-    async def update_customer(self, customer_id: str, update: CustomerUpdate) -> Optional[Customer]:
+    async def update_customer(self, customer_id: str, update: CustomerUpdate) -> Customer | None:
         """
         Update customer details.
 
@@ -338,7 +349,7 @@ class CustomerDatabase:
             return await self.get_customer(customer_id)
 
         updates.append("updated_at = ?")
-        params.append(datetime.now(timezone.utc).isoformat())
+        params.append(datetime.now(UTC).isoformat())
         params.append(customer_id)
 
         conn = await self._get_connection()
@@ -373,7 +384,7 @@ class CustomerDatabase:
         Performance: Single UPDATE statement, no SELECT needed
         """
         conn = await self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         cursor = await conn.execute(
             """
@@ -400,7 +411,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = await self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         cursor = await conn.execute(
             """
@@ -435,7 +446,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = await self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         cursor = await conn.execute(
             """
@@ -471,20 +482,18 @@ class CustomerDatabase:
 
         Security:
         - Generates cryptographically secure random key (32 bytes = 256 bits)
-        - Hashes with bcrypt (cost=12, ~300ms per hash)
-        - Only stores hash, never plaintext
+        - Stores only SHA-256 digest (never plaintext)
         - Returns plaintext only once at creation
         """
         import uuid
 
         # Generate secure random API key
-        # Format: em_live_<32 random hex chars>
+        # Format: em_live_<64 hex chars> (32 bytes)
         random_bytes = secrets.token_bytes(32)
         key_suffix = random_bytes.hex()
         plaintext_key = f"em_live_{key_suffix}"
 
-        # Hash with bcrypt (cost=12 for security/performance balance)
-        key_hash = bcrypt.hashpw(plaintext_key.encode(), bcrypt.gensalt(rounds=12))
+        key_hash_sha256 = hashlib.sha256(plaintext_key.encode()).hexdigest()
 
         # Extract prefix for display (first 8 chars after em_live_)
         key_prefix = key_suffix[:8]
@@ -493,7 +502,7 @@ class CustomerDatabase:
         key_id = str(uuid.uuid4())
 
         # Calculate expiration
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = None
         if api_key_create.expires_in_days:
             expires_at = now + timedelta(days=api_key_create.expires_in_days)
@@ -501,7 +510,7 @@ class CustomerDatabase:
         api_key = APIKey(
             key_id=key_id,
             customer_id=api_key_create.customer_id,
-            key_hash=key_hash.decode(),  # Store as string
+            key_hash_sha256=key_hash_sha256,
             key_prefix=key_prefix,
             name=api_key_create.name,
             created_at=now,
@@ -513,14 +522,14 @@ class CustomerDatabase:
         await conn.execute(
             """
             INSERT INTO api_keys (
-                key_id, customer_id, key_hash, key_prefix, name,
+                key_id, customer_id, key_hash_sha256, key_prefix, name,
                 created_at, expires_at, is_active
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 api_key.key_id,
                 api_key.customer_id,
-                api_key.key_hash,
+                key_hash_sha256,
                 api_key.key_prefix,
                 api_key.name,
                 now.isoformat(),
@@ -543,7 +552,7 @@ class CustomerDatabase:
 
         return (plaintext_key, api_key)
 
-    async def validate_api_key(self, plaintext_key: str) -> Optional[Customer]:
+    async def validate_api_key(self, plaintext_key: str) -> Customer | None:
         """
         Validate API key and return associated customer.
 
@@ -554,73 +563,74 @@ class CustomerDatabase:
             Customer if valid, None if invalid/expired
 
         Security:
-        - Constant-time comparison (bcrypt.checkpw)
         - Checks expiration
         - Checks is_active flag
         - Updates last_used_at timestamp
 
         Performance:
-        - ~300ms per validation (bcrypt cost=12)
-        - Index on key_hash for fast lookup
+        - SHA-256 indexed lookup (O(1))
         """
         if not plaintext_key.startswith("em_live_"):
+            return None
+        # Defensive: prevent unusually large headers from wasting CPU/memory.
+        # Valid keys are ~72 chars (em_live_ + 64 hex chars).
+        if len(plaintext_key) > 256:
             return None
 
         conn = await self._get_connection()
 
-        # Get all active API keys for hash-comparison
-        # Note: This is a performance trade-off for security
-        # Alternative: hash the key first and lookup by hash (but exposes timing attacks)
+        # Fast path: SHA-256 lookup narrows to a single key, then bcrypt verify
+        key_hash_sha256 = hashlib.sha256(plaintext_key.encode()).hexdigest()
         cursor = await conn.execute(
             """
             SELECT k.*, c.*
             FROM api_keys k
             JOIN customers c ON k.customer_id = c.customer_id
-            WHERE k.is_active = 1
+            WHERE k.is_active = 1 AND k.key_hash_sha256 = ?
             """
+            ,
+            (key_hash_sha256,),
         )
-        rows = await cursor.fetchall()
+        row = await cursor.fetchone()
 
-        for row in rows:
-            # Constant-time comparison using bcrypt
-            if bcrypt.checkpw(plaintext_key.encode(), row["key_hash"].encode()):
-                # Found matching key - check expiration
-                if row["expires_at"]:
-                    expires_at = datetime.fromisoformat(row["expires_at"])
-                    if datetime.now(timezone.utc) > expires_at:
-                        logger.warning(f"API key expired: {row['key_id']}")
-                        return None
-
-                # Check customer status
-                if row["status"] != CustomerStatus.ACTIVE.value:
-                    logger.warning(f"Customer not active: {row['customer_id']}")
+        if row:
+            # Found matching key - check expiration
+            if row["expires_at"]:
+                expires_at = datetime.fromisoformat(row["expires_at"])
+                if datetime.now(UTC) > expires_at:
+                    logger.warning(f"API key expired: {row['key_id']}")
                     return None
 
-                # Update last_used_at
-                now = datetime.now(timezone.utc).isoformat()
-                await conn.execute(
-                    "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
-                    (now, row["key_id"]),
-                )
-                await conn.commit()
+            # Check customer status
+            if row["status"] != CustomerStatus.ACTIVE.value:
+                logger.warning(f"Customer not active: {row['customer_id']}")
+                return None
 
-                # Return customer
-                return Customer(
-                    customer_id=row["customer_id"],
-                    organization_name=row["organization_name"],
-                    email=row["email"],
-                    subscription_tier=SubscriptionTier(row["subscription_tier"]),
-                    status=CustomerStatus(row["status"]),
-                    monthly_credit_limit=row["monthly_credit_limit"],
-                    credits_used_current_month=row["credits_used_current_month"],
-                    created_at=datetime.fromisoformat(row["created_at"]),
-                    updated_at=datetime.fromisoformat(row["updated_at"]),
-                    last_api_call_at=(
-                        datetime.fromisoformat(row["last_api_call_at"])
-                        if row["last_api_call_at"]
-                        else None
-                    ),
-                )
+            # Update last_used_at
+            now = datetime.now(UTC).isoformat()
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
+                (now, row["key_id"]),
+            )
+            await conn.commit()
+
+            # Return customer
+            return Customer(
+                customer_id=row["customer_id"],
+                organization_name=row["organization_name"],
+                email=row["email"],
+                subscription_tier=SubscriptionTier(row["subscription_tier"]),
+                status=CustomerStatus(row["status"]),
+                monthly_credit_limit=row["monthly_credit_limit"],
+                credits_used_current_month=row["credits_used_current_month"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+                last_api_call_at=(
+                    datetime.fromisoformat(row["last_api_call_at"])
+                    if row["last_api_call_at"]
+                    else None
+                ),
+            )
 
         # No matching key found
         return None
@@ -659,10 +669,10 @@ class CustomerDatabase:
         self,
         action: str,
         resource_type: str,
-        customer_id: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        details: Optional[str] = None,
-        ip_address: Optional[str] = None,
+        customer_id: str | None = None,
+        resource_id: str | None = None,
+        details: str | None = None,
+        ip_address: str | None = None,
     ) -> None:
         """
         Log audit event for compliance.
@@ -676,7 +686,7 @@ class CustomerDatabase:
             ip_address: IP address of request
         """
         conn = await self._get_connection()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         await conn.execute(
             """
@@ -697,7 +707,7 @@ class CustomerDatabase:
 
 
 # Global instance
-_db: Optional[CustomerDatabase] = None
+_db: CustomerDatabase | None = None
 
 
 async def get_customer_db() -> CustomerDatabase:
@@ -709,6 +719,7 @@ async def get_customer_db() -> CustomerDatabase:
     """
     global _db
     if _db is None:
-        _db = CustomerDatabase()
+        settings = get_settings()
+        _db = CustomerDatabase(db_path=settings.storage.customer_db_path)
         await _db.initialize()
     return _db

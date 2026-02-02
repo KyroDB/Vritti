@@ -11,13 +11,14 @@ Security:
 """
 
 import logging
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from src.auth import get_authenticated_customer, require_admin_access
 from src.models.customer import (
     APIKeyCreate,
+    Customer,
     CustomerCreate,
     CustomerUpdate,
 )
@@ -48,9 +49,9 @@ class APIKeyResponse(BaseModel):
     key_id: str
     customer_id: str
     key_prefix: str  # First 8 chars for display
-    name: Optional[str]
+    name: str | None
     created_at: str
-    expires_at: Optional[str]
+    expires_at: str | None
     is_active: bool
 
 
@@ -75,25 +76,6 @@ class UsageResponse(BaseModel):
     over_quota: bool
 
 
-# Dependency: Admin authentication (temporary - will be replaced with proper auth)
-async def verify_admin_key(x_admin_key: str = Header(...)) -> bool:
-    """
-    Verify admin API key.
-
-    TODO: Replace with proper admin authentication system.
-    For now, checks against environment variable.
-    """
-    import os
-
-    admin_key = os.getenv("ADMIN_API_KEY", "admin_secret_change_me")
-    if x_admin_key != admin_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid admin API key",
-        )
-    return True
-
-
 # Admin endpoints
 
 
@@ -101,7 +83,7 @@ async def verify_admin_key(x_admin_key: str = Header(...)) -> bool:
     "",
     response_model=CustomerResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(require_admin_access)],
 )
 async def create_customer(
     customer_data: CustomerCreate,
@@ -143,7 +125,7 @@ async def create_customer(
 @router.get(
     "/{customer_id}",
     response_model=CustomerResponse,
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(require_admin_access)],
 )
 async def get_customer(
     customer_id: str,
@@ -185,7 +167,7 @@ async def get_customer(
 @router.patch(
     "/{customer_id}",
     response_model=CustomerResponse,
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(require_admin_access)],
 )
 async def update_customer(
     customer_id: str,
@@ -233,7 +215,7 @@ async def update_customer(
     "/{customer_id}/api-keys",
     response_model=APIKeyCreateResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(require_admin_access)],
 )
 async def create_api_key(
     customer_id: str,
@@ -281,7 +263,7 @@ async def create_api_key(
 @router.delete(
     "/{customer_id}/api-keys/{key_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(require_admin_access)],
 )
 async def revoke_api_key(
     customer_id: str,
@@ -315,7 +297,7 @@ async def revoke_api_key(
 async def get_usage(
     customer_id: str,
     db: CustomerDatabase = Depends(get_customer_db),
-    # TODO: Add API key validation dependency
+    customer: Customer = Depends(get_authenticated_customer),
 ) -> UsageResponse:
     """
     Get customer usage statistics.
@@ -334,6 +316,12 @@ async def get_usage(
         404: Customer not found
         403: API key doesn't match customer_id
     """
+    if customer.customer_id != customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key does not have access to this customer",
+        )
+
     customer = await db.get_customer(customer_id)
 
     if customer is None:
@@ -363,7 +351,7 @@ async def get_usage(
 async def reset_monthly_usage(
     customer_id: str,
     db: CustomerDatabase = Depends(get_customer_db),
-    _admin: bool = Depends(verify_admin_key),
+    _: None = Depends(require_admin_access),
 ) -> None:
     """
     Reset monthly usage (admin only).

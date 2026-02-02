@@ -10,25 +10,23 @@ This file tests the complete lifecycle of an episode:
 It verifies that the components work together as a cohesive system.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from src.gating.service import GatingService
+from src.ingestion.capture import IngestionPipeline
 from src.models.episode import (
-    Episode,
     EpisodeCreate,
     EpisodeType,
     ErrorClass,
+    LLMPerspective,
+    Reflection,
+    ReflectionConsensus,
 )
-from src.models.skill import Skill
 from src.models.gating import ActionRecommendation
-from src.ingestion.capture import IngestionPipeline
-from src.gating.service import GatingService
-from src.skills.promotion import SkillPromotionService
-from src.ingestion.multi_perspective_reflection import MultiPerspectiveReflectionService
-from src.models.episode import Reflection, ReflectionConsensus, LLMPerspective
-
 from src.retrieval.search import SearchPipeline
+from src.skills.promotion import SkillPromotionService
 
 # ============================================================================
 # Fixtures
@@ -215,7 +213,7 @@ async def test_e2e_lifecycle_failure_to_prevention(
     mock_kyrodb_router.update_episode_stats.return_value = True
     
     # Trigger promotion (check_and_promote only takes episode_id and customer_id)
-    skill = await skill_promotion_service.check_and_promote(
+    await skill_promotion_service.check_and_promote(
         episode_id=episode.episode_id,
         customer_id=customer_id,
     )

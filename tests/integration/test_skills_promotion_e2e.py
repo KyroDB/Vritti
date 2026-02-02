@@ -20,13 +20,14 @@ Edge cases tested:
 - Promotion threshold boundaries
 """
 
-import asyncio
+import contextlib
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 
+from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter, get_namespaced_collection
 from src.models.episode import (
@@ -39,7 +40,6 @@ from src.models.episode import (
 )
 from src.models.skill import Skill
 from src.skills.promotion import SkillPromotionService
-from src.config import get_settings
 
 
 def _make_episode_id() -> int:
@@ -103,7 +103,7 @@ def _make_reflection(
         generalization_score=0.7,
         confidence_score=confidence,
         llm_model="test-model",
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         cost_usd=0.01,
         generation_latency_ms=100,
     )
@@ -144,7 +144,7 @@ async def _insert_episode_with_reflection(
         episode_id=episode_id,
         reflection=reflection,
         usage_stats=usage_stats,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     
     # Generate embedding
@@ -239,12 +239,10 @@ class TestSkillsPromotionE2E:
         finally:
             # Cleanup
             for episode in inserted_episodes:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.delete_episode(
                         episode.episode_id, customer_id, "failures"
                     )
-                except Exception:
-                    pass
 
     @pytest.mark.asyncio
     async def test_promotion_requires_high_success_rate(
@@ -301,12 +299,10 @@ class TestSkillsPromotionE2E:
         finally:
             # Cleanup
             for episode in inserted_episodes:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.delete_episode(
                         episode.episode_id, customer_id, "failures"
                     )
-                except Exception:
-                    pass
 
     @pytest.mark.asyncio
     async def test_successful_promotion_flow(
@@ -408,12 +404,10 @@ imagePullSecrets:
         finally:
             # Cleanup
             for episode in inserted_episodes:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.delete_episode(
                         episode.episode_id, customer_id, "failures"
                     )
-                except Exception:
-                    pass
             
             if created_skill_id:
                 try:
@@ -584,20 +578,16 @@ imagePullSecrets:
         finally:
             # Cleanup
             for episode in inserted_episodes_a:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.delete_episode(
                         episode.episode_id, customer_a, "failures"
                     )
-                except Exception:
-                    pass
             
             for episode in inserted_episodes_b:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.delete_episode(
                         episode.episode_id, customer_b, "failures"
                     )
-                except Exception:
-                    pass
 
     @pytest.mark.asyncio
     async def test_promotion_handles_missing_reflection(
@@ -629,7 +619,7 @@ imagePullSecrets:
                     fix_applied_count=10,
                     fix_success_count=10,
                 ),
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             
             # Generate embedding and store
@@ -653,10 +643,8 @@ imagePullSecrets:
             assert skill is None, "Should not promote episode without reflection"
             
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await kyrodb_router.delete_episode(episode_id, customer_id, "failures")
-            except Exception:
-                pass
 
     @pytest.mark.asyncio
     async def test_promotion_handles_zero_applications(
@@ -711,12 +699,10 @@ imagePullSecrets:
             
         finally:
             for episode in inserted_episodes:
-                try:
+                with contextlib.suppress(Exception):
                     await kyrodb_router.delete_episode(
                         episode.episode_id, customer_id, "failures"
                     )
-                except Exception:
-                    pass
 
 
 @pytest.mark.integration
@@ -734,8 +720,8 @@ class TestSkillsInGating:
         Test that gating service returns relevant skills as hints.
         """
         from src.gating.service import GatingService
-        from src.retrieval.search import SearchPipeline
         from src.models.gating import ReflectRequest
+        from src.retrieval.search import SearchPipeline
         
         customer_id = f"test_gating_{uuid4().hex[:8]}"
         skill_id = _make_episode_id()

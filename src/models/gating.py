@@ -6,7 +6,7 @@ before agents execute actions.
 """
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,7 @@ class ReflectRequest(BaseModel):
     proposed_action: str = Field(..., description="The specific action/command the agent wants to take")
     tool: str = Field(..., description="Tool being used (e.g., 'kubectl', 'docker', 'git')")
     current_state: dict[str, Any] = Field(default_factory=dict, description="Current environment state (OS, versions, etc.)")
-    context: Optional[str] = Field(default=None, description="Additional context or previous steps")
+    context: str | None = Field(default=None, description="Additional context or previous steps")
 
 
 class ReflectResponse(BaseModel):
@@ -49,7 +49,7 @@ class ReflectResponse(BaseModel):
     matched_failures: list[SearchResult] = Field(default_factory=list)
 
     # Suggested alternatives (if REWRITE)
-    suggested_action: Optional[str] = Field(default=None, description="Better alternative action if available")
+    suggested_action: str | None = Field(default=None, description="Better alternative action if available")
 
     # Hints (if HINT)
     hints: list[str] = Field(default_factory=list, description="Helpful hints to avoid failure")

@@ -1,8 +1,9 @@
 # Test fixtures for load testing
 
-import pytest
 import uuid
 from unittest.mock import AsyncMock
+
+import pytest
 
 from src.models.episode import EpisodeCreate
 

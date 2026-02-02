@@ -17,10 +17,6 @@ Performance Tests:
 - Timeout enforcement
 """
 
-import asyncio
-import json
-from datetime import timezone, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -32,13 +28,12 @@ from src.ingestion.multi_perspective_reflection import (
 )
 from src.models.episode import (
     EpisodeCreate,
-    ErrorClass,
     EpisodeType,
+    ErrorClass,
     LLMPerspective,
     Reflection,
     ReflectionConsensus,
 )
-
 
 # ============================================================================
 # Fixtures

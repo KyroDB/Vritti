@@ -19,9 +19,11 @@ Designed for <50ms P99 latency (excluding async reflection).
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.models.episode import Reflection
@@ -187,7 +189,7 @@ class IngestionPipeline:
             episode = Episode(
                 create_data=episode_data,
                 episode_id=episode_id,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 retrieval_count=0,
                 reflection=None,  # Will be generated async
             )
@@ -233,9 +235,13 @@ class IngestionPipeline:
         Redact PII from episode data.
 
         Applies to:
+        - goal
         - error_trace
         - code_state_diff
         - actions_taken
+        - resolution
+        - environment_info
+        - tags
 
         Args:
             episode_data: Original episode data
@@ -243,6 +249,12 @@ class IngestionPipeline:
         Returns:
             EpisodeCreate: Data with PII redacted
         """
+        # Redact goal
+        episode_data.goal = redact_all(
+            episode_data.goal,
+            redact_phones=False,
+        )
+
         # Redact error trace
         episode_data.error_trace = redact_all(
             episode_data.error_trace,
@@ -261,7 +273,64 @@ class IngestionPipeline:
             redact_all(action, redact_phones=False) for action in episode_data.actions_taken
         ]
 
+        # Redact resolution (if provided)
+        if episode_data.resolution:
+            episode_data.resolution = redact_all(
+                episode_data.resolution,
+                redact_phones=False,
+            )
+
+        # Redact tags
+        if episode_data.tags:
+            episode_data.tags = [
+                redact_all(tag, redact_phones=False) for tag in episode_data.tags
+            ]
+
+        # Redact environment info (recursive)
+        episode_data.environment_info = self._redact_environment_info(
+            episode_data.environment_info
+        )
+
         return episode_data
+
+    def _redact_environment_info(self, data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Recursively redact PII from environment_info.
+
+        Redacts both keys and string values while preserving structure.
+        """
+        def _redact(value: Any) -> Any:
+            if isinstance(value, str):
+                return redact_all(value, redact_phones=False)
+            if isinstance(value, dict):
+                return {redact_all(str(k), redact_phones=False): _redact(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_redact(v) for v in value]
+            return value
+
+        return _redact(data)
+
+    def _redact_reflection_pii(self, reflection: Reflection) -> Reflection:
+        """
+        Redact PII from reflection payload before persistence.
+
+        Defense-in-depth:
+        - Episode inputs are redacted before LLM generation
+        - Reflection outputs are redacted again to prevent leakage via LLM output
+        """
+
+        def _redact_values(value: Any) -> Any:
+            if isinstance(value, str):
+                return redact_all(value, redact_phones=False)
+            if isinstance(value, dict):
+                return {k: _redact_values(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_redact_values(v) for v in value]
+            return value
+
+        payload = reflection.model_dump(mode="json")
+        redacted_payload = _redact_values(payload)
+        return Reflection.model_validate(redacted_payload)
 
     async def _generate_embeddings(
         self, episode_data: EpisodeCreate
@@ -283,17 +352,39 @@ class IngestionPipeline:
         if len(text_content) > 5000:
             text_content = text_content[:5000] + "... (truncated)"
 
-        text_embedding = self.embedding_service.embed_text(text_content)
+        import anyio
+        text_embedding = await anyio.to_thread.run_sync(
+            self.embedding_service.embed_text, text_content
+        )
 
         # Image embedding if screenshot provided
         image_embedding = None
-        if episode_data.screenshot_path:
+        if episode_data.screenshot_base64:
+            # Decode base64 screenshot bytes
             try:
-                image_embedding = self.embedding_service.embed_image(episode_data.screenshot_path)
-                logger.debug(f"Generated image embedding for {episode_data.screenshot_path}")
-            except Exception as e:
-                logger.warning(f"Image embedding failed for {episode_data.screenshot_path}: {e}")
-                # Continue without image embedding
+                b64 = episode_data.screenshot_base64.strip()
+                # Accept data URLs (e.g., "data:image/png;base64,...") for convenience.
+                if b64.startswith("data:"):
+                    if "," not in b64:
+                        raise ValueError("Invalid data URL: missing ',' separator")
+                    _, b64 = b64.split(",", 1)
+                image_bytes = base64.b64decode(b64, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise ValueError(f"Invalid screenshot_base64: {e}") from e
+
+            # Enforce upload size limit (security)
+            max_size = self.settings.service.max_file_upload_size
+            if len(image_bytes) > max_size:
+                raise ValueError(
+                    f"Screenshot too large: {len(image_bytes)} bytes "
+                    f"(max {max_size} bytes)"
+                )
+
+            # Embed screenshot (must be a valid image for CLIP processor)
+            image_embedding = await anyio.to_thread.run_sync(
+                self.embedding_service.embed_image_bytes, image_bytes
+            )
+            logger.debug("Generated image embedding from screenshot bytes")
 
         return text_embedding, image_embedding
 
@@ -346,6 +437,10 @@ class IngestionPipeline:
 
         if not text_success:
             raise RuntimeError(f"Failed to store episode {episode.episode_id} in text instance")
+
+        # Populate embedding IDs so API responses can reflect actual storage state.
+        episode.text_embedding_id = episode.episode_id if text_success else None
+        episode.image_embedding_id = episode.episode_id if image_success else None
 
         logger.debug(
             f"Episode {episode.episode_id} stored in KyroDB "
@@ -402,6 +497,27 @@ class IngestionPipeline:
             generation_time = time.perf_counter() - start_time
 
             if reflection:
+                redaction_failed = False
+                # Defense-in-depth: redact PII from LLM output before persistence.
+                try:
+                    reflection = self._redact_reflection_pii(reflection)
+                except Exception as e:
+                    redaction_failed = True
+                    logger.warning(
+                        f"Reflection PII redaction failed for episode {episode_id}: {e}",
+                        exc_info=True,
+                    )
+                    await self._log_to_dead_letter_queue(
+                        episode_id=episode_id,
+                        customer_id=episode_data.customer_id,
+                        reflection=None,
+                        failure_reason="reflection_redaction_failed",
+                    )
+                    self._track_reflection_failure("redaction_failed")
+
+                if redaction_failed:
+                    return
+
                 # Persist reflection with retry logic
                 success = await self._persist_reflection_with_retry(
                     episode_id=episode_id,
@@ -551,7 +667,7 @@ class IngestionPipeline:
         self,
         episode_id: int,
         customer_id: str,
-        reflection: Reflection,
+        reflection: Reflection | None,
         failure_reason: str,
     ) -> None:
         """
@@ -584,7 +700,7 @@ class IngestionPipeline:
             max_size_bytes = self.settings.service.dead_letter_queue_max_size_mb * 1024 * 1024
             if dead_letter_path.exists() and dead_letter_path.stat().st_size >= max_size_bytes:
                 # Rotate: rename current file with timestamp
-                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
                 rotated_path = dead_letter_path.with_suffix(f".{timestamp}.log")
                 dead_letter_path.rename(rotated_path)
                 logger.info(
@@ -592,33 +708,35 @@ class IngestionPipeline:
                     f"(size exceeded {max_size_bytes} bytes)"
                 )
 
-            # Serialize reflection to JSON-safe format
-            reflection_data = {
-                "root_cause": reflection.root_cause,
-                "preconditions": reflection.preconditions,
-                "resolution_strategy": reflection.resolution_strategy,
-                "environment_factors": reflection.environment_factors,
-                "affected_components": reflection.affected_components,
-                "generalization_score": reflection.generalization_score,
-                "confidence_score": reflection.confidence_score,
-                "llm_model": reflection.llm_model,
-                "generated_at": reflection.generated_at.isoformat(),
-                "cost_usd": reflection.cost_usd,
-                "generation_latency_ms": reflection.generation_latency_ms,
-                "tier": reflection.tier,
-            }
-
-            # Add consensus data if present
-            if reflection.consensus:
-                reflection_data["consensus"] = {
-                    "method": reflection.consensus.consensus_method,
-                    "confidence": reflection.consensus.consensus_confidence,
-                    "disagreement_points": reflection.consensus.disagreement_points,
+            reflection_data = None
+            if reflection is not None:
+                # Serialize reflection to JSON-safe format
+                reflection_data = {
+                    "root_cause": reflection.root_cause,
+                    "preconditions": reflection.preconditions,
+                    "resolution_strategy": reflection.resolution_strategy,
+                    "environment_factors": reflection.environment_factors,
+                    "affected_components": reflection.affected_components,
+                    "generalization_score": reflection.generalization_score,
+                    "confidence_score": reflection.confidence_score,
+                    "llm_model": reflection.llm_model,
+                    "generated_at": reflection.generated_at.isoformat(),
+                    "cost_usd": reflection.cost_usd,
+                    "generation_latency_ms": reflection.generation_latency_ms,
+                    "tier": reflection.tier,
                 }
+
+                # Add consensus data if present
+                if reflection.consensus:
+                    reflection_data["consensus"] = {
+                        "method": reflection.consensus.consensus_method,
+                        "confidence": reflection.consensus.consensus_confidence,
+                        "disagreement_points": reflection.consensus.disagreement_points,
+                    }
 
             # Create dead-letter entry
             entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "episode_id": episode_id,
                 "customer_id": customer_id,
                 "failure_reason": failure_reason,

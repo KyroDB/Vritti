@@ -9,9 +9,9 @@ Design Decision: This system stores ONLY failures in episodic memory.
 - This prevents memory bloat and keeps the system focused on its core value
 """
 
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -208,7 +208,7 @@ class ReflectionConsensus(BaseModel):
     )
 
     generated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
     @field_validator("consensus_method")
@@ -257,7 +257,7 @@ class Reflection(BaseModel):
     """
 
     # Multi-perspective consensus (if available)
-    consensus: Optional[ReflectionConsensus] = Field(
+    consensus: ReflectionConsensus | None = Field(
         default=None,
         description="Multi-LLM consensus (premium reflections only)"
     )
@@ -313,7 +313,7 @@ class Reflection(BaseModel):
 
     # Generation metadata
     generated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
     llm_model: str = Field(
@@ -337,7 +337,7 @@ class Reflection(BaseModel):
     )
     
     # Tier tracking (Phase 5)
-    tier: Optional[ReflectionTier] = Field(
+    tier: ReflectionTier | None = Field(
         default=None,
         description="Reflection tier used (cheap/cached/premium)"
     )
@@ -397,7 +397,7 @@ class EpisodeCreate(BaseModel):
     """
 
     # Multi-tenancy (set by middleware, not user-provided)
-    customer_id: Optional[str] = Field(
+    customer_id: str | None = Field(
         default=None,
         description="Customer ID for tenant isolation (set automatically from API key)",
     )
@@ -417,21 +417,24 @@ class EpisodeCreate(BaseModel):
     error_class: ErrorClass = Field(default=ErrorClass.UNKNOWN)
 
     # State context
-    code_state_diff: Optional[str] = Field(
+    code_state_diff: str | None = Field(
         default=None, description="git diff or code changes leading to issue"
     )
     environment_info: dict[str, Any] = Field(
         default_factory=dict, description="Environment variables, versions, etc."
     )
 
-    # Visual context
-    screenshot_path: Optional[str] = Field(default=None, description="Path to screenshot")
+    # Visual context (base64-encoded image bytes)
+    screenshot_base64: str | None = Field(
+        default=None,
+        description="Base64-encoded screenshot image bytes (raw base64 preferred; data URLs are also accepted)",
+    )
 
     # Resolution (learning from how the failure was fixed)
-    resolution: Optional[str] = Field(
+    resolution: str | None = Field(
         default=None, description="How the failure was eventually resolved (for learning)"
     )
-    time_to_resolve_seconds: Optional[int] = Field(
+    time_to_resolve_seconds: int | None = Field(
         default=None, ge=0, description="Time taken to resolve the failure"
     )
 
@@ -517,14 +520,14 @@ class Episode(BaseModel):
 
     # Generated fields
     episode_id: int = Field(..., description="Unique episode ID (KyroDB doc_id)")
-    reflection: Optional[Reflection] = Field(
+    reflection: Reflection | None = Field(
         default=None, description="LLM-generated reflection"
     )
 
     # Storage metadata
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     retrieval_count: int = Field(default=0, ge=0, description="Number of times retrieved")
-    last_retrieved_at: Optional[datetime] = Field(default=None)
+    last_retrieved_at: datetime | None = Field(default=None)
 
     # Usage tracking (Phase 2: Skills promotion)
     usage_stats: UsageStats = Field(
@@ -533,13 +536,13 @@ class Episode(BaseModel):
     )
 
     # Embeddings metadata (stored separately in KyroDB)
-    text_embedding_id: Optional[int] = Field(default=None)
-    code_embedding_id: Optional[int] = Field(default=None)
-    image_embedding_id: Optional[int] = Field(default=None)
+    text_embedding_id: int | None = Field(default=None)
+    code_embedding_id: int | None = Field(default=None)
+    image_embedding_id: int | None = Field(default=None)
 
     # Hygiene metadata
     archived: bool = Field(default=False)
-    archived_at: Optional[datetime] = Field(default=None)
+    archived_at: datetime | None = Field(default=None)
 
     def to_metadata_dict(self) -> dict[str, str]:
         """
@@ -548,7 +551,20 @@ class Episode(BaseModel):
         Returns:
             dict: Metadata compatible with KyroDB InsertRequest
         """
+        import base64
         import json
+        import zlib
+
+        def _encode_episode_json(data: dict[str, Any]) -> str:
+            """
+            Encode episode JSON for storage.
+
+            Compresses to reduce metadata bloat and bandwidth.
+            Format: "gz:{base64(zlib(json))}"
+            """
+            raw = json.dumps(data, default=str)
+            compressed = zlib.compress(raw.encode("utf-8"))
+            return "gz:" + base64.b64encode(compressed).decode("ascii")
 
         metadata = {
             # Multi-tenancy
@@ -556,7 +572,7 @@ class Episode(BaseModel):
             # Episode fields
             "episode_type": self.create_data.episode_type.value,
             "error_class": self.create_data.error_class.value,
-            "tool": self.create_data.tool_chain[0],  # Primary tool
+            "tool": self.create_data.tool_chain[0].strip().lower(),  # Primary tool (normalized for exact-match filtering)
             "severity": str(self.create_data.severity),
             "timestamp": str(int(self.created_at.timestamp())),
             "retrieval_count": str(self.retrieval_count),
@@ -567,13 +583,23 @@ class Episode(BaseModel):
             "usage_fix_success_count": str(self.usage_stats.fix_success_count),
             "usage_fix_failure_count": str(self.usage_stats.fix_failure_count),
             "usage_fix_success_rate": str(self.usage_stats.fix_success_rate),
-            # Store full episode as JSON (for complex queries)
-            "episode_json": json.dumps(self.model_dump(mode="json"), default=str),
+            # Store full episode as compressed JSON (for reconstruction)
         }
+        # Store full episode as compressed JSON (for reconstruction), excluding raw screenshot bytes.
+        episode_payload = self.model_dump(mode="json")
+        create_data = episode_payload.get("create_data")
+        if isinstance(create_data, dict):
+            create_data.pop("screenshot_base64", None)
+        metadata["episode_json"] = _encode_episode_json(episode_payload)
 
         # Add tags as comma-separated
         if self.create_data.tags:
             metadata["tags"] = ",".join(self.create_data.tags)
+            # Add per-tag metadata keys for exact-match filtering
+            for tag in self.create_data.tags:
+                safe_tag = str(tag).strip().lower().replace(" ", "_")
+                if safe_tag:
+                    metadata[f"tag:{safe_tag}"] = "1"
 
         return metadata
 
@@ -589,10 +615,20 @@ class Episode(BaseModel):
         Returns:
             Episode: Reconstructed episode instance
         """
+        import base64
         import json
+        import zlib
 
         if "episode_json" in metadata:
-            data = json.loads(metadata["episode_json"])
+            raw = metadata["episode_json"]
+            # Handle compressed payloads
+            if raw.startswith("gz:"):
+                try:
+                    compressed = base64.b64decode(raw[3:])
+                    raw = zlib.decompress(compressed).decode("utf-8")
+                except Exception as e:
+                    raise ValueError(f"Failed to decompress episode_json: {e}") from e
+            data = json.loads(raw)
             episode = cls.model_validate(data)
             episode.episode_id = doc_id
             return episode
@@ -603,4 +639,4 @@ class Episode(BaseModel):
     def increment_retrieval_count(self) -> None:
         """Increment retrieval count and update timestamp."""
         self.retrieval_count += 1
-        self.last_retrieved_at = datetime.now(timezone.utc)
+        self.last_retrieved_at = datetime.now(UTC)

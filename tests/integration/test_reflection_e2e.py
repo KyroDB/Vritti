@@ -15,26 +15,27 @@ Test Categories:
 """
 
 import asyncio
-import json
-import os
-import pytest
-from datetime import timezone, datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from src.config import LLMConfig, get_settings
+import pytest
+
+from src.config import LLMConfig
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.tiered_reflection import TieredReflectionService, get_tiered_reflection_service
+from src.ingestion.tiered_reflection import (
+    TieredReflectionService,
+)
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import (
     EpisodeCreate,
     EpisodeType,
     ErrorClass,
-    Reflection,
-    ReflectionTier,
     LLMPerspective,
+    Reflection,
     ReflectionConsensus,
+    ReflectionTier,
 )
 
 
@@ -91,7 +92,7 @@ def mock_reflection() -> Reflection:
         agreed_resolution="1. Verify image exists\n2. Update manifest tag",
         consensus_confidence=0.92,
         disagreement_points=[],
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )
 
     return Reflection(
@@ -108,7 +109,7 @@ def mock_reflection() -> Reflection:
         generalization_score=0.72,
         confidence_score=0.92,
         llm_model="openrouter-consensus",
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         cost_usd=0.0,  # Free tier
         generation_latency_ms=1500.0,
         tier=ReflectionTier.PREMIUM.value,
@@ -195,7 +196,7 @@ def mock_kyrodb_router_with_reflection() -> MagicMock:
         return True
 
     async def mock_get_episode(episode_id, collection, include_image=False):
-        for key, data in storage.items():
+        for _key, data in storage.items():
             if data["episode_id"] == episode_id:
                 return {
                     "doc_id": data["episode_id"],
@@ -418,17 +419,16 @@ class TestReflectionE2EMock:
             pipeline,
             "_log_to_dead_letter_queue",
             wraps=pipeline._log_to_dead_letter_queue,
-        ) as mock_dlq:
+        ):
             # Temporarily change the path
-            original_method = pipeline._log_to_dead_letter_queue
 
             async def patched_dlq(*args, **kwargs):
                 # Override path in kwargs
                 import json
-                from datetime import timezone, datetime
+                from datetime import UTC, datetime
 
                 entry = {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                     "episode_id": args[0] if args else kwargs.get("episode_id"),
                     "customer_id": args[1] if len(args) > 1 else kwargs.get("customer_id"),
                     "failure_reason": args[3] if len(args) > 3 else kwargs.get("failure_reason"),
@@ -473,7 +473,7 @@ class TestReflectionE2EMock:
         )
 
         # Capture without reflection
-        episode = await pipeline.capture_episode(
+        await pipeline.capture_episode(
             episode_data=sample_episode_data,
             generate_reflection=False,  # Disabled
         )
@@ -611,8 +611,9 @@ class TestDailyCostTracking:
     async def test_daily_cost_warning_triggered(self, llm_config: LLMConfig):
         """Test that warning is logged when daily cost exceeds $10."""
         # This is a unit test for the cost tracking logic
-        from src.ingestion.tiered_reflection import TieredReflectionService
         from unittest.mock import patch
+
+        from src.ingestion.tiered_reflection import TieredReflectionService
 
         with patch.object(TieredReflectionService, "__init__", return_value=None):
             service = TieredReflectionService.__new__(TieredReflectionService)
@@ -621,7 +622,7 @@ class TestDailyCostTracking:
             import threading
             service._stats_lock = threading.Lock()
             service._daily_cost_usd = 0.0
-            service._daily_cost_date = datetime.now(timezone.utc).date()
+            service._daily_cost_date = datetime.now(UTC).date()
             service._daily_warning_logged = False
             service._daily_limit_logged = False
             service.DAILY_COST_WARNING_USD = 10.0
@@ -647,8 +648,9 @@ class TestDailyCostTracking:
     @pytest.mark.asyncio
     async def test_budget_limit_blocks_premium(self, llm_config: LLMConfig):
         """Test that premium tier is blocked when daily limit exceeded."""
-        from src.ingestion.tiered_reflection import TieredReflectionService
         from unittest.mock import patch
+
+        from src.ingestion.tiered_reflection import TieredReflectionService
 
         with patch.object(TieredReflectionService, "__init__", return_value=None):
             service = TieredReflectionService.__new__(TieredReflectionService)
@@ -657,7 +659,7 @@ class TestDailyCostTracking:
             import threading
             service._stats_lock = threading.Lock()
             service._daily_cost_usd = 55.0  # Over limit
-            service._daily_cost_date = datetime.now(timezone.utc).date()
+            service._daily_cost_date = datetime.now(UTC).date()
             service._daily_warning_logged = True
             service._daily_limit_logged = True
             service.DAILY_COST_LIMIT_USD = 50.0
@@ -668,9 +670,10 @@ class TestDailyCostTracking:
     @pytest.mark.asyncio
     async def test_daily_cost_resets_at_midnight(self, llm_config: LLMConfig):
         """Test that daily cost resets at midnight UTC."""
-        from src.ingestion.tiered_reflection import TieredReflectionService
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
         from unittest.mock import patch
+
+        from src.ingestion.tiered_reflection import TieredReflectionService
 
         with patch.object(TieredReflectionService, "__init__", return_value=None):
             service = TieredReflectionService.__new__(TieredReflectionService)
@@ -680,7 +683,7 @@ class TestDailyCostTracking:
             service._stats_lock = threading.Lock()
             service._daily_cost_usd = 100.0  # Over limit
             # Use UTC date to match implementation's datetime.now(timezone.utc).date()
-            today_utc = datetime.now(timezone.utc).date()
+            today_utc = datetime.now(UTC).date()
             service._daily_cost_date = today_utc - timedelta(days=1)  # Yesterday UTC
             service._daily_warning_logged = True
             service._daily_limit_logged = True

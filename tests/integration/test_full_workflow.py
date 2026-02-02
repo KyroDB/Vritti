@@ -10,15 +10,16 @@ Integration tests for the full Episodic Memory workflow.
 6. Verify skill promotion
 """
 
+
 import pytest
-import asyncio
-from datetime import datetime, timedelta
-from src.models.episode import EpisodeCreate, Episode
-from src.models.gating import ReflectRequest
-from src.ingestion.capture import IngestionPipeline
-from src.retrieval.search import SearchPipeline
+
 from src.gating.service import GatingService
+from src.ingestion.capture import IngestionPipeline
 from src.kyrodb.router import KyroDBRouter
+from src.models.episode import EpisodeCreate
+from src.models.gating import ReflectRequest
+from src.retrieval.search import SearchPipeline
+
 
 @pytest.mark.asyncio
 async def test_full_episodic_memory_workflow(

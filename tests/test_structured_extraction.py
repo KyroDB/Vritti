@@ -6,11 +6,10 @@ and goal compatibility checking.
 """
 
 import pytest
+
 from src.utils.structured_extraction import (
     ActionType,
     GoalParser,
-    StructuredGoal,
-    TimeCondition,
 )
 
 
