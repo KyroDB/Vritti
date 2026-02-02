@@ -82,3 +82,5 @@ htmlcov/
 .github/copilot-instructions.md
 visualize_decay.py
 other_docs/
+
+AGENTS.md
