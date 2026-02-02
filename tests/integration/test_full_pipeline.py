@@ -5,7 +5,9 @@ Tests the complete episode lifecycle:
 1. Capture episode → 2. Generate reflection → 3. Persist to KyroDB
 4. Search → 5. Pre-action gating
 
-Requires KyroDB server running on localhost:50051 with 384-dim embeddings.
+Requires KyroDB servers:
+- Text: localhost:50051 (384-dim)
+- Image: localhost:50052 (512-dim)
 
 Run with:
     pytest tests/integration/test_full_pipeline.py -v -s
@@ -21,13 +23,13 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Reflection, ReflectionTier
 
 
-def is_kyrodb_running() -> bool:
-    """Check if KyroDB is running on localhost:50051."""
+def is_kyrodb_running(host: str, port: int) -> bool:
+    """Check if KyroDB is running on the given host:port."""
     import socket
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
-        result = sock.connect_ex(('localhost', 50051))
+        result = sock.connect_ex((host, port))
         sock.close()
         return result == 0
     except Exception:
@@ -37,8 +39,10 @@ def is_kyrodb_running() -> bool:
 @pytest.fixture
 def skip_if_no_kyrodb():
     """Skip test if KyroDB is not running."""
-    if not is_kyrodb_running():
-        pytest.skip("KyroDB not running on localhost:50051")
+    if not is_kyrodb_running("localhost", 50051):
+        pytest.skip("KyroDB text instance not running on localhost:50051")
+    if not is_kyrodb_running("localhost", 50052):
+        pytest.skip("KyroDB image instance not running on localhost:50052")
 
 
 @pytest.fixture
@@ -48,7 +52,7 @@ async def kyrodb_router():
         text_host="localhost",
         text_port=50051,
         image_host="localhost",
-        image_port=50051,
+        image_port=50052,
         enable_tls=False,
         request_timeout_seconds=30,
     )

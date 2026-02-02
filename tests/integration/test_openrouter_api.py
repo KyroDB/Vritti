@@ -161,15 +161,14 @@ class TestOpenRouterAPI:
         - Pydantic model validates response
         - Response contains expected fields
         """
-        service = MultiPerspectiveReflectionService(config=real_llm_config)
+        async with MultiPerspectiveReflectionService(config=real_llm_config) as service:
+            start_time = time.perf_counter()
 
-        start_time = time.perf_counter()
-
-        # Generate reflection using cheap tier (single model)
-        reflection = await service.generate_multi_perspective_reflection(
-            episode=sample_episode,
-            use_cheap_tier=True,
-        )
+            # Generate reflection using cheap tier (single model)
+            reflection = await service.generate_multi_perspective_reflection(
+                episode=sample_episode,
+                use_cheap_tier=True,
+            )
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -211,15 +210,14 @@ class TestOpenRouterAPI:
         - Semantic similarity logic works
         - Merged preconditions are deduplicated
         """
-        service = MultiPerspectiveReflectionService(config=real_llm_config)
+        async with MultiPerspectiveReflectionService(config=real_llm_config) as service:
+            start_time = time.perf_counter()
 
-        start_time = time.perf_counter()
-
-        # Generate reflection using premium tier (multi-model consensus)
-        reflection = await service.generate_multi_perspective_reflection(
-            episode=sample_episode,
-            use_cheap_tier=False,
-        )
+            # Generate reflection using premium tier (multi-model consensus)
+            reflection = await service.generate_multi_perspective_reflection(
+                episode=sample_episode,
+                use_cheap_tier=False,
+            )
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -278,8 +276,6 @@ class TestOpenRouterAPI:
             timeout_seconds=30,
         )
 
-        service = MultiPerspectiveReflectionService(config=bad_config)
-
         episode = EpisodeCreate(
             customer_id="test",
             episode_type=EpisodeType.FAILURE,
@@ -290,11 +286,12 @@ class TestOpenRouterAPI:
             error_class=ErrorClass.UNKNOWN,
         )
 
-        # Should not raise exception, should return fallback reflection
-        reflection = await service.generate_multi_perspective_reflection(
-            episode=episode,
-            use_cheap_tier=False,
-        )
+        async with MultiPerspectiveReflectionService(config=bad_config) as service:
+            # Should not raise exception, should return fallback reflection
+            reflection = await service.generate_multi_perspective_reflection(
+                episode=episode,
+                use_cheap_tier=False,
+            )
 
         print("\n--- Error Handling Test ---")
         print(f"Model: {reflection.llm_model}")
@@ -317,25 +314,24 @@ class TestOpenRouterAPI:
         
         Uses embedding model to compare root cause texts.
         """
-        service = MultiPerspectiveReflectionService(config=real_llm_config)
+        async with MultiPerspectiveReflectionService(config=real_llm_config) as service:
+            # Test texts with same semantic meaning but different wording
+            similar_texts = [
+                "Missing dependency in requirements file",
+                "Package not listed in requirements.txt",
+            ]
 
-        # Test texts with same semantic meaning but different wording
-        similar_texts = [
-            "Missing dependency in requirements file",
-            "Package not listed in requirements.txt",
-        ]
+            # Test texts with different meanings
+            different_texts = [
+                "Missing dependency in requirements file",
+                "Network connection timeout during API call",
+            ]
 
-        # Test texts with different meanings
-        different_texts = [
-            "Missing dependency in requirements file",
-            "Network connection timeout during API call",
-        ]
+            similar_matrix = service._compute_semantic_similarity_matrix(similar_texts)
+            different_matrix = service._compute_semantic_similarity_matrix(different_texts)
 
-        similar_matrix = service._compute_semantic_similarity_matrix(similar_texts)
-        different_matrix = service._compute_semantic_similarity_matrix(different_texts)
-
-        similar_score = similar_matrix[0, 1]
-        different_score = different_matrix[0, 1]
+            similar_score = similar_matrix[0, 1]
+            different_score = different_matrix[0, 1]
 
         print("\n--- Semantic Similarity Test ---")
         print(f"Similar texts similarity: {similar_score:.3f}")
@@ -371,20 +367,19 @@ class TestOpenRouterRateLimits:
         
         Makes multiple concurrent requests and verifies they all complete.
         """
-        service = MultiPerspectiveReflectionService(config=real_llm_config)
+        async with MultiPerspectiveReflectionService(config=real_llm_config) as service:
+            # Make 3 concurrent cheap reflections
+            tasks = [
+                service.generate_multi_perspective_reflection(
+                    episode=sample_episode,
+                    use_cheap_tier=True,
+                )
+                for _ in range(3)
+            ]
 
-        # Make 3 concurrent cheap reflections
-        tasks = [
-            service.generate_multi_perspective_reflection(
-                episode=sample_episode,
-                use_cheap_tier=True,
-            )
-            for _ in range(3)
-        ]
-
-        start_time = time.perf_counter()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
+            start_time = time.perf_counter()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         print("\n--- Parallel Requests Test ---")
         print(f"Total latency for 3 requests: {elapsed_ms:.0f}ms")

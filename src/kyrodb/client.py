@@ -10,7 +10,7 @@ Provides a clean async interface to KyroDB operations with:
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import math
 from pathlib import Path
 
 import grpc
@@ -18,23 +18,29 @@ from grpc import StatusCode
 from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
 from src.kyrodb.kyrodb_pb2 import (
+    BatchDeleteRequest,
+    BatchDeleteResponse,
+    BulkQueryRequest,
+    BulkQueryResponse,
     DeleteRequest,
     DeleteResponse,
     HealthRequest,
     HealthResponse,
+    IdList,
     InsertRequest,
     InsertResponse,
+    MetadataFilter,
     QueryRequest,
     QueryResponse,
     SearchRequest,
     SearchResponse,
+    UpdateMetadataRequest,
+    UpdateMetadataResponse,
 )
 from src.kyrodb.kyrodb_pb2_grpc import KyroDBServiceStub
 from src.resilience.circuit_breakers import with_kyrodb_circuit_breaker
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_BULK_CONCURRENCY = 32
 
 
 class KyroDBError(Exception):
@@ -59,34 +65,6 @@ class DocumentNotFoundError(KyroDBError):
     """Requested document does not exist."""
 
     pass
-
-
-@dataclass(slots=True)
-class BulkQueryResponse:
-    """
-    Convenience response for bulk point lookups.
-
-    KyroDB does not expose a BulkQuery RPC; callers use this wrapper to avoid
-    coupling internal call sites to the per-ID Query RPC loop.
-    """
-
-    results: list[QueryResponse]
-    total_requested: int
-    total_found: int
-
-
-@dataclass(slots=True)
-class BatchDeleteResponse:
-    """
-    Convenience response for batch deletions.
-
-    KyroDB does not expose a BatchDelete RPC; this wrapper reports how many
-    documents existed and were deleted.
-    """
-
-    success: bool
-    deleted_count: int
-    error: str
 
 
 class KyroDBClient:
@@ -145,6 +123,31 @@ class KyroDBClient:
         self._channel: grpc.aio.Channel | None = None
         self._stub: KyroDBServiceStub | None = None
         self._connected = False
+
+    @staticmethod
+    def _l2_normalize(vector: list[float], *, name: str = "embedding") -> list[float]:
+        """
+        L2-normalize a vector for cosine similarity.
+
+        KyroDB's cosine distance path expects L2-normalized vectors and will reject
+        non-normalized queries when normalization checks are enabled.
+        """
+        if not vector:
+            raise ValueError(f"{name} cannot be empty")
+
+        norm_sq = 0.0
+        for x in vector:
+            fx = float(x)
+            norm_sq += fx * fx
+
+        if norm_sq <= 0.0:
+            raise ValueError(f"{name} has zero norm")
+
+        if abs(norm_sq - 1.0) <= 1e-3:
+            return [float(x) for x in vector]
+
+        inv = 1.0 / math.sqrt(norm_sq)
+        return [float(x) * inv for x in vector]
 
     def _create_tls_credentials(self) -> grpc.ChannelCredentials:
         """
@@ -382,9 +385,10 @@ class KyroDBClient:
         Raises:
             KyroDBError: On insertion failure
         """
+        normalized_embedding = self._l2_normalize(embedding, name="embedding")
         request = InsertRequest(
             doc_id=doc_id,
-            embedding=embedding,
+            embedding=normalized_embedding,
             namespace=namespace,
             metadata=metadata or {},
         )
@@ -398,7 +402,8 @@ class KyroDBClient:
         namespace: str = "",
         min_score: float = -1.0,
         include_embeddings: bool = False,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filter: MetadataFilter | None = None,
+        ef_search: int = 0,
     ) -> SearchResponse:
         """
         k-NN vector similarity search.
@@ -409,7 +414,8 @@ class KyroDBClient:
             namespace: Filter by namespace
             min_score: Minimum cosine similarity threshold
             include_embeddings: Return embeddings in results
-            metadata_filters: Server-side metadata filtering (exact match on key-value pairs)
+            metadata_filter: Optional structured metadata filter
+            ef_search: Optional HNSW ef_search override (0 = server default)
 
         Returns:
             SearchResponse with top-k results
@@ -417,14 +423,19 @@ class KyroDBClient:
         Raises:
             KyroDBError: On search failure
         """
+        normalized_query_embedding = self._l2_normalize(
+            query_embedding, name="query_embedding"
+        )
         request = SearchRequest(
-            query_embedding=query_embedding,
+            query_embedding=normalized_query_embedding,
             k=k,
             namespace=namespace,
             min_score=min_score,
             include_embeddings=include_embeddings,
-            metadata_filters=metadata_filters or {},
+            ef_search=ef_search,
         )
+        if metadata_filter is not None:
+            request.filter.CopyFrom(metadata_filter)
         return await self._call_with_retry(self._stub.Search, request, "Search")
 
     async def query(
@@ -467,6 +478,33 @@ class KyroDBClient:
         request = DeleteRequest(doc_id=doc_id, namespace=namespace)
         return await self._call_with_retry(self._stub.Delete, request, "Delete")
 
+    async def update_metadata(
+        self,
+        doc_id: int,
+        metadata: dict[str, str],
+        namespace: str = "",
+        merge: bool = True,
+    ) -> UpdateMetadataResponse:
+        """
+        Update document metadata without changing embedding.
+
+        Args:
+            doc_id: Document ID to update
+            metadata: Metadata fields to set/merge
+            namespace: Optional namespace filter
+            merge: true = merge/update keys, false = replace all metadata
+
+        Returns:
+            UpdateMetadataResponse
+        """
+        request = UpdateMetadataRequest(
+            doc_id=doc_id,
+            metadata=metadata,
+            merge=merge,
+            namespace=namespace,
+        )
+        return await self._call_with_retry(self._stub.UpdateMetadata, request, "UpdateMetadata")
+
     @with_kyrodb_circuit_breaker
     async def bulk_query(
         self,
@@ -476,9 +514,6 @@ class KyroDBClient:
     ) -> BulkQueryResponse:
         """
         Batch retrieve multiple documents by ID.
-        
-        KyroDB does not expose a BulkQuery RPC; this method runs bounded concurrent
-        Query RPCs and aggregates the results.
         
         Args:
             doc_ids: List of document IDs to retrieve
@@ -492,39 +527,14 @@ class KyroDBClient:
             KyroDBError: On bulk query failure
         """
         if not doc_ids:
-            return BulkQueryResponse(results=[], total_requested=0, total_found=0)
+            return BulkQueryResponse(results=[], total_requested=0, total_found=0, error="")
 
-        semaphore = asyncio.Semaphore(DEFAULT_BULK_CONCURRENCY)
-
-        async def _one(doc_id: int) -> QueryResponse:
-            async with semaphore:
-                try:
-                    response = await self.query(
-                        doc_id=doc_id,
-                        namespace=namespace,
-                        include_embedding=include_embeddings,
-                    )
-                    if getattr(response, "error", ""):
-                        raise KyroDBError(
-                            f"KyroDB query returned error for doc_id={doc_id}: {response.error}"
-                        )
-                    return response
-                except DocumentNotFoundError:
-                    return QueryResponse(found=False, doc_id=doc_id)
-
-        results = await asyncio.gather(
-            *[_one(doc_id) for doc_id in doc_ids], return_exceptions=True
+        request = BulkQueryRequest(
+            doc_ids=doc_ids,
+            include_embeddings=include_embeddings,
+            namespace=namespace,
         )
-        exceptions = [item for item in results if isinstance(item, Exception)]
-        if exceptions:
-            raise exceptions[0]
-        results = [item for item in results if not isinstance(item, Exception)]
-        total_found = sum(1 for r in results if getattr(r, "found", False))
-        return BulkQueryResponse(
-            results=list(results),
-            total_requested=len(doc_ids),
-            total_found=total_found,
-        )
+        return await self._call_with_retry(self._stub.BulkQuery, request, "BulkQuery")
 
     @with_kyrodb_circuit_breaker
     async def batch_delete(
@@ -534,9 +544,6 @@ class KyroDBClient:
     ) -> BatchDeleteResponse:
         """
         Batch delete multiple documents by ID.
-        
-        KyroDB API does not expose a BatchDelete RPC; we emulate it with bounded
-        concurrent Delete RPCs.
         
         Args:
             doc_ids: List of document IDs to delete
@@ -551,29 +558,11 @@ class KyroDBClient:
         if not doc_ids:
             return BatchDeleteResponse(success=True, deleted_count=0, error="")
 
-        semaphore = asyncio.Semaphore(DEFAULT_BULK_CONCURRENCY)
-
-        async def _one(doc_id: int) -> DeleteResponse:
-            async with semaphore:
-                try:
-                    response = await self.delete(doc_id=doc_id, namespace=namespace)
-                    if not getattr(response, "success", False):
-                        raise KyroDBError(
-                            f"KyroDB delete returned success=false for doc_id={doc_id}: {response.error}"
-                        )
-                    return response
-                except DocumentNotFoundError:
-                    return DeleteResponse(success=True, error="", existed=False)
-
-        results = await asyncio.gather(
-            *[_one(doc_id) for doc_id in doc_ids], return_exceptions=True
+        request = BatchDeleteRequest(
+            ids=IdList(doc_ids=doc_ids),
+            namespace=namespace,
         )
-        exceptions = [item for item in results if isinstance(item, Exception)]
-        if exceptions:
-            raise exceptions[0]
-        results = [item for item in results if not isinstance(item, Exception)]
-        deleted_count = sum(1 for r in results if getattr(r, "existed", False))
-        return BatchDeleteResponse(success=True, deleted_count=deleted_count, error="")
+        return await self._call_with_retry(self._stub.BatchDelete, request, "BatchDelete")
 
     @with_kyrodb_circuit_breaker
     async def health_check(self) -> HealthResponse:

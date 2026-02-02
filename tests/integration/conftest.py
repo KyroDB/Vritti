@@ -1,8 +1,10 @@
 """
 Integration test fixtures for real KyroDB connection.
 
-These fixtures provide access to a running KyroDB instance for integration testing.
-Requires KyroDB server running on localhost:50051 with 384-dim embeddings.
+These fixtures provide access to running KyroDB instances for integration testing.
+Requires:
+- Text KyroDB server on localhost:50051 (384-dim)
+- Image KyroDB server on localhost:50052 (512-dim)
 
 Prerequisites:
     1. Build KyroDB: cargo build --release -p kyrodb-engine --bin kyrodb_server
@@ -36,9 +38,11 @@ def is_kyrodb_running(host: str = "localhost", port: int = 50051) -> bool:
 
 @pytest.fixture
 def skip_if_no_kyrodb():
-    """Skip test if KyroDB is not running on localhost:50051."""
-    if not is_kyrodb_running():
-        pytest.skip("KyroDB not running on localhost:50051")
+    """Skip test if KyroDB is not running on localhost:50051/50052."""
+    if not is_kyrodb_running(host="localhost", port=50051):
+        pytest.skip("KyroDB text instance not running on localhost:50051")
+    if not is_kyrodb_running(host="localhost", port=50052):
+        pytest.skip("KyroDB image instance not running on localhost:50052")
 
 
 @pytest.fixture
@@ -87,7 +91,7 @@ async def kyrodb_router():
         text_host="localhost",
         text_port=50051,
         image_host="localhost",
-        image_port=50051,  # Same as text for single-instance testing
+        image_port=50052,
         enable_tls=False,
         request_timeout_seconds=30,
     )

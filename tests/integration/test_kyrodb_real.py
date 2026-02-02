@@ -1,8 +1,10 @@
 """
 Real KyroDB integration test.
 
-Tests actual connection and operations against a running KyroDB instance.
-Requires KyroDB server running on localhost:50051.
+Tests actual connection and operations against running KyroDB instances.
+Requires:
+- Text instance on localhost:50051 (384-dim)
+- Image instance on localhost:50052 (512-dim)
 
 Run with:
     pytest tests/integration/test_kyrodb_real.py -v -s
@@ -21,13 +23,13 @@ from src.kyrodb.client import KyroDBClient
 from src.kyrodb.router import KyroDBRouter
 
 
-def is_kyrodb_running() -> bool:
-    """Check if KyroDB is running on localhost:50051."""
+def is_kyrodb_running(host: str = "localhost", port: int = 50051) -> bool:
+    """Check if KyroDB is running on host:port."""
     import socket
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
-        result = sock.connect_ex(('localhost', 50051))
+        result = sock.connect_ex((host, port))
         sock.close()
         return result == 0
     except Exception:
@@ -37,8 +39,10 @@ def is_kyrodb_running() -> bool:
 @pytest.fixture
 def skip_if_no_kyrodb():
     """Skip test if KyroDB is not running."""
-    if not is_kyrodb_running():
-        pytest.skip("KyroDB not running on localhost:50051")
+    if not is_kyrodb_running(host="localhost", port=50051):
+        pytest.skip("KyroDB text instance not running on localhost:50051")
+    if not is_kyrodb_running(host="localhost", port=50052):
+        pytest.skip("KyroDB image instance not running on localhost:50052")
 
 
 @pytest.fixture
@@ -58,16 +62,14 @@ async def kyrodb_client():
 
 @pytest.fixture
 async def kyrodb_router():
-    """Create a real KyroDB router using single instance for both text and image."""
-    # For testing, use same host/port for both text and image
-    # (In production, these would be separate)
+    """Create a real KyroDB router (text+image instances)."""
     from src.config import KyroDBConfig
     
     config = KyroDBConfig(
         text_host="localhost",
         text_port=50051,
         image_host="localhost",
-        image_port=50051,  # Same as text for single-instance testing
+        image_port=50052,
         enable_tls=False,
     )
     router = KyroDBRouter(config=config)

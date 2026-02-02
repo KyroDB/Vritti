@@ -50,7 +50,7 @@ async def kyrodb_router():
         text_host="localhost",
         text_port=50051,
         image_host="localhost",
-        image_port=50051,
+        image_port=50052,
         enable_tls=False,
         request_timeout_seconds=30,
     )

@@ -11,12 +11,13 @@ Namespace format: {customer_id}:failures (e.g., "acme-corp:failures")
 
 import asyncio
 import logging
+import math
 from datetime import UTC
 from typing import TYPE_CHECKING, Optional
 
 from src.config import KyroDBConfig
 from src.kyrodb.client import KyroDBClient
-from src.kyrodb.kyrodb_pb2 import SearchResponse, SearchResult
+from src.kyrodb.kyrodb_pb2 import ExactMatch, MetadataFilter, SearchResponse, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,33 @@ class KyroDBRouter:
         self._cluster_usage_locks: dict[str, asyncio.Lock] = {}
         self._cluster_usage_locks_guard = asyncio.Lock()
 
+    @staticmethod
+    def _l2_normalize_embedding(embedding: list[float], *, name: str = "embedding") -> list[float]:
+        """
+        Ensure embeddings satisfy KyroDB cosine requirements (L2-normalized).
+
+        KyroDB runs cosine similarity on normalized vectors and (by default) enforces
+        a normalization check. We normalize defensively at the router boundary so
+        all inserts/searches are compatible, even for tests or custom embeddings.
+        """
+        if not embedding:
+            raise ValueError(f"{name} cannot be empty")
+
+        norm_sq = 0.0
+        for x in embedding:
+            fx = float(x)
+            norm_sq += fx * fx
+
+        if norm_sq <= 0.0:
+            raise ValueError(f"{name} has zero norm")
+
+        # Avoid unnecessary work when already normalized.
+        if abs(norm_sq - 1.0) <= 1e-3:
+            return [float(x) for x in embedding]
+
+        inv = 1.0 / math.sqrt(norm_sq)
+        return [float(x) * inv for x in embedding]
+
     async def connect(self) -> None:
         """
         Connect to both KyroDB instances.
@@ -170,9 +198,12 @@ class KyroDBRouter:
 
         # Insert text embedding (required)
         try:
+            normalized_text_embedding = self._l2_normalize_embedding(
+                text_embedding, name="text_embedding"
+            )
             response = await self.text_client.insert(
                 doc_id=episode_id,
-                embedding=text_embedding,
+                embedding=normalized_text_embedding,
                 namespace=namespaced_collection,
                 metadata=metadata,
             )
@@ -190,13 +221,16 @@ class KyroDBRouter:
             raise
 
         # Insert image embedding (optional)
-        if image_embedding:
+        if image_embedding is not None:
+            normalized_image_embedding = self._l2_normalize_embedding(
+                image_embedding, name="image_embedding"
+            )
             try:
                 # Image instance uses separate namespace: {customer_id}:failures_images
                 image_namespace = f"{namespaced_collection}_images"
                 response = await self.image_client.insert(
                     doc_id=episode_id,
-                    embedding=image_embedding,
+                    embedding=normalized_image_embedding,
                     namespace=image_namespace,
                     metadata=metadata,
                 )
@@ -246,9 +280,12 @@ class KyroDBRouter:
         metadata.setdefault("cluster_id", str(cluster_id))
         metadata.setdefault("doc_type", "cluster_template")
 
+        normalized_template_embedding = self._l2_normalize_embedding(
+            template_embedding, name="template_embedding"
+        )
         response = await self.text_client.insert(
             doc_id=cluster_id,
-            embedding=template_embedding,
+            embedding=normalized_template_embedding,
             namespace=namespace,
             metadata=metadata,
         )
@@ -283,13 +320,19 @@ class KyroDBRouter:
             SearchResponse: KyroDB search response
         """
         namespace = get_namespaced_collection(customer_id, "cluster_templates")
+        normalized_query_embedding = self._l2_normalize_embedding(
+            query_embedding, name="query_embedding"
+        )
+        metadata_filter = MetadataFilter(
+            exact=ExactMatch(key="doc_type", value="cluster_template")
+        )
         return await self.text_client.search(
-            query_embedding=query_embedding,
+            query_embedding=normalized_query_embedding,
             k=k,
             namespace=namespace,
             min_score=min_score,
             include_embeddings=False,
-            metadata_filters={"doc_type": "cluster_template"},
+            metadata_filter=metadata_filter,
         )
 
     async def get_cluster_template(
@@ -384,7 +427,7 @@ class KyroDBRouter:
         customer_id: str,
         collection: str,
         min_score: float = 0.6,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filter: MetadataFilter | None = None,
     ) -> SearchResponse:
         """
         Search text instance for episodes with server-side filtering.
@@ -402,13 +445,16 @@ class KyroDBRouter:
         """
         namespaced_collection = get_namespaced_collection(customer_id, collection)
 
+        normalized_query_embedding = self._l2_normalize_embedding(
+            query_embedding, name="query_embedding"
+        )
         return await self.text_client.search(
-            query_embedding=query_embedding,
+            query_embedding=normalized_query_embedding,
             k=k,
             namespace=namespaced_collection,
             min_score=min_score,
             include_embeddings=False,
-            metadata_filters=metadata_filters,
+            metadata_filter=metadata_filter,
         )
 
     async def search_image(
@@ -418,7 +464,7 @@ class KyroDBRouter:
         customer_id: str,
         collection: str,
         min_score: float = 0.6,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filter: MetadataFilter | None = None,
     ) -> SearchResponse:
         """
         Search image instance for episodes with server-side filtering.
@@ -437,13 +483,16 @@ class KyroDBRouter:
         namespaced_collection = get_namespaced_collection(customer_id, collection)
         image_namespace = f"{namespaced_collection}_images"
 
+        normalized_query_embedding = self._l2_normalize_embedding(
+            query_embedding, name="query_embedding"
+        )
         return await self.image_client.search(
-            query_embedding=query_embedding,
+            query_embedding=normalized_query_embedding,
             k=k,
             namespace=image_namespace,
             min_score=min_score,
             include_embeddings=False,
-            metadata_filters=metadata_filters,
+            metadata_filter=metadata_filter,
         )
 
     async def search_episodes(
@@ -454,7 +503,7 @@ class KyroDBRouter:
         image_embedding: list[float] | None = None,
         k: int = 20,
         min_score: float = 0.6,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         image_weight: float = 0.3,
     ) -> SearchResponse:
         """
@@ -484,26 +533,32 @@ class KyroDBRouter:
         namespaced_collection = get_namespaced_collection(customer_id, collection)
 
         # Primary search: text embeddings
+        normalized_query_embedding = self._l2_normalize_embedding(
+            query_embedding, name="query_embedding"
+        )
         text_response = await self.text_client.search(
-            query_embedding=query_embedding,
+            query_embedding=normalized_query_embedding,
             k=k,
             namespace=namespaced_collection,
             min_score=min_score,
             include_embeddings=False,  # Don't waste bandwidth
-            metadata_filters=metadata_filters,
+            metadata_filter=metadata_filter,
         )
 
         if image_embedding is None:
             return text_response
 
         # Secondary search: image embeddings
+        normalized_image_embedding = self._l2_normalize_embedding(
+            image_embedding, name="image_embedding"
+        )
         image_response = await self.image_client.search(
-            query_embedding=image_embedding,
+            query_embedding=normalized_image_embedding,
             k=k,
             namespace=f"{namespaced_collection}_images",
             min_score=min_score,
             include_embeddings=False,
-            metadata_filters=metadata_filters,
+            metadata_filter=metadata_filter,
         )
 
         # Fuse results: weighted average of text + image scores
@@ -1180,9 +1235,10 @@ class KyroDBRouter:
         metadata = skill.to_metadata_dict()
 
         try:
+            normalized_embedding = self._l2_normalize_embedding(embedding, name="embedding")
             response = await self.text_client.insert(
                 doc_id=skill.skill_id,
-                embedding=embedding,
+                embedding=normalized_embedding,
                 namespace=namespaced_collection,
                 metadata=metadata,
             )
@@ -1233,8 +1289,11 @@ class KyroDBRouter:
         namespaced_collection = get_namespaced_collection(customer_id, collection)
 
         try:
+            normalized_query_embedding = self._l2_normalize_embedding(
+                query_embedding, name="query_embedding"
+            )
             response = await self.text_client.search(
-                query_embedding=query_embedding,
+                query_embedding=normalized_query_embedding,
                 k=k,
                 namespace=namespaced_collection,
                 min_score=min_score,

@@ -19,7 +19,7 @@ Performance:
 
 Consensus Algorithm:
 - Semantic similarity (not string equality) for root cause comparison
-- Uses TF-IDF cosine similarity (lightweight, deterministic)
+- Uses sentence-transformers embeddings for true semantic similarity
 - Weighted voting based on model confidence scores
 - Threshold-based agreement detection (>0.85 = semantic match)
 """
@@ -244,10 +244,30 @@ Return ONLY valid JSON, no markdown."""
         self.total_requests = 0
         self.requests_by_model = Counter()
 
+        # Lazy-loaded embedding model for semantic similarity (root cause reconciliation)
+        self._similarity_model = None
+        self._similarity_model_lock = threading.Lock()
+
         logger.info(
             f"Multi-perspective reflection service initialized with providers: "
             f"{config.enabled_providers}"
         )
+
+    async def aclose(self) -> None:
+        """Close any underlying HTTP clients to avoid event-loop shutdown warnings."""
+        client = getattr(self, "openrouter_client", None)
+        if client is None:
+            return
+        try:
+            await client.close()
+        except Exception as e:
+            logger.warning("Failed to close OpenRouter client: %s", e, exc_info=True)
+
+    async def __aenter__(self) -> "MultiPerspectiveReflectionService":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
 
     async def generate_multi_perspective_reflection(
         self,
@@ -385,12 +405,28 @@ Return ONLY valid JSON, no markdown."""
     ) -> Reflection:
         """Generate reflection using single cheap model via OpenRouter."""
         try:
-            if self.openrouter_client:
-                perspective = await self._call_openrouter_model(
-                    self.config.cheap_model, user_prompt, max_retries
-                )
-            else:
+            if not self.openrouter_client:
                 return self._create_fallback_reflection(episode)
+
+            # Cheap tier should always use a real LLM when OpenRouter is configured.
+            # If the configured cheap model is invalid/unavailable, fall back to the
+            # configured consensus models (still real LLMs, not heuristics).
+            candidates: list[str] = [
+                self.config.cheap_model,
+                self.config.consensus_model_1,
+                self.config.consensus_model_2,
+            ]
+            seen: set[str] = set()
+            perspective = None
+            chosen_model: str | None = None
+            for model in candidates:
+                if not model or model in seen:
+                    continue
+                seen.add(model)
+                perspective = await self._call_openrouter_model(model, user_prompt, max_retries)
+                if perspective is not None:
+                    chosen_model = model
+                    break
 
             if perspective is None:
                 return self._create_fallback_reflection(episode)
@@ -410,7 +446,7 @@ Return ONLY valid JSON, no markdown."""
                 affected_components=perspective.affected_components,
                 generalization_score=perspective.generalization_score,
                 confidence_score=perspective.confidence_score * 0.8,  # Discount for single model
-                llm_model=f"openrouter-cheap:{self.config.cheap_model}",
+                llm_model=f"openrouter-cheap:{chosen_model or perspective.model_name}",
                 generated_at=datetime.now(UTC),
                 cost_usd=0.0,
                 generation_latency_ms=latency_ms,
@@ -418,7 +454,7 @@ Return ONLY valid JSON, no markdown."""
 
             logger.info(
                 f"Cheap reflection generated: "
-                f"model={self.config.cheap_model}, "
+                f"model={chosen_model or perspective.model_name}, "
                 f"confidence={reflection.confidence_score:.2f}, "
                 f"latency={latency_ms:.0f}ms"
             )
@@ -908,28 +944,54 @@ Return ONLY valid JSON, no markdown."""
         if n == 1:
             return np.array([[1.0]])
 
+        normalized = [" ".join(t.lower().split()) for t in texts]
+
         try:
-            from sklearn.feature_extraction.text import TfidfVectorizer
-            from sklearn.metrics.pairwise import cosine_similarity
-
-            normalized = [" ".join(t.lower().split()) for t in texts]
-            vectorizer = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
-            vectors = vectorizer.fit_transform(normalized)
-            similarity_matrix = cosine_similarity(vectors)
-
-            return similarity_matrix
-
+            model = self._get_similarity_model()
+            embeddings = model.encode(
+                normalized,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            # Cosine similarity for normalized vectors is just dot-product.
+            sim = np.matmul(embeddings, embeddings.T)
+            # Numerical safety.
+            return np.clip(sim, -1.0, 1.0)
         except Exception as e:
             logger.warning(
-                f"Semantic similarity computation failed: {e}. "
-                f"Falling back to string equality."
+                "Semantic similarity computation failed; falling back to string equality: %s",
+                e,
+                exc_info=True,
             )
-            # Fallback: string equality matrix
             matrix = np.zeros((n, n))
             for i in range(n):
                 for j in range(n):
-                    matrix[i, j] = 1.0 if texts[i] == texts[j] else 0.0
+                    matrix[i, j] = 1.0 if normalized[i] == normalized[j] else 0.0
             return matrix
+
+    def _get_similarity_model(self):
+        """Lazy-load sentence-transformers model used for semantic similarity."""
+        if self._similarity_model is not None:
+            return self._similarity_model
+
+        with self._similarity_model_lock:
+            if self._similarity_model is not None:
+                return self._similarity_model
+
+            from sentence_transformers import SentenceTransformer
+
+            # Keep consistent with EmbeddingService default.
+            model_name = "all-MiniLM-L6-v2"
+            try:
+                from src.config import get_settings
+
+                model_name = get_settings().embedding.text_model_name
+            except Exception:
+                pass
+
+            self._similarity_model = SentenceTransformer(model_name, device="cpu")
+            return self._similarity_model
 
     def _merge_preconditions_semantic(
         self, precondition_lists: list[list[str]]

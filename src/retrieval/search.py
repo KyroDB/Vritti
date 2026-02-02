@@ -22,6 +22,7 @@ from threading import Lock
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
+from src.kyrodb.kyrodb_pb2 import AndFilter, ExactMatch, MetadataFilter, RangeMatch
 from src.models.episode import Episode
 from src.models.search import SearchRequest, SearchResponse, SearchResult
 from src.retrieval.preconditions import (
@@ -124,20 +125,22 @@ class SearchPipeline:
             # Optional image embedding for multimodal search
             image_embedding = None
             if request.image_base64:
+                b64 = request.image_base64.strip()
+                # Accept data URLs (e.g., "data:image/png;base64,...") for convenience.
+                if b64.startswith("data:"):
+                    if "," not in b64:
+                        raise ValueError("Invalid data URL: missing ',' separator")
+                    _, b64 = b64.split(",", 1)
+
+                max_size = get_settings().service.max_file_upload_size
+                padding = 2 if b64.endswith("==") else 1 if b64.endswith("=") else 0
+                decoded_estimate = ((len(b64) + 3) // 4) * 3 - padding
+                if decoded_estimate > max_size:
+                    raise ValueError(
+                        f"Image too large: {decoded_estimate} bytes (max {max_size} bytes)"
+                    )
+
                 try:
-                    b64 = request.image_base64.strip()
-                    # Accept data URLs (e.g., "data:image/png;base64,...") for convenience.
-                    if b64.startswith("data:"):
-                        if "," not in b64:
-                            raise ValueError("Invalid data URL: missing ',' separator")
-                        _, b64 = b64.split(",", 1)
-                    max_size = get_settings().service.max_file_upload_size
-                    padding = b64[-2:].count("=") if len(b64) >= 2 else b64.count("=")
-                    decoded_estimate = (len(b64) * 3) // 4 - padding
-                    if decoded_estimate > max_size:
-                        raise ValueError(
-                            f"Image too large: {decoded_estimate} bytes (max {max_size} bytes)"
-                        )
                     image_bytes = base64.b64decode(b64, validate=True)
                 except (binascii.Error, ValueError) as e:
                     raise ValueError(f"Invalid image_base64: {e}") from e
@@ -153,7 +156,7 @@ class SearchPipeline:
 
             # Stage 2: KyroDB search with server-side filtering (~1-3ms)
             stage_start = time.perf_counter()
-            kyrodb_filters = self._build_kyrodb_filters(request)
+            metadata_filter = self._build_kyrodb_filter(request)
             # Fetch 2x buffer: headroom for incomplete server-side filtering + precondition matching
             # Validate fetch_k to prevent memory issues with very large k values
             settings = get_settings()
@@ -173,7 +176,7 @@ class SearchPipeline:
                 collection=request.collection,
                 k=fetch_k,
                 min_similarity=request.min_similarity,
-                metadata_filters=kyrodb_filters,
+                metadata_filter=metadata_filter,
                 image_weight=request.image_weight,
             )
             latency_breakdown["search_ms"] = (time.perf_counter() - stage_start) * 1000
@@ -243,32 +246,55 @@ class SearchPipeline:
             logger.error(f"Search failed: {e}", exc_info=True)
             raise
 
-    def _build_kyrodb_filters(self, request: SearchRequest) -> dict[str, str]:
+    def _build_kyrodb_filter(self, request: SearchRequest) -> MetadataFilter | None:
         """
-        Build KyroDB metadata filters from search request.
+        Build a KyroDB structured metadata filter from search request.
         
-        Converts SearchRequest filters to KyroDB-compatible string-string map.
+        Uses KyroDB's structured metadata filter to enforce:
+        - Exact matches (tool, tags)
+        - Numeric range matches (timestamp bounds)
         
         Args:
             request: Search request with filter criteria
             
         Returns:
-            dict[str, str]: Metadata filters for KyroDB
+            MetadataFilter | None: Structured filter for KyroDB (None = no filter)
         """
-        filters = {}
+        filters: list[MetadataFilter] = []
         
         if request.tool_filter:
-            filters["tool"] = request.tool_filter.lower()
+            filters.append(
+                MetadataFilter(
+                    exact=ExactMatch(key="tool", value=request.tool_filter.lower())
+                )
+            )
             
-        # KyroDB metadata filtering is exact match only.
-        # Timestamp range filters are applied client-side.
+        if request.min_timestamp is not None:
+            filters.append(
+                MetadataFilter(
+                    range=RangeMatch(key="timestamp", gte=str(request.min_timestamp))
+                )
+            )
+        if request.max_timestamp is not None:
+            filters.append(
+                MetadataFilter(
+                    range=RangeMatch(key="timestamp", lte=str(request.max_timestamp))
+                )
+            )
+
         if request.tags:
             for tag in request.tags:
                 safe_tag = str(tag).strip().lower().replace(" ", "_")
                 if safe_tag:
-                    filters[f"tag:{safe_tag}"] = "1"
+                    filters.append(
+                        MetadataFilter(exact=ExactMatch(key=f"tag:{safe_tag}", value="1"))
+                    )
             
-        return filters
+        if not filters:
+            return None
+        if len(filters) == 1:
+            return filters[0]
+        return MetadataFilter(and_filter=AndFilter(filters=filters))
 
     async def _fetch_candidates(
         self,
@@ -278,7 +304,7 @@ class SearchPipeline:
         collection: str,
         k: int,
         min_similarity: float,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filter: MetadataFilter | None = None,
         image_weight: float = 0.3,
     ) -> list[tuple[Episode, float]]:
         """
@@ -308,7 +334,7 @@ class SearchPipeline:
             customer_id=customer_id,
             collection=collection,
             min_score=min_similarity,
-            metadata_filters=metadata_filters,
+            metadata_filter=metadata_filter,
         )
 
         # Optionally search image embeddings and fuse
@@ -320,7 +346,7 @@ class SearchPipeline:
                 customer_id=customer_id,
                 collection=collection,
                 min_score=min_similarity,
-                metadata_filters=metadata_filters,
+                metadata_filter=metadata_filter,
             )
 
         # Build candidate map: doc_id -> (episode, text_score, image_score)
