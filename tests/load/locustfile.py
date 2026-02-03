@@ -101,12 +101,12 @@ def generate_episode_payload() -> dict:
             "Attempted restart",
         ],
         "tool_chain": random.choice(SAMPLE_TOOLS),
-        "episode_type": random.choice(["failure", "success"]),
         "error_class": random.choice([
             "configuration_error",
             "dependency_error",
-            "environment_error",
-            "tool_error",
+            "network_error",
+            "resource_error",
+            "timeout_error",
             "validation_error",
         ]),
         "environment_info": {
@@ -115,7 +115,6 @@ def generate_episode_payload() -> dict:
             "node_version": "18.17.0",
         },
         "tags": random.choice(SAMPLE_TAGS),
-        "customer_id": CUSTOMER_ID,
     }
 
 
@@ -132,12 +131,13 @@ def generate_search_payload() -> dict:
 def generate_reflect_payload() -> dict:
     """Generate pre-action gating payload."""
     return {
-        "action": f"Run command: {random.choice(['kubectl apply', 'docker push', 'npm install'])}",
-        "context": {
-            "tool": random.choice(["kubectl", "docker", "npm"]),
+        "goal": random.choice(SAMPLE_GOALS),
+        "proposed_action": f"Run command: {random.choice(['kubectl apply', 'docker push', 'npm install'])}",
+        "tool": random.choice(["kubectl", "docker", "npm"]),
+        "current_state": {
             "environment": "production" if random.random() > 0.7 else "staging",
         },
-        "customer_id": CUSTOMER_ID,
+        "context": "Locust load test",
     }
 
 
@@ -339,8 +339,7 @@ class ReflectionLoadUser(HttpUser):
     def capture_premium_tier(self):
         """Capture with premium tier reflection."""
         payload = generate_episode_payload()
-        payload["error_class"] = "data_loss"  # Forces premium tier
-        
+
         self.client.post(
             "/api/v1/capture?generate_reflection=true&tier=premium",
             json=payload,

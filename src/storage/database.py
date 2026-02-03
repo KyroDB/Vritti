@@ -15,9 +15,14 @@ Performance features:
 - Efficient queries with covering indexes
 """
 
+import asyncio
 import hashlib
 import logging
 import secrets
+import sqlite3
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -66,8 +71,6 @@ class CustomerDatabase:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Connection will be created lazily
-        self._conn: aiosqlite.Connection | None = None
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -138,13 +141,20 @@ class CustomerDatabase:
                 """
                 )
 
-                # Schema guardrail: we don't support legacy API key schemas in code.
+                # Guardrail: refuse to start with a legacy api_keys schema.
+                # This codebase is intentionally "clean-slate" (no legacy compatibility).
                 cursor = await conn.execute("PRAGMA table_info(api_keys)")
                 api_key_columns = {row["name"] for row in await cursor.fetchall()}
-                if "key_hash" in api_key_columns or "key_hash_sha256" not in api_key_columns:
+                await cursor.close()
+                if "key_hash_sha256" not in api_key_columns:
                     raise RuntimeError(
-                        "Unsupported api_keys schema detected. "
-                        "Delete the customer DB file and re-initialize it."
+                        "Unsupported api_keys schema detected (missing 'key_hash_sha256'). "
+                        "Delete the customer DB file and re-create API keys."
+                    )
+                if "key_hash" in api_key_columns:
+                    raise RuntimeError(
+                        "Legacy api_keys schema detected (column 'key_hash'). "
+                        "Delete the customer DB file and re-create API keys."
                     )
 
                 # Create audit log table (compliance: track all mutations)
@@ -165,6 +175,138 @@ class CustomerDatabase:
                     )
                 """
                 )
+
+                # Episode index (required for Phase 6 clustering / hygiene jobs).
+                #
+                # KyroDB does not provide a server-side scan/list API, so Vritti
+                # maintains a minimal authoritative index of episode IDs per customer.
+                #
+                # We intentionally store only small, non-sensitive fields:
+                # - episode_id for enumeration
+                # - collection and timestamps for batching
+                # - archived/deleted flags for hygiene
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS episodes_index (
+                        episode_id INTEGER PRIMARY KEY,
+                        customer_id TEXT NOT NULL,
+                        collection TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        has_image INTEGER NOT NULL DEFAULT 0,
+                        archived INTEGER NOT NULL DEFAULT 0,
+                        archived_at TEXT,
+                        deleted INTEGER NOT NULL DEFAULT 0,
+                        deleted_at TEXT,
+                        last_updated_at TEXT NOT NULL,
+
+                        FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                            ON DELETE CASCADE,
+                        CHECK (has_image IN (0, 1)),
+                        CHECK (archived IN (0, 1)),
+                        CHECK (deleted IN (0, 1))
+                    )
+                    """
+                )
+
+                # Skills index (enumeration + reliable per-customer search fallback).
+                #
+                # KyroDB does not provide a server-side scan/list API. For skills (which are
+                # expected to remain a relatively small set per customer), we maintain a minimal
+                # index to enumerate IDs and, when needed, compute similarity in-process.
+                #
+                # This table is intentionally decoupled from `customers` via FK to keep indexing
+                # best-effort in local/test flows; API-layer auth still enforces tenant isolation.
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS skills_index (
+                        skill_id INTEGER PRIMARY KEY,
+                        customer_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        deleted INTEGER NOT NULL DEFAULT 0,
+                        deleted_at TEXT,
+                        last_updated_at TEXT NOT NULL,
+
+                        CHECK (deleted IN (0, 1))
+                    )
+                    """
+                )
+
+                # Doc ID allocator (KyroDB doc_id must be dense/small).
+                #
+                # KyroDB's current HNSW backend uses doc_id as an array index; very large or sparse
+                # doc_ids can trigger pathological allocations and crash the DB process. In
+                # addition, KyroDB's `namespace` is metadata-only: doc_id must be globally unique
+                # across *all* namespaces and document types within an instance.
+                #
+                # We therefore allocate monotonically increasing global doc_ids via a single-row
+                # counter keyed by a scope string (future-proofing for additional KyroDB instances).
+                cursor = await conn.execute("PRAGMA table_info(doc_id_counters)")
+                doc_id_columns = [row["name"] for row in await cursor.fetchall()]
+                now = datetime.now(UTC).isoformat()
+
+                if not doc_id_columns:
+                    await conn.execute(
+                        """
+                        CREATE TABLE doc_id_counters (
+                            scope TEXT PRIMARY KEY,
+                            next_doc_id INTEGER NOT NULL,
+                            updated_at TEXT NOT NULL,
+
+                            CHECK (next_doc_id >= 1)
+                        )
+                        """
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO doc_id_counters (scope, next_doc_id, updated_at)
+                        VALUES ('kyrodb_text', 1, ?)
+                        ON CONFLICT(scope) DO NOTHING
+                        """,
+                        (now,),
+                    )
+                elif "scope" in doc_id_columns and "next_doc_id" in doc_id_columns:
+                    # Current schema already present.
+                    pass
+                else:
+                    # Legacy schema: (customer_id, collection, next_doc_id, updated_at)
+                    try:
+                        await conn.execute("BEGIN IMMEDIATE")
+                        row = await (
+                            await conn.execute(
+                                "SELECT MAX(next_doc_id) AS max_next FROM doc_id_counters"
+                            )
+                        ).fetchone()
+                        max_next = int(row["max_next"] or 1) if row else 1
+
+                        await conn.execute(
+                            "DROP INDEX IF EXISTS idx_doc_id_counters_customer_collection"
+                        )
+                        await conn.execute(
+                            "ALTER TABLE doc_id_counters RENAME TO doc_id_counters_old"
+                        )
+                        await conn.execute(
+                            """
+                            CREATE TABLE doc_id_counters (
+                                scope TEXT PRIMARY KEY,
+                                next_doc_id INTEGER NOT NULL,
+                                updated_at TEXT NOT NULL,
+
+                                CHECK (next_doc_id >= 1)
+                            )
+                            """
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO doc_id_counters (scope, next_doc_id, updated_at)
+                            VALUES ('kyrodb_text', ?, ?)
+                            """,
+                            (max_next, now),
+                        )
+                        await conn.execute("DROP TABLE doc_id_counters_old")
+                        await conn.execute("COMMIT")
+                    except Exception:
+                        await conn.execute("ROLLBACK")
+                        raise
 
                 # Performance indexes
                 await conn.execute(
@@ -188,6 +330,15 @@ class CustomerDatabase:
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)"
                 )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_episodes_customer_collection ON episodes_index(customer_id, collection)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_episodes_active ON episodes_index(customer_id, collection, archived, deleted, created_at)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skills_active ON skills_index(customer_id, deleted, created_at)"
+                )
 
                 await conn.commit()
                 logger.info("Customer database initialized successfully")
@@ -197,13 +348,25 @@ class CustomerDatabase:
                 logger.error(f"Failed to initialize database: {e}")
                 raise
 
-    async def _get_connection(self) -> aiosqlite.Connection:
-        """Get database connection (creates if needed)."""
-        if self._conn is None:
-            self._conn = await aiosqlite.connect(str(self.db_path))
-            self._conn.row_factory = aiosqlite.Row
-            await self._conn.execute("PRAGMA foreign_keys = ON")
-        return self._conn
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        """
+        Open a new connection for a single operation.
+
+        We intentionally do not share a single connection across concurrent async tasks or
+        across event loops (pytest-asyncio can create multiple loops). A connection-per-operation
+        model avoids aiosqlite concurrency hazards and reduces "database is locked" errors under
+        load when combined with WAL + busy_timeout.
+        """
+        conn = await aiosqlite.connect(str(self.db_path))
+        conn.row_factory = aiosqlite.Row
+        try:
+            await conn.execute("PRAGMA foreign_keys = ON")
+            await conn.execute("PRAGMA journal_mode = WAL")
+            await conn.execute("PRAGMA busy_timeout = 5000")
+            yield conn
+        finally:
+            await conn.close()
 
     async def create_customer(self, customer_create: CustomerCreate) -> Customer | None:
         """
@@ -240,46 +403,48 @@ class CustomerDatabase:
             updated_at=datetime.now(UTC),
         )
 
-        conn = await self._get_connection()
-        try:
-            await conn.execute(
-                """
-                INSERT INTO customers (
-                    customer_id, organization_name, email, subscription_tier,
-                    status, monthly_credit_limit, credits_used_current_month,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    customer.customer_id,
-                    customer.organization_name,
-                    customer.email,
-                    customer.subscription_tier.value,
-                    customer.status.value,
-                    customer.monthly_credit_limit,
-                    customer.credits_used_current_month,
-                    now,
-                    now,
-                ),
-            )
-            await conn.commit()
+        async with self._connect() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO customers (
+                        customer_id, organization_name, email, subscription_tier,
+                        status, monthly_credit_limit, credits_used_current_month,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        customer.customer_id,
+                        customer.organization_name,
+                        customer.email,
+                        customer.subscription_tier.value,
+                        customer.status.value,
+                        customer.monthly_credit_limit,
+                        customer.credits_used_current_month,
+                        now,
+                        now,
+                    ),
+                )
+                await conn.commit()
 
-            # Audit log
-            await self._log_audit(
-                customer_id=customer.customer_id,
-                action="CREATE",
-                resource_type="customer",
-                resource_id=customer.customer_id,
-            )
+                # Audit log
+                await self._log_audit(
+                    customer_id=customer.customer_id,
+                    action="CREATE",
+                    resource_type="customer",
+                    resource_id=customer.customer_id,
+                )
 
-            logger.info(f"Created customer: {customer.customer_id}")
-            return customer
+                logger.info(f"Created customer: {customer.customer_id}")
+                return customer
 
-        except aiosqlite.IntegrityError as e:
-            if "UNIQUE constraint failed" in str(e):
-                logger.warning(f"Customer creation failed: {customer.customer_id} already exists")
-                return None
-            raise
+            except aiosqlite.IntegrityError as e:
+                if "UNIQUE constraint failed" in str(e):
+                    logger.warning(
+                        f"Customer creation failed: {customer.customer_id} already exists"
+                    )
+                    return None
+                raise
 
     async def get_customer(self, customer_id: str) -> Customer | None:
         """
@@ -291,9 +456,12 @@ class CustomerDatabase:
         Returns:
             Customer or None if not found
         """
-        conn = await self._get_connection()
-        cursor = await conn.execute("SELECT * FROM customers WHERE customer_id = ?", (customer_id,))
-        row = await cursor.fetchone()
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM customers WHERE customer_id = ?", (customer_id,)
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
 
         if not row:
             return None
@@ -352,11 +520,12 @@ class CustomerDatabase:
         params.append(datetime.now(UTC).isoformat())
         params.append(customer_id)
 
-        conn = await self._get_connection()
-        query = f"UPDATE customers SET {', '.join(updates)} WHERE customer_id = ?"
+        async with self._connect() as conn:
+            query = f"UPDATE customers SET {', '.join(updates)} WHERE customer_id = ?"
 
-        await conn.execute(query, params)
-        await conn.commit()
+            cursor = await conn.execute(query, params)
+            await conn.commit()
+            await cursor.close()
 
         # Audit log
         await self._log_audit(
@@ -383,22 +552,328 @@ class CustomerDatabase:
         Security: Atomic update prevents race conditions
         Performance: Single UPDATE statement, no SELECT needed
         """
-        conn = await self._get_connection()
+        async with self._connect() as conn:
+            now = datetime.now(UTC).isoformat()
+
+            cursor = await conn.execute(
+                """
+                UPDATE customers
+                SET credits_used_current_month = credits_used_current_month + ?,
+                    last_api_call_at = ?,
+                    updated_at = ?
+                WHERE customer_id = ?
+                """,
+                (credits, now, now, customer_id),
+            )
+            await conn.commit()
+            await cursor.close()
+
+            return cursor.rowcount > 0
+
+    async def allocate_doc_id(
+        self,
+        *,
+        scope: str = "kyrodb_text",
+    ) -> int:
+        """
+        Allocate a new dense, globally unique doc_id for KyroDB.
+
+        KyroDB's current HNSW backend uses doc_id as an array index. Large or sparse doc_ids
+        can trigger catastrophic allocations inside KyroDB.
+
+        Important: KyroDB's `namespace` is metadata-only; doc_id is the actual primary key.
+        doc_ids must therefore be globally unique across all namespaces and document types
+        within the same KyroDB instance.
+
+        This method is concurrency-safe across processes as long as they share the same DB file.
+        """
+        scope = (scope or "").strip()
+        if not scope:
+            raise ValueError("scope is required")
+        if len(scope) > 100:
+            raise ValueError("Invalid scope")
+
         now = datetime.now(UTC).isoformat()
 
-        cursor = await conn.execute(
-            """
-            UPDATE customers
-            SET credits_used_current_month = credits_used_current_month + ?,
-                last_api_call_at = ?,
-                updated_at = ?
-            WHERE customer_id = ?
-            """,
-            (credits, now, now, customer_id),
-        )
-        await conn.commit()
+        max_attempts = 6
+        for attempt in range(max_attempts):
+            try:
+                async with self._connect() as conn:
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO doc_id_counters (scope, next_doc_id, updated_at)
+                        VALUES (?, 2, ?)
+                        ON CONFLICT(scope) DO UPDATE SET
+                            next_doc_id = doc_id_counters.next_doc_id + 1,
+                            updated_at = excluded.updated_at
+                        RETURNING (next_doc_id - 1) AS allocated
+                        """,
+                        (scope, now),
+                    )
+                    row = await cursor.fetchone()
+                    await cursor.close()
+                    await conn.commit()
 
-        return cursor.rowcount > 0
+                allocated = int(row["allocated"]) if row else 0
+                if allocated < 1:
+                    raise RuntimeError("Allocated doc_id is invalid")
+                return allocated
+            except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+                message = str(e).lower()
+                if "database is locked" not in message and "database is busy" not in message:
+                    raise
+                if attempt >= max_attempts - 1:
+                    raise
+                await asyncio.sleep(0.05 * (2**attempt))
+
+    async def index_episode(
+        self,
+        *,
+        episode_id: int,
+        customer_id: str,
+        collection: str,
+        created_at: datetime,
+        has_image: bool,
+    ) -> None:
+        """
+        Insert/update the episode index entry for enumeration.
+
+        This index is required because KyroDB does not provide server-side scans
+        of all documents in a namespace. Offline jobs (clustering/decay) rely on it.
+
+        Security:
+        - Stores only non-sensitive metadata (no goal/error_trace/etc.)
+        - Enforces customer_id via FK constraint
+
+        Reliability:
+        - Idempotent upsert on episode_id
+        """
+        if not customer_id or len(customer_id) > 100:
+            raise ValueError("Invalid customer_id for episode indexing")
+        if not collection or len(collection) > 100:
+            raise ValueError("Invalid collection for episode indexing")
+        if episode_id <= 0:
+            raise ValueError("episode_id must be > 0 for episode indexing")
+
+        now = datetime.now(UTC).isoformat()
+
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO episodes_index (
+                    episode_id, customer_id, collection, created_at,
+                    has_image, archived, archived_at, deleted, deleted_at,
+                    last_updated_at
+                ) VALUES (?, ?, ?, ?, ?, 0, NULL, 0, NULL, ?)
+                ON CONFLICT(episode_id) DO UPDATE SET
+                    customer_id = excluded.customer_id,
+                    collection = excluded.collection,
+                    created_at = excluded.created_at,
+                    has_image = excluded.has_image,
+                    last_updated_at = excluded.last_updated_at
+                """,
+                (
+                    int(episode_id),
+                    customer_id,
+                    collection,
+                    created_at.isoformat(),
+                    1 if has_image else 0,
+                    now,
+                ),
+            )
+            await conn.commit()
+            await cursor.close()
+
+    async def list_episode_ids(
+        self,
+        *,
+        customer_id: str,
+        collection: str,
+        include_archived: bool = False,
+        include_deleted: bool = False,
+        limit: int | None = None,
+    ) -> list[int]:
+        """
+        Enumerate episode IDs for a customer/collection.
+
+        Returns newest-first.
+        """
+        if not customer_id or len(customer_id) > 100:
+            raise ValueError("Invalid customer_id for episode listing")
+        if not collection or len(collection) > 100:
+            raise ValueError("Invalid collection for episode listing")
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be > 0 when provided")
+
+        where = ["customer_id = ?", "collection = ?"]
+        params: list[object] = [customer_id, collection]
+        if not include_archived:
+            where.append("archived = 0")
+        if not include_deleted:
+            where.append("deleted = 0")
+
+        query = (
+            "SELECT episode_id FROM episodes_index "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC"
+        )
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+
+        async with self._connect() as conn:
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return [int(row["episode_id"]) for row in rows]
+
+    async def index_skill(
+        self,
+        *,
+        skill_id: int,
+        customer_id: str,
+        created_at: datetime,
+    ) -> None:
+        """
+        Insert/update the skills index entry for enumeration and safe fallbacks.
+
+        This index is required because KyroDB does not provide server-side scans by namespace.
+        """
+        if skill_id <= 0:
+            raise ValueError("skill_id must be > 0 for skill indexing")
+        if not customer_id or len(customer_id) > 100:
+            raise ValueError("Invalid customer_id for skill indexing")
+
+        now = datetime.now(UTC).isoformat()
+
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO skills_index (
+                    skill_id, customer_id, created_at,
+                    deleted, deleted_at, last_updated_at
+                ) VALUES (?, ?, ?, 0, NULL, ?)
+                ON CONFLICT(skill_id) DO UPDATE SET
+                    customer_id = excluded.customer_id,
+                    created_at = excluded.created_at,
+                    deleted = 0,
+                    deleted_at = NULL,
+                    last_updated_at = excluded.last_updated_at
+                """,
+                (
+                    int(skill_id),
+                    customer_id,
+                    created_at.isoformat(),
+                    now,
+                ),
+            )
+            await conn.commit()
+            await cursor.close()
+
+    async def list_skill_ids(
+        self,
+        *,
+        customer_id: str,
+        include_deleted: bool = False,
+        limit: int | None = None,
+    ) -> list[int]:
+        """Enumerate skill IDs for a customer (newest-first)."""
+        if not customer_id or len(customer_id) > 100:
+            raise ValueError("Invalid customer_id for skill listing")
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be > 0 when provided")
+
+        where = ["customer_id = ?"]
+        params: list[object] = [customer_id]
+        if not include_deleted:
+            where.append("deleted = 0")
+
+        query = (
+            "SELECT skill_id FROM skills_index "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC"
+        )
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+
+        async with self._connect() as conn:
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return [int(row["skill_id"]) for row in rows]
+
+    async def mark_episode_archived(
+        self,
+        *,
+        customer_id: str,
+        episode_id: int,
+        archived: bool,
+    ) -> bool:
+        """
+        Mark an episode as archived/unarchived in the local index.
+
+        Note: The authoritative archived flag for retrieval is KyroDB metadata.
+        This index flag is for hygiene job enumeration.
+        """
+        if episode_id <= 0:
+            raise ValueError("episode_id must be > 0")
+        if not customer_id or len(customer_id) > 100:
+            raise ValueError("Invalid customer_id")
+
+        now = datetime.now(UTC).isoformat()
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE episodes_index
+                SET archived = ?,
+                    archived_at = ?,
+                    last_updated_at = ?
+                WHERE customer_id = ? AND episode_id = ?
+                """,
+                (
+                    1 if archived else 0,
+                    now if archived else None,
+                    now,
+                    customer_id,
+                    int(episode_id),
+                ),
+            )
+            await conn.commit()
+            await cursor.close()
+            return cursor.rowcount > 0
+
+    async def mark_episode_deleted(
+        self,
+        *,
+        customer_id: str,
+        episode_id: int,
+    ) -> bool:
+        """
+        Mark an episode as deleted in the local index.
+
+        Used when KyroDB episode deletion succeeds.
+        """
+        if episode_id <= 0:
+            raise ValueError("episode_id must be > 0")
+        if not customer_id or len(customer_id) > 100:
+            raise ValueError("Invalid customer_id")
+
+        now = datetime.now(UTC).isoformat()
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE episodes_index
+                SET deleted = 1,
+                    deleted_at = ?,
+                    last_updated_at = ?
+                WHERE customer_id = ? AND episode_id = ?
+                """,
+                (now, now, customer_id, int(episode_id)),
+            )
+            await conn.commit()
+            await cursor.close()
+            return cursor.rowcount > 0
 
     async def reset_monthly_usage(self, customer_id: str) -> bool:
         """
@@ -410,19 +885,20 @@ class CustomerDatabase:
         Returns:
             bool: True if successful
         """
-        conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        async with self._connect() as conn:
+            now = datetime.now(UTC).isoformat()
 
-        cursor = await conn.execute(
-            """
-            UPDATE customers
-            SET credits_used_current_month = 0,
-                updated_at = ?
-            WHERE customer_id = ?
-            """,
-            (now, customer_id),
-        )
-        await conn.commit()
+            cursor = await conn.execute(
+                """
+                UPDATE customers
+                SET credits_used_current_month = 0,
+                    updated_at = ?
+                WHERE customer_id = ?
+                """,
+                (now, customer_id),
+            )
+            await conn.commit()
+            await cursor.close()
 
         # Audit log
         await self._log_audit(
@@ -445,19 +921,20 @@ class CustomerDatabase:
         Returns:
             bool: True if successful
         """
-        conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        async with self._connect() as conn:
+            now = datetime.now(UTC).isoformat()
 
-        cursor = await conn.execute(
-            """
-            UPDATE customers
-            SET status = ?,
-                updated_at = ?
-            WHERE customer_id = ?
-            """,
-            (status.value, now, customer_id),
-        )
-        await conn.commit()
+            cursor = await conn.execute(
+                """
+                UPDATE customers
+                SET status = ?,
+                    updated_at = ?
+                WHERE customer_id = ?
+                """,
+                (status.value, now, customer_id),
+            )
+            await conn.commit()
+            await cursor.close()
 
         await self._log_audit(
             customer_id=customer_id,
@@ -518,26 +995,27 @@ class CustomerDatabase:
             is_active=True,
         )
 
-        conn = await self._get_connection()
-        await conn.execute(
-            """
-            INSERT INTO api_keys (
-                key_id, customer_id, key_hash_sha256, key_prefix, name,
-                created_at, expires_at, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                api_key.key_id,
-                api_key.customer_id,
-                key_hash_sha256,
-                api_key.key_prefix,
-                api_key.name,
-                now.isoformat(),
-                expires_at.isoformat() if expires_at else None,
-                1,
-            ),
-        )
-        await conn.commit()
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO api_keys (
+                    key_id, customer_id, key_hash_sha256, key_prefix, name,
+                    created_at, expires_at, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    api_key.key_id,
+                    api_key.customer_id,
+                    key_hash_sha256,
+                    api_key.key_prefix,
+                    api_key.name,
+                    now.isoformat(),
+                    expires_at.isoformat() if expires_at else None,
+                    1,
+                ),
+            )
+            await conn.commit()
+            await cursor.close()
 
         # Audit log (DO NOT log plaintext key)
         await self._log_audit(
@@ -577,23 +1055,24 @@ class CustomerDatabase:
         if len(plaintext_key) > 256:
             return None
 
-        conn = await self._get_connection()
+        async with self._connect() as conn:
+            # SHA-256 indexed lookup narrows to a single row.
+            key_hash_sha256 = hashlib.sha256(plaintext_key.encode()).hexdigest()
+            cursor = await conn.execute(
+                """
+                SELECT k.*, c.*
+                FROM api_keys k
+                JOIN customers c ON k.customer_id = c.customer_id
+                WHERE k.is_active = 1 AND k.key_hash_sha256 = ?
+                """,
+                (key_hash_sha256,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
 
-        # Fast path: SHA-256 lookup narrows to a single key, then bcrypt verify
-        key_hash_sha256 = hashlib.sha256(plaintext_key.encode()).hexdigest()
-        cursor = await conn.execute(
-            """
-            SELECT k.*, c.*
-            FROM api_keys k
-            JOIN customers c ON k.customer_id = c.customer_id
-            WHERE k.is_active = 1 AND k.key_hash_sha256 = ?
-            """
-            ,
-            (key_hash_sha256,),
-        )
-        row = await cursor.fetchone()
+            if not row:
+                return None
 
-        if row:
             # Found matching key - check expiration
             if row["expires_at"]:
                 expires_at = datetime.fromisoformat(row["expires_at"])
@@ -608,11 +1087,12 @@ class CustomerDatabase:
 
             # Update last_used_at
             now = datetime.now(UTC).isoformat()
-            await conn.execute(
+            cursor = await conn.execute(
                 "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
                 (now, row["key_id"]),
             )
             await conn.commit()
+            await cursor.close()
 
             # Return customer
             return Customer(
@@ -632,9 +1112,6 @@ class CustomerDatabase:
                 ),
             )
 
-        # No matching key found
-        return None
-
     async def revoke_api_key(self, key_id: str) -> bool:
         """
         Revoke (deactivate) API key.
@@ -645,25 +1122,32 @@ class CustomerDatabase:
         Returns:
             bool: True if revoked, False if not found
         """
-        conn = await self._get_connection()
-        cursor = await conn.execute("UPDATE api_keys SET is_active = 0 WHERE key_id = ?", (key_id,))
-        await conn.commit()
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                "UPDATE api_keys SET is_active = 0 WHERE key_id = ?", (key_id,)
+            )
+            await conn.commit()
+            rowcount = cursor.rowcount
+            await cursor.close()
 
-        if cursor.rowcount > 0:
-            # Get customer_id for audit log
+            if rowcount <= 0:
+                return False
+
             cursor2 = await conn.execute(
                 "SELECT customer_id FROM api_keys WHERE key_id = ?", (key_id,)
             )
             row = await cursor2.fetchone()
-            if row:
-                await self._log_audit(
-                    customer_id=row["customer_id"],
-                    action="REVOKE",
-                    resource_type="api_key",
-                    resource_id=key_id,
-                )
+            await cursor2.close()
 
-        return cursor.rowcount > 0
+        if row:
+            await self._log_audit(
+                customer_id=row["customer_id"],
+                action="REVOKE",
+                resource_type="api_key",
+                resource_id=key_id,
+            )
+
+        return rowcount > 0
 
     async def _log_audit(
         self,
@@ -685,41 +1169,45 @@ class CustomerDatabase:
             details: Additional details (JSON string)
             ip_address: IP address of request
         """
-        conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        async with self._connect() as conn:
+            now = datetime.now(UTC).isoformat()
 
-        await conn.execute(
-            """
-            INSERT INTO audit_log (
-                timestamp, customer_id, action, resource_type,
-                resource_id, details, ip_address
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (now, customer_id, action, resource_type, resource_id, details, ip_address),
-        )
-        await conn.commit()
+            cursor = await conn.execute(
+                """
+                INSERT INTO audit_log (
+                    timestamp, customer_id, action, resource_type,
+                    resource_id, details, ip_address
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (now, customer_id, action, resource_type, resource_id, details, ip_address),
+            )
+            await conn.commit()
+            await cursor.close()
 
     async def close(self) -> None:
-        """Close database connection."""
-        if self._conn:
-            await self._conn.close()
-            self._conn = None
+        """No-op (connections are per-operation)."""
+        return None
 
 
 # Global instance
 _db: CustomerDatabase | None = None
+_DB_CREATE_LOCK = threading.Lock()
 
 
 async def get_customer_db() -> CustomerDatabase:
     """
     Get global customer database instance.
 
-    Returns:
-        CustomerDatabase: Initialized database
+    CustomerDatabase uses connection-per-operation, so the instance is safe to share across
+    event loops without leaking asyncio primitives across loops.
     """
     global _db
+
     if _db is None:
-        settings = get_settings()
-        _db = CustomerDatabase(db_path=settings.storage.customer_db_path)
-        await _db.initialize()
+        with _DB_CREATE_LOCK:
+            if _db is None:
+                settings = get_settings()
+                _db = CustomerDatabase(db_path=settings.storage.customer_db_path)
+
+    await _db.initialize()
     return _db

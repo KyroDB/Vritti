@@ -99,10 +99,14 @@ class TestKyroDBConnection:
         assert response.uptime_seconds >= 0, "Uptime should be non-negative"
 
     @pytest.mark.asyncio
-    async def test_insert_and_query(self, skip_if_no_kyrodb, kyrodb_client: KyroDBClient):
+    async def test_insert_and_query(
+        self,
+        skip_if_no_kyrodb,
+        kyrodb_client: KyroDBClient,
+        unique_doc_id: int,
+    ):
         """Test insert and query operations."""
-        # Generate a unique doc_id using timestamp
-        doc_id = int(time.time() * 1000) % (2**63 - 1)
+        doc_id = unique_doc_id
         
         # Create a test embedding (384 dimensions for all-MiniLM-L6-v2)
         embedding = [0.1] * 384
@@ -152,16 +156,20 @@ class TestKyroDBConnection:
             print(f"Delete success: {delete_response.success}")
 
     @pytest.mark.asyncio
-    async def test_search(self, skip_if_no_kyrodb, kyrodb_client: KyroDBClient):
+    async def test_search(
+        self,
+        skip_if_no_kyrodb,
+        kyrodb_client: KyroDBClient,
+        doc_id_factory,
+    ):
         """Test k-NN search operation."""
         # Insert some test vectors first
         namespace = "test:search"
-        base_time = int(time.time() * 1000) % (2**60)
         doc_ids = []
         
         print("\n--- Inserting test vectors ---")
         for i in range(5):
-            doc_id = base_time + i
+            doc_id = await doc_id_factory()
             doc_ids.append(doc_id)
             
             # Create slightly different embeddings
@@ -218,9 +226,14 @@ class TestKyroDBRouterReal:
         assert health.get("text") is True, "Text instance not healthy"
 
     @pytest.mark.asyncio
-    async def test_insert_episode(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_insert_episode(
+        self,
+        skip_if_no_kyrodb,
+        kyrodb_router: KyroDBRouter,
+        unique_doc_id: int,
+    ):
         """Test episode insertion via router."""
-        episode_id = int(time.time() * 1000) % (2**63 - 1)
+        episode_id = unique_doc_id
         customer_id = "test-customer"
         collection = "test_failures"  # Use test-specific namespace
         
@@ -277,18 +290,22 @@ class TestKyroDBRouterReal:
             print("Episode cleaned up")
 
     @pytest.mark.asyncio
-    async def test_search_episodes(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_search_episodes(
+        self,
+        skip_if_no_kyrodb,
+        kyrodb_router: KyroDBRouter,
+        doc_id_factory,
+    ):
         """Test episode search via router."""
         customer_id = "test-customer"
         collection = "test_failures"  # Use test-specific namespace
-        base_time = int(time.time() * 1000) % (2**60)
         episode_ids = []
         
         print("\n--- Inserting test episodes ---")
         
         # Insert test episodes
         for i in range(3):
-            episode_id = base_time + i
+            episode_id = await doc_id_factory()
             episode_ids.append(episode_id)
             
             embedding = [0.1 + (i * 0.02)] * 384
@@ -344,13 +361,18 @@ class TestReflectionPersistence:
     """Test reflection update and retrieval with real KyroDB."""
 
     @pytest.mark.asyncio
-    async def test_update_episode_reflection(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_update_episode_reflection(
+        self,
+        skip_if_no_kyrodb,
+        kyrodb_router: KyroDBRouter,
+        unique_doc_id: int,
+    ):
         """Test updating episode with reflection metadata."""
         from datetime import datetime
 
         from src.models.episode import Reflection, ReflectionTier
         
-        episode_id = int(time.time() * 1000) % (2**63 - 1)
+        episode_id = unique_doc_id
         customer_id = "test-reflection"
         collection = "test_failures"
         
@@ -434,13 +456,18 @@ class TestSkillsIntegration:
     """Test skills storage with real KyroDB."""
 
     @pytest.mark.asyncio
-    async def test_insert_and_search_skill(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_insert_and_search_skill(
+        self,
+        skip_if_no_kyrodb,
+        kyrodb_router: KyroDBRouter,
+        unique_doc_id: int,
+    ):
         """Test skill insertion and search."""
         from datetime import datetime
 
         from src.models.skill import Skill
         
-        skill_id = int(time.time() * 1000) % (2**63 - 1)
+        skill_id = unique_doc_id
         customer_id = "test-skills"
         
         try:
@@ -453,7 +480,7 @@ class TestSkillsIntegration:
                 code="pip install missing_package && echo 'missing_package' >> requirements.txt",
                 language="bash",
                 error_class="ModuleNotFoundError",  # Required field
-                source_episodes=[skill_id - 100, skill_id - 200],
+                source_episodes=[skill_id + 1, skill_id + 2],
                 usage_count=5,
                 success_count=4,
                 failure_count=1,

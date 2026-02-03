@@ -42,11 +42,6 @@ from src.models.skill import Skill
 from src.skills.promotion import SkillPromotionService
 
 
-def _make_episode_id() -> int:
-    """Generate a unique episode ID (int64)."""
-    return int(time.time() * 1000) % (2**63 - 1)
-
-
 def _make_episode_create(
     customer_id: str,
     goal: str = "Deploy application to Kubernetes cluster",
@@ -137,7 +132,10 @@ async def _insert_episode_with_reflection(
     
     This bypasses the ingestion pipeline for controlled test setup.
     """
-    episode_id = _make_episode_id()
+    from src.storage.database import get_customer_db
+
+    db = await get_customer_db()
+    episode_id = await db.allocate_doc_id()
     
     episode = Episode(
         create_data=episode_create,
@@ -429,7 +427,10 @@ imagePullSecrets:
         Test that skill feedback correctly updates usage statistics.
         """
         customer_id = f"test_feedback_{uuid4().hex[:8]}"
-        skill_id = _make_episode_id()
+        from src.storage.database import get_customer_db
+
+        db = await get_customer_db()
+        skill_id = await db.allocate_doc_id()
         
         # Create a skill directly
         skill = Skill(
@@ -602,7 +603,10 @@ imagePullSecrets:
         Edge case: Episode exists but has no reflection yet.
         """
         customer_id = f"test_missing_{uuid4().hex[:8]}"
-        episode_id = _make_episode_id()
+        from src.storage.database import get_customer_db
+
+        db = await get_customer_db()
+        episode_id = await db.allocate_doc_id()
         
         try:
             # Create episode WITHOUT reflection
@@ -724,7 +728,10 @@ class TestSkillsInGating:
         from src.retrieval.search import SearchPipeline
         
         customer_id = f"test_gating_{uuid4().hex[:8]}"
-        skill_id = _make_episode_id()
+        from src.storage.database import get_customer_db
+
+        db = await get_customer_db()
+        skill_id = await db.allocate_doc_id()
         
         # Create a skill about Kubernetes deployment
         skill = Skill(

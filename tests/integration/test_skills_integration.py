@@ -18,10 +18,11 @@ import pytest
 from src.kyrodb.router import KyroDBRouter
 from src.models.skill import Skill
 
+async def _allocate_doc_id() -> int:
+    from src.storage.database import get_customer_db
 
-def _make_skill_id() -> int:
-    """Generate a unique skill ID (int64)."""
-    return int(time.time() * 1000) % (2**63 - 1)
+    db = await get_customer_db()
+    return await db.allocate_doc_id()
 
 
 def _make_skill(
@@ -41,7 +42,7 @@ def _make_skill(
         code=code,
         language="python",
         error_class=error_class,
-        source_episodes=[skill_id - 100, skill_id - 200],
+        source_episodes=[skill_id + 1, skill_id + 2],
         created_at=datetime.now(UTC),
     )
 
@@ -55,7 +56,7 @@ class TestSkillsCollection:
     async def test_insert_skill_success(self, kyrodb_router: KyroDBRouter):
         """Test successful skill insertion."""
         customer_id = f"test_customer_{uuid4().hex[:8]}"
-        skill_id = _make_skill_id()
+        skill_id = await _allocate_doc_id()
         
         skill = _make_skill(
             skill_id=skill_id,
@@ -86,7 +87,7 @@ class TestSkillsCollection:
     async def test_search_skills_finds_inserted(self, kyrodb_router: KyroDBRouter):
         """Test that inserted skill is searchable."""
         customer_id = f"test_customer_{uuid4().hex[:8]}"
-        skill_id = _make_skill_id()
+        skill_id = await _allocate_doc_id()
         
         skill = _make_skill(
             skill_id=skill_id,
@@ -151,9 +152,8 @@ class TestSkillsCollection:
         ]
         
         try:
-            base_id = _make_skill_id()
-            for i, (name, emb) in enumerate(skills_data):
-                skill_id = base_id + i
+            for name, emb in skills_data:
+                skill_id = await _allocate_doc_id()
                 skill_ids.append((skill_id, customer_id))
                 
                 skill = _make_skill(
@@ -207,7 +207,7 @@ class TestSkillsCollection:
         
         try:
             # Insert skill for customer A
-            skill_a_id = _make_skill_id()
+            skill_a_id = await _allocate_doc_id()
             skill_a = _make_skill(
                 skill_id=skill_a_id,
                 customer_id=customer_a,
@@ -219,7 +219,7 @@ class TestSkillsCollection:
             await kyrodb_router.insert_skill(skill=skill_a, embedding=embedding)
             
             # Insert skill for customer B
-            skill_b_id = _make_skill_id() + 1  # Ensure different ID
+            skill_b_id = await _allocate_doc_id()
             skill_b = _make_skill(
                 skill_id=skill_b_id,
                 customer_id=customer_b,
@@ -275,9 +275,8 @@ class TestSkillsCollection:
         
         try:
             # Insert 5 skills
-            base_id = _make_skill_id()
             for i, name in enumerate(skill_names):
-                skill_id = base_id + i
+                skill_id = await _allocate_doc_id()
                 skill_ids.append(skill_id)
                 
                 skill = _make_skill(
@@ -320,9 +319,8 @@ class TestSkillsSearchPerformance:
         
         # Insert 10 skills
         try:
-            base_id = _make_skill_id()
             for i in range(10):
-                skill_id = base_id + i
+                skill_id = await _allocate_doc_id()
                 skill_ids.append(skill_id)
                 
                 skill = _make_skill(
@@ -392,7 +390,7 @@ class TestSkillsInGating:
         from src.retrieval.search import SearchPipeline
         
         customer_id = f"test_customer_{uuid4().hex[:8]}"
-        skill_id = _make_skill_id()
+        skill_id = await _allocate_doc_id()
         
         skill = _make_skill(
             skill_id=skill_id,

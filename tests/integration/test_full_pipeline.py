@@ -22,6 +22,12 @@ from src.config import KyroDBConfig
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Reflection, ReflectionTier
 
+async def _allocate_doc_id() -> int:
+    from src.storage.database import get_customer_db
+
+    db = await get_customer_db()
+    return await db.allocate_doc_id()
+
 
 def is_kyrodb_running(host: str, port: int) -> bool:
     """Check if KyroDB is running on the given host:port."""
@@ -82,7 +88,7 @@ class TestFullPipelineWithRealKyroDB:
         collection = "failures"
         
         # Generate unique episode ID
-        episode_id = int(time.time() * 1000) % (2**63 - 1)
+        episode_id = await _allocate_doc_id()
         
         print(f"\n{'='*60}")
         print(f"Full Pipeline Test - Episode ID: {episode_id}")
@@ -245,7 +251,6 @@ class TestFullPipelineWithRealKyroDB:
         """
         customer_id = f"test-bench-{int(time.time())}"
         collection = "failures"
-        base_id = int(time.time() * 1000) % (2**60)
         episode_ids = []
         
         print(f"\n{'='*60}")
@@ -257,7 +262,7 @@ class TestFullPipelineWithRealKyroDB:
             print("\n--- Inserting 100 test episodes ---")
             
             for i in range(100):
-                episode_id = base_id + i
+                episode_id = await _allocate_doc_id()
                 episode_ids.append(episode_id)
                 
                 embedding = generate_embedding(0.1 + (i * 0.001))
@@ -344,7 +349,7 @@ class TestFullPipelineWithRealKyroDB:
         """
         customer_id = f"test-reflection-search-{int(time.time())}"
         collection = "failures"
-        episode_id = int(time.time() * 1000) % (2**63 - 1)
+        episode_id = await _allocate_doc_id()
         
         print(f"\n{'='*60}")
         print("Reflection Searchability Test")
@@ -442,7 +447,6 @@ class TestPreconditionMatching:
         """
         customer_id = f"test-precondition-{int(time.time())}"
         collection = "failures"
-        base_id = int(time.time() * 1000) % (2**60)
         episode_ids = []
         
         print(f"\n{'='*60}")
@@ -453,19 +457,16 @@ class TestPreconditionMatching:
             # Insert episodes with varying preconditions
             scenarios = [
                 {
-                    "id": base_id + 1,
                     "embedding": generate_embedding(0.1),
                     "goal": "Deploy to production",
                     "preconditions": "kubernetes_cluster,docker_registry",
                 },
                 {
-                    "id": base_id + 2,
                     "embedding": generate_embedding(0.15),
                     "goal": "Deploy to staging",
                     "preconditions": "kubernetes_cluster,staging_env",
                 },
                 {
-                    "id": base_id + 3,
                     "embedding": generate_embedding(0.5),
                     "goal": "Run database migration",
                     "preconditions": "postgres_running,backup_complete",
@@ -474,9 +475,10 @@ class TestPreconditionMatching:
             
             print("\n--- Inserting test scenarios ---")
             for scenario in scenarios:
-                episode_ids.append(scenario["id"])
+                episode_id = await _allocate_doc_id()
+                episode_ids.append(episode_id)
                 await kyrodb_router.insert_episode(
-                    episode_id=scenario["id"],
+                    episode_id=episode_id,
                     customer_id=customer_id,
                     collection=collection,
                     text_embedding=scenario["embedding"],

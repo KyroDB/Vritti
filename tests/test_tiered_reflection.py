@@ -224,7 +224,7 @@ class TestCostTracking:
         service.cheap_service.generate_reflection = AsyncMock(return_value=mock_reflection)
         
         # Generate reflection
-        await service.generate_reflection(sample_episode, tier=ReflectionTier.CHEAP)
+        await service.generate_reflection(sample_episode, episode_id=1, tier=ReflectionTier.CHEAP)
         
         # Check cost tracked
         assert service.total_cost == 0.0003
@@ -355,7 +355,7 @@ async def test_quality_fallback_to_premium(llm_config, sample_episode):
     service.premium_service.generate_multi_perspective_reflection = AsyncMock(return_value=premium_reflection)
     
     # Generate with CHEAP tier
-    reflection = await service.generate_reflection(sample_episode, tier=ReflectionTier.CHEAP)
+    reflection = await service.generate_reflection(sample_episode, episode_id=1, tier=ReflectionTier.CHEAP)
     
     # Should have upgraded to premium
     assert reflection.tier == ReflectionTier.PREMIUM.value

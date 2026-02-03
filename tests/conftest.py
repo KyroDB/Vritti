@@ -61,6 +61,28 @@ def pytest_sessionfinish(session, exitstatus):
         os._exit(exitstatus)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_customer_db(tmp_path_factory):
+    """
+    Ensure tests never touch a developer's local customer DB file.
+
+    The customer DB is used for API key storage and KyroDB doc_id allocation; using a shared
+    on-disk DB across test runs causes cross-test coupling and can trip schema guardrails.
+    """
+    import os
+
+    db_path = tmp_path_factory.mktemp("customer_db") / "customers.db"
+    os.environ["STORAGE_CUSTOMER_DB_PATH"] = str(db_path)
+
+    import src.config as config_module
+
+    config_module._settings = None
+
+    import src.storage.database as customer_db_module
+
+    customer_db_module._db = None
+
+
 @pytest.fixture
 def test_settings() -> Settings:
     """Create test settings with mock configuration."""

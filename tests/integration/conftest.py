@@ -12,6 +12,7 @@ Prerequisites:
     3. Run tests: pytest tests/integration/ -v
 """
 
+import os
 import socket
 
 import pytest
@@ -43,6 +44,35 @@ def skip_if_no_kyrodb():
         pytest.skip("KyroDB text instance not running on localhost:50051")
     if not is_kyrodb_running(host="localhost", port=50052):
         pytest.skip("KyroDB image instance not running on localhost:50052")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _configure_test_customer_db(tmp_path_factory):
+    """
+    Isolate integration tests from any developer/customer DB.
+
+    Integration tests hit real KyroDB instances; doc_id allocation must be global and stable
+    to avoid KyroDB doc_id collisions. We therefore use the real CustomerDatabase-backed
+    allocator, but point it at a temp SQLite file.
+    """
+    db_path = tmp_path_factory.mktemp("customer_db") / "customers.db"
+    os.environ["STORAGE_CUSTOMER_DB_PATH"] = str(db_path)
+
+    import src.config as config_module
+
+    config_module._settings = None
+
+    import src.storage.database as customer_db_module
+
+    customer_db_module._db = None
+
+
+@pytest.fixture
+async def customer_db():
+    from src.storage.database import get_customer_db
+
+    db = await get_customer_db()
+    yield db
 
 
 @pytest.fixture
@@ -149,27 +179,20 @@ def embedding_factory():
 
 
 @pytest.fixture
-def unique_doc_id() -> int:
-    """Generate a unique document ID based on current timestamp."""
-    import time
-    return int(time.time() * 1000) % (2**63 - 1)
+async def unique_doc_id(customer_db) -> int:
+    """Allocate a unique KyroDB-safe doc_id via the real allocator."""
+    return await customer_db.allocate_doc_id()
 
 
 @pytest.fixture
-def doc_id_factory():
+def doc_id_factory(customer_db):
     """
-    Factory for generating unique document IDs.
-    
+    Factory for allocating unique document IDs via CustomerDatabase.
+
     Usage:
-        def test_batch_insert(doc_id_factory):
-            ids = [doc_id_factory() for _ in range(10)]
+        episode_id = await doc_id_factory()
     """
-    import time
-    base_time = int(time.time() * 1000) % (2**60)
-    counter = [0]  # Mutable counter in closure
-    
-    def _make_id() -> int:
-        counter[0] += 1
-        return base_time + counter[0]
-    
-    return _make_id
+    async def _alloc() -> int:
+        return await customer_db.allocate_doc_id()
+
+    return _alloc

@@ -210,6 +210,7 @@ class Skill(BaseModel):
             "updated_at": self.updated_at.isoformat(),
             "promoted_at": self.promoted_at.isoformat(),
             "skill_json": json.dumps(self.model_dump(mode="json"), default=str),
+            "doc_type": "skill",
         }
 
         return metadata

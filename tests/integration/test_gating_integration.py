@@ -23,6 +23,13 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Reflection, ReflectionTier
 
 
+async def _allocate_doc_id() -> int:
+    from src.storage.database import get_customer_db
+
+    db = await get_customer_db()
+    return await db.allocate_doc_id()
+
+
 def is_kyrodb_running() -> bool:
     """Check if KyroDB is running on localhost:50051."""
     import socket
@@ -78,7 +85,7 @@ class TestGatingThresholds:
         """
         customer_id = f"test-gating-block-{int(time.time())}"
         collection = "failures"
-        episode_id = int(time.time() * 1000) % (2**63 - 1)
+        episode_id = await _allocate_doc_id()
         
         print(f"\n{'='*60}")
         print("Test: BLOCK Recommendation (High Similarity)")
@@ -179,7 +186,7 @@ class TestGatingThresholds:
         """
         customer_id = f"test-gating-rewrite-{int(time.time())}"
         collection = "failures"
-        episode_id = int(time.time() * 1000) % (2**63 - 1)
+        episode_id = await _allocate_doc_id()
         
         print(f"\n{'='*60}")
         print("Test: REWRITE Recommendation (Medium Similarity)")
@@ -310,7 +317,7 @@ class TestGatingThresholds:
         """
         customer_id = f"test-gating-hint-{int(time.time())}"
         collection = "failures"
-        episode_id = int(time.time() * 1000) % (2**63 - 1)
+        episode_id = await _allocate_doc_id()
         
         print(f"\n{'='*60}")
         print("Test: HINT Recommendation (Low-Medium Similarity)")
@@ -406,7 +413,7 @@ class TestSkillsInGating:
         from src.models.skill import Skill
         
         customer_id = f"test-gating-skill-{int(time.time())}"
-        skill_id = int(time.time() * 1000) % (2**63 - 1)
+        skill_id = await _allocate_doc_id()
         
         print(f"\n{'='*60}")
         print("Test: Skill Suggests REWRITE")

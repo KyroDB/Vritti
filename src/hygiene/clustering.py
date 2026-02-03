@@ -18,18 +18,34 @@ Performance:
 """
 
 import logging
+import asyncio
 import threading
 import time
-from datetime import datetime
+from typing import Protocol
 
 import numpy as np
 from hdbscan import HDBSCAN
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.clustering import ClusterInfo, ClusterTemplate
-from src.models.episode import Episode
+from src.kyrodb.router import get_namespaced_collection
 
 logger = logging.getLogger(__name__)
+
+class EpisodeIndex(Protocol):
+    async def allocate_doc_id(self, *, scope: str = "kyrodb_text") -> int:
+        ...
+
+    async def list_episode_ids(
+        self,
+        *,
+        customer_id: str,
+        collection: str,
+        include_archived: bool = False,
+        include_deleted: bool = False,
+        limit: int | None = None,
+    ) -> list[int]:
+        ...
 
 
 class EpisodeClusterer:
@@ -54,6 +70,7 @@ class EpisodeClusterer:
     def __init__(
         self,
         kyrodb_router: KyroDBRouter,
+        episode_index: EpisodeIndex | None = None,
         min_cluster_size: int = 5,
         min_samples: int = 3,
         metric: str = 'cosine',
@@ -77,15 +94,15 @@ class EpisodeClusterer:
             raise ValueError("min_cluster_size must be >= 3 for robust clusters")
         
         self.kyrodb_router = kyrodb_router
+        self.episode_index = episode_index
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples
         self.metric = metric
         self.cache_ttl = cluster_cache_ttl_seconds
         
-        # Thread-safe cluster cache: {customer_id: {cluster_id: centroid}}
-        self._cluster_cache: dict[str, dict[int, np.ndarray]] = {}
+        # Thread-safe cluster cache: {customer_id: (timestamp, {cluster_id: centroid})}
+        self._cluster_cache: dict[str, tuple[float, dict[int, np.ndarray]]] = {}
         self._cache_lock = threading.Lock()
-        self._cache_timestamps: dict[str, datetime] = {}
         
         logger.info(
             f"EpisodeClusterer initialized "
@@ -127,38 +144,35 @@ class EpisodeClusterer:
         if not customer_id or len(customer_id) > 100:
             raise ValueError(f"Invalid customer_id: {customer_id}")
         
-        # Fetch all active episodes with embeddings
-        episodes = await self._fetch_active_episodes(customer_id, collection)
-        
-        if len(episodes) < self.min_cluster_size:
+        # Fetch all active episode embeddings (requires episode enumeration).
+        episode_embeddings = await self._fetch_active_episode_embeddings(customer_id, collection)
+
+        if len(episode_embeddings) < self.min_cluster_size:
             logger.info(
                 f"Not enough episodes to cluster for {customer_id}: "
-                f"{len(episodes)} < {self.min_cluster_size}"
+                f"{len(episode_embeddings)} < {self.min_cluster_size}"
             )
             return {}
         
         # Validate embeddings before clustering
-        if not episodes:
-            raise ValueError("Cannot cluster empty episode list")
-        
-        for i, ep in enumerate(episodes):
-            if ep.text_embedding is None:
+        embedding_dim = len(episode_embeddings[0][1])
+        if embedding_dim == 0:
+            raise ValueError("Episode embedding dimension cannot be 0")
+        for episode_id, embedding in episode_embeddings:
+            if not embedding:
+                raise ValueError(f"Episode {episode_id} missing embedding")
+            if len(embedding) != embedding_dim:
                 raise ValueError(
-                    f"Episode {ep.episode_id} missing text_embedding - "
-                    f"all episodes must have embeddings for clustering"
-                )
-            if i > 0 and len(ep.text_embedding) != len(episodes[0].text_embedding):
-                raise ValueError(
-                    f"Episode {ep.episode_id} has inconsistent embedding dimension: "
-                    f"{len(ep.text_embedding)} vs {len(episodes[0].text_embedding)}"
+                    f"Episode {episode_id} has inconsistent embedding dimension: "
+                    f"{len(embedding)} vs {embedding_dim}"
                 )
         
         # Extract embeddings (numpy array for HDBSCAN)
-        embeddings = np.array([e.text_embedding for e in episodes])
-        episode_ids = [e.episode_id for e in episodes]
+        episode_ids = [episode_id for episode_id, _ in episode_embeddings]
+        embeddings = np.array([embedding for _, embedding in episode_embeddings], dtype=np.float32)
         
         logger.info(
-            f"Clustering {len(episodes)} episodes for {customer_id} using HDBSCAN "
+            f"Clustering {len(episode_embeddings)} episodes for {customer_id} using HDBSCAN "
             f"(min_cluster_size={self.min_cluster_size}, min_samples={self.min_samples})"
         )
         
@@ -182,6 +196,7 @@ class EpisodeClusterer:
         
         # Build cluster info
         clusters: dict[int, ClusterInfo] = {}
+        label_to_cluster_id: dict[int, int] = {}
         
         for label in set(cluster_labels):
             if label == -1:  # Noise points
@@ -201,8 +216,15 @@ class EpisodeClusterer:
             # Calculate avg intra-cluster similarity
             avg_similarity = self._calculate_avg_similarity(cluster_embeddings)
             
-            clusters[int(label)] = ClusterInfo(
-                cluster_id=int(label),
+            # Allocate a globally unique KyroDB doc_id for this cluster template.
+            # KyroDB namespaces are metadata-only; doc_id collisions across namespaces/types
+            # would overwrite data. Cluster IDs must therefore come from the same global
+            # allocator used for episodes/skills.
+            label_int = int(label)
+            cluster_id = await self.episode_index.allocate_doc_id()
+            label_to_cluster_id[label_int] = cluster_id
+            clusters[cluster_id] = ClusterInfo(
+                cluster_id=cluster_id,
                 customer_id=customer_id,
                 episode_ids=cluster_episode_ids,
                 centroid_embedding=centroid.tolist(),
@@ -214,7 +236,8 @@ class EpisodeClusterer:
             customer_id,
             collection,
             episode_ids,
-            cluster_labels
+            cluster_labels,
+            label_to_cluster_id=label_to_cluster_id,
         )
         
         # Update cache
@@ -230,7 +253,7 @@ class EpisodeClusterer:
         logger.info(
             f"Clustering complete for {customer_id}: "
             f"{len(clusters)} clusters, "
-            f"{total_clustered}/{len(episodes)} episodes clustered, "
+            f"{total_clustered}/{len(episode_embeddings)} episodes clustered, "
             f"{noise_count} noise, "
             f"duration: {duration:.1f}s"
         )
@@ -435,45 +458,93 @@ class EpisodeClusterer:
                 for cluster_id, centroid in centroids.items()
             }
     
-    async def _fetch_active_episodes(
+    async def _fetch_active_episode_embeddings(
         self,
         customer_id: str,
         collection: str
-    ) -> list[Episode]:
+    ) -> list[tuple[int, list[float]]]:
         """
-        Fetch all active (non-archived) episodes with embeddings.
+        Fetch all active (non-archived) episode embeddings.
         
         Args:
             customer_id: Customer ID
             collection: Collection name
             
         Returns:
-            List of episodes with text embeddings
-            
-        Note:
-            This is a placeholder - actual implementation depends on
-            KyroDB bulk fetch capabilities.
+            List of (episode_id, embedding) tuples.
+
+        Raises:
+            RuntimeError: If episode_index is not configured.
         """
-        # Full episode enumeration requires an index of episode IDs per customer
-        # (or a KyroDB server-side "scan" capability). Vritti does not implement
-        # this yet, so clustering jobs cannot run without external enumeration.
-        # This would typically involve a separate query to get all episode IDs
-        # for the customer, but for now we'll use a search to get candidates
-        # In a real implementation, you'd maintain an index of active episodes
-        
-        # For now, return empty list - full implementation requires
-        # an episodes index or full table scan capability in KyroDB
-        logger.warning(
-            "_fetch_active_episodes requires full episode enumeration - not yet implemented"
+        if self.episode_index is None:
+            raise RuntimeError(
+                "EpisodeClusterer requires an episode index for full enumeration. "
+                "Pass CustomerDatabase (or compatible) as episode_index."
+            )
+
+        # Enumerate active episodes from the local index.
+        episode_ids = await self.episode_index.list_episode_ids(
+            customer_id=customer_id,
+            collection=collection,
+            include_archived=False,
+            include_deleted=False,
         )
-        return []
+        if not episode_ids:
+            return []
+
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
+        # Fetch embeddings from KyroDB in bounded chunks.
+        chunk_size = 256
+        max_in_flight = 8
+        semaphore = asyncio.Semaphore(max_in_flight)
+
+        async def _fetch_chunk(doc_ids: list[int]) -> list[tuple[int, list[float]]]:
+            async with semaphore:
+                response = await self.kyrodb_router.text_client.bulk_query(
+                    doc_ids=doc_ids,
+                    namespace=namespaced_collection,
+                    include_embeddings=True,
+                )
+            items: list[tuple[int, list[float]]] = []
+            for result in response.results:
+                if not result.found:
+                    continue
+                embedding = list(getattr(result, "embedding", []) or [])
+                if not embedding:
+                    logger.warning(
+                        "Episode missing embedding during clustering fetch",
+                        extra={
+                            "customer_id": customer_id,
+                            "episode_id": int(getattr(result, "doc_id", 0) or 0),
+                        },
+                    )
+                    continue
+                items.append((int(result.doc_id), embedding))
+            return items
+
+        tasks: list[asyncio.Task[list[tuple[int, list[float]]]]] = []
+        for i in range(0, len(episode_ids), chunk_size):
+            chunk = episode_ids[i : i + chunk_size]
+            tasks.append(asyncio.create_task(_fetch_chunk(chunk)))
+
+        embeddings: list[tuple[int, list[float]]] = []
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for item in results:
+            if isinstance(item, Exception):
+                raise item
+            embeddings.extend(item)
+
+        return embeddings
     
     async def _persist_cluster_labels(
         self,
         customer_id: str,
         collection: str,
         episode_ids: list[int],
-        cluster_labels: np.ndarray
+        cluster_labels: np.ndarray,
+        *,
+        label_to_cluster_id: dict[int, int],
     ):
         """
         Persist cluster labels to KyroDB metadata.
@@ -486,22 +557,43 @@ class EpisodeClusterer:
             episode_ids: List of episode IDs
             cluster_labels: Corresponding cluster labels
         """
-        # Persist cluster labels (update episode metadata)
-        # Store None for noise points to clearly indicate unclustered episodes
-        updates = []
+        if not episode_ids:
+            return
+
+        # Persist cluster labels to KyroDB metadata using UpdateMetadata RPC.
+        # Convention: cluster_id == 0 means "unclustered/noise".
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
+        max_in_flight = 32
+        semaphore = asyncio.Semaphore(max_in_flight)
+
+        async def _update(doc_id: int, cluster_id_value: int) -> None:
+            async with semaphore:
+                await self.kyrodb_router.text_client.update_metadata(
+                    doc_id=doc_id,
+                    namespace=namespaced_collection,
+                    metadata={"cluster_id": str(cluster_id_value)},
+                    merge=True,
+                )
+
+        tasks: list[asyncio.Task[None]] = []
         for i, episode_id in enumerate(episode_ids):
             label = int(cluster_labels[i])
-            # Store as int (not string) for type consistency
-            # Use None for noise points (-1) to indicate unclustered
-            cluster_id_value = label if label != -1 else None
-            updates.append((episode_id, {"cluster_id": cluster_id_value}))
-        
-        # TODO: Implement bulk_update_metadata in KyroDBRouter
-        # For now, log intention
-        logger.info(
-            f"Would persist {len(updates)} cluster labels for {customer_id} "
-            f"(bulk update not yet implemented)"
-        )
+            cluster_id_value = 0 if label == -1 else int(label_to_cluster_id[label])
+            tasks.append(asyncio.create_task(_update(int(episode_id), cluster_id_value)))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        failures = [r for r in results if isinstance(r, Exception)]
+        if failures:
+            logger.warning(
+                "Cluster label persistence had failures",
+                extra={
+                    "customer_id": customer_id,
+                    "collection": collection,
+                    "attempted_updates": len(tasks),
+                    "failed_updates": len(failures),
+                },
+            )
     
     async def _get_cluster_template(
         self,

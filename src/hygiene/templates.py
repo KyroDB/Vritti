@@ -148,7 +148,14 @@ class TemplateGenerator:
         )
         
         # Persist template using the cluster centroid embedding for matching.
-        await self._persist_template(template, template_embedding=cluster_info.centroid_embedding)
+        persisted = await self._persist_template(
+            template, template_embedding=cluster_info.centroid_embedding
+        )
+        if not persisted:
+            raise RuntimeError(
+                f"Failed to persist template for cluster {cluster_info.cluster_id} "
+                f"(customer: {customer_id})"
+            )
         
         logger.info(
             f"Template generated for cluster {cluster_info.cluster_id} "
@@ -220,6 +227,7 @@ class TemplateGenerator:
         # Generate premium reflection
         reflection = await self.reflection_service.generate_reflection(
             episode.create_data,
+            episode_id=episode.episode_id,
             tier=ReflectionTier.PREMIUM
         )
         

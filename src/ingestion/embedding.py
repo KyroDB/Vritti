@@ -10,6 +10,7 @@ Handles:
 from __future__ import annotations
 
 import logging
+import threading
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,8 @@ class EmbeddingService:
         self._clip_model: CLIPModel | None = None
         self._clip_processor: CLIPProcessor | None = None
         self._device = self._get_device()
+        self._text_lock = threading.Lock()
+        self._clip_lock = threading.Lock()
 
         logger.info(f"EmbeddingService initialized (device: {self._device})")
 
@@ -134,17 +137,20 @@ class EmbeddingService:
         if not text or not text.strip():
             raise ValueError("Cannot embed empty text")
 
-        model = self._load_text_model()
+        # SentenceTransformer encode is not guaranteed to be thread-safe across concurrent calls.
+        # Guard both lazy init and inference to avoid crashes under load.
+        with self._text_lock:
+            model = self._load_text_model()
 
-        # Generate embedding
-        import torch
-        with torch.no_grad():
-            embedding = model.encode(
-                text,
-                convert_to_tensor=True,
-                show_progress_bar=False,
-                normalize_embeddings=True,  # L2 normalization for cosine similarity
-            )
+            import torch
+
+            with torch.no_grad():
+                embedding = model.encode(
+                    text,
+                    convert_to_tensor=True,
+                    show_progress_bar=False,
+                    normalize_embeddings=True,  # L2 normalization for cosine similarity
+                )
 
         # Convert to list
         return embedding.cpu().tolist()
@@ -169,18 +175,19 @@ class EmbeddingService:
         if any(not t or not t.strip() for t in texts):
             raise ValueError("Cannot embed empty texts in batch")
 
-        model = self._load_text_model()
+        with self._text_lock:
+            model = self._load_text_model()
 
-        # Batch encode
-        import torch
-        with torch.no_grad():
-            embeddings = model.encode(
-                texts,
-                batch_size=self.config.text_batch_size,
-                convert_to_tensor=True,
-                show_progress_bar=len(texts) > 100,  # Show progress for large batches
-                normalize_embeddings=True,
-            )
+            import torch
+
+            with torch.no_grad():
+                embeddings = model.encode(
+                    texts,
+                    batch_size=self.config.text_batch_size,
+                    convert_to_tensor=True,
+                    show_progress_bar=len(texts) > 100,  # Show progress for large batches
+                    normalize_embeddings=True,
+                )
 
         # Convert to list of lists
         return embeddings.cpu().tolist()
@@ -224,21 +231,19 @@ class EmbeddingService:
         except Exception as e:
             raise ValueError(f"Failed to load image {image_path}: {e}") from e
 
-        clip_model, clip_processor = self._load_clip_models()
+        with self._clip_lock:
+            clip_model, clip_processor = self._load_clip_models()
 
-        # Preprocess image
-        inputs = clip_processor(images=image, return_tensors="pt")
-        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+            inputs = clip_processor(images=image, return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-        # Generate embedding
-        import torch
-        with torch.no_grad():
-            image_features = clip_model.get_image_features(**inputs)
-            # Normalize for cosine similarity
-            image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+            import torch
 
-        # Convert to list
-        embedding = image_features[0].cpu().tolist()
+            with torch.no_grad():
+                image_features = clip_model.get_image_features(**inputs)
+                image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+            embedding = image_features[0].cpu().tolist()
 
         # Validate dimension
         if len(embedding) != self.config.image_dimension:
@@ -274,17 +279,19 @@ class EmbeddingService:
         except Exception as e:
             raise ValueError(f"Failed to decode image bytes: {e}") from e
 
-        clip_model, clip_processor = self._load_clip_models()
+        with self._clip_lock:
+            clip_model, clip_processor = self._load_clip_models()
 
-        inputs = clip_processor(images=image, return_tensors="pt")
-        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+            inputs = clip_processor(images=image, return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-        import torch
-        with torch.no_grad():
-            image_features = clip_model.get_image_features(**inputs)
-            image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+            import torch
 
-        embedding = image_features[0].cpu().tolist()
+            with torch.no_grad():
+                image_features = clip_model.get_image_features(**inputs)
+                image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+            embedding = image_features[0].cpu().tolist()
 
         if len(embedding) != self.config.image_dimension:
             logger.error(
@@ -326,21 +333,26 @@ class EmbeddingService:
             except Exception as e:
                 raise ValueError(f"Failed to load image {path}: {e}") from e
 
-        clip_model, clip_processor = self._load_clip_models()
+        with self._clip_lock:
+            clip_model, clip_processor = self._load_clip_models()
 
-        # Batch process
-        inputs = clip_processor(images=images, return_tensors="pt")
-        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+            inputs = clip_processor(images=images, return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-        # Generate embeddings
-        import torch
-        with torch.no_grad():
-            image_features = clip_model.get_image_features(**inputs)
-            # Normalize
-            image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+            import torch
 
-        # Convert to list of lists
-        return image_features.cpu().tolist()
+            with torch.no_grad():
+                image_features = clip_model.get_image_features(**inputs)
+                image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+            feature_dim = int(image_features.shape[-1])
+            if feature_dim != self.config.image_dimension:
+                raise ValueError(
+                    "Image embedding dimension mismatch. "
+                    f"Expected: {self.config.image_dimension}, Got: {feature_dim}"
+                )
+
+            return image_features.cpu().tolist()
 
     def warmup(self) -> None:
         """

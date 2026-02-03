@@ -1248,6 +1248,25 @@ class KyroDBRouter:
                     f"Skill {skill.skill_id} inserted into {namespaced_collection} "
                     f"(name: {skill.name})"
                 )
+                # Best-effort: maintain local enumeration index for reliable fallbacks.
+                try:
+                    from src.storage.database import get_customer_db
+
+                    db = await get_customer_db()
+                    await db.index_skill(
+                        skill_id=skill.skill_id,
+                        customer_id=skill.customer_id,
+                        created_at=skill.created_at,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Skill indexing failed",
+                        extra={
+                            "customer_id": skill.customer_id,
+                            "skill_id": skill.skill_id,
+                            "error": str(e),
+                        },
+                    )
                 return True
             else:
                 logger.error(f"Skill insertion failed: {response.error}")
@@ -1316,7 +1335,69 @@ class KyroDBRouter:
                 f"(customer: {customer_id}, k: {k}, min_score: {min_score})"
             )
 
-            return skills
+            if skills:
+                return skills
+
+            # Fallback: KyroDB search is global and then filtered by namespace. In large, mixed
+            # corpora this can under-recall small namespaces. For skills (small per customer),
+            # we can compute similarity in-process using an indexed list of skill_ids.
+            try:
+                from src.storage.database import get_customer_db
+
+                db = await get_customer_db()
+                skill_ids = await db.list_skill_ids(customer_id=customer_id, include_deleted=False)
+                if not skill_ids:
+                    return []
+
+                # Bulk-fetch embeddings + metadata for all skills in this namespace.
+                # Skills are expected to be small; still chunk for safety.
+                chunk_size = 256
+                scored: list[tuple[int, float, dict[str, str]]] = []
+                query_vec = normalized_query_embedding
+
+                for i in range(0, len(skill_ids), chunk_size):
+                    chunk = skill_ids[i : i + chunk_size]
+                    bulk = await self.text_client.bulk_query(
+                        doc_ids=chunk,
+                        namespace=namespaced_collection,
+                        include_embeddings=True,
+                    )
+                    for item in bulk.results:
+                        if not item.found:
+                            continue
+                        emb = list(getattr(item, "embedding", []) or [])
+                        if not emb:
+                            continue
+                        # Stored vectors should already be normalized, but normalize defensively.
+                        emb_vec = self._l2_normalize_embedding(emb, name="skill_embedding")
+                        score = sum(q * e for q, e in zip(query_vec, emb_vec))
+                        if min_score > 0.0 and score < min_score:
+                            continue
+                        scored.append((int(item.doc_id), float(score), dict(item.metadata)))
+
+                if not scored:
+                    return []
+
+                scored.sort(key=lambda x: x[1], reverse=True)
+                fallback_results: list[tuple[Skill, float]] = []
+                for doc_id, score, meta in scored[:k]:
+                    try:
+                        fallback_results.append((Skill.from_metadata_dict(doc_id, meta), score))
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to deserialize skill during fallback search",
+                            extra={"doc_id": doc_id, "customer_id": customer_id, "error": str(e)},
+                        )
+                        continue
+
+                return fallback_results
+            except Exception as e:
+                logger.warning(
+                    "Skills fallback search failed",
+                    extra={"customer_id": customer_id, "error": str(e)},
+                    exc_info=True,
+                )
+                return []
 
         except Exception as e:
             logger.error(

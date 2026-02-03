@@ -21,7 +21,6 @@ from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode
 from src.models.skill import Skill
-from src.utils.identifiers import generate_episode_id
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +182,13 @@ class SkillPromotionService:
                 return None
 
             # Deserialize episode
-            episode = Episode.from_metadata_dict(episode_id, dict(response.metadata))
+            raw_metadata = getattr(response, "metadata", None)
+            try:
+                metadata = dict(raw_metadata) if raw_metadata else {}
+            except TypeError:
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+
+            episode = Episode.from_metadata_dict(episode_id, metadata)
             return episode
 
         except Exception as e:
@@ -402,7 +407,10 @@ class SkillPromotionService:
         )
 
         # Create skill
-        skill_id = generate_episode_id()  # Reuse ID generator
+        from src.storage.database import get_customer_db
+
+        db = await get_customer_db()
+        skill_id = await db.allocate_doc_id()
         skill = Skill(
             skill_id=skill_id,
             customer_id=customer_id,
@@ -418,9 +426,31 @@ class SkillPromotionService:
         )
 
         # Generate embedding for skill
-        embedding_text = f"{skill.name}\n\n{skill.docstring}"
-        if skill.code:
-            embedding_text += f"\n\n{skill.code[:500]}"  # Include code snippet
+        embedding_parts: list[str] = [
+            f"name: {skill.name}",
+            f"docstring: {skill.docstring}",
+            f"error_class: {skill.error_class}",
+        ]
+
+        if skill.tools:
+            embedding_parts.append(f"tools: {', '.join(skill.tools[:10])}")
+        if skill.tags:
+            embedding_parts.append(f"tags: {', '.join(skill.tags[:20])}")
+
+        # Include representative episode context so skills are discoverable by the
+        # same goal/error phrasing developers will search with.
+        embedding_parts.append(f"example_goal: {primary_episode.create_data.goal}")
+        embedding_parts.append(
+            f"example_error: {primary_episode.create_data.error_trace[:500]}"
+        )
+
+        if primary_episode.reflection:
+            embedding_parts.append(f"root_cause: {primary_episode.reflection.root_cause}")
+            embedding_parts.append(
+                f"resolution_strategy: {primary_episode.reflection.resolution_strategy[:300]}"
+            )
+
+        embedding_text = "\n\n".join(embedding_parts)
         skill_embedding = await anyio.to_thread.run_sync(
             self.embedding_service.embed_text, embedding_text
         )

@@ -23,6 +23,7 @@ import json
 import logging
 import threading
 import time
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 import anyio
@@ -35,9 +36,14 @@ from src.ingestion.multi_perspective_reflection import (
     MultiPerspectiveReflectionService,
     PromptInjectionDefense,
 )
+from src.models.clustering import ClusterTemplate
 from src.models.episode import EpisodeCreate, Reflection, ReflectionTier
 
 logger = logging.getLogger(__name__)
+
+_cached_cluster_template_var: ContextVar[ClusterTemplate | None] = ContextVar(
+    "cached_cluster_template", default=None
+)
 
 
 class CheapReflectionService:
@@ -396,9 +402,6 @@ class TieredReflectionService:
         self.embedding_service = embedding_service
         self._clustering_config = None
         
-        # Thread-local storage for cached cluster templates (prevents race conditions)
-        self._cached_template_local = threading.local()
-        
         if kyrodb_router is not None:
             try:
                 from src.config import get_settings
@@ -453,6 +456,8 @@ class TieredReflectionService:
     async def generate_reflection(
         self,
         episode: EpisodeCreate,
+        *,
+        episode_id: int,
         tier: ReflectionTier | None = None
     ) -> Reflection:
         """
@@ -506,22 +511,15 @@ class TieredReflectionService:
             
             elif tier == ReflectionTier.CACHED:
                 # Phase 6: Cluster-based cached reflections
-                # Use thread-local storage to prevent race conditions
-                if self.template_generator and hasattr(self._cached_template_local, 'cluster_template'):
-                    cluster_template = self._cached_template_local.cluster_template
-                    
-                    # Generate episode-specific ID (temporary until persistence)
-                    # TODO: Replace with actual episode_id after database persistence
-                    import uuid
-                    temp_episode_id = abs(hash(str(uuid.uuid4()))) % (10 ** 8)
-                    
+                # Use contextvars for per-request isolation across concurrent async tasks.
+                cluster_template = _cached_cluster_template_var.get()
+                _cached_cluster_template_var.set(None)  # one-shot consumption
+
+                if self.template_generator and cluster_template is not None:
                     reflection = await self.template_generator.get_cached_reflection(
                         cluster_template=cluster_template,
-                        episode_id=temp_episode_id
+                        episode_id=episode_id
                     )
-                    
-                    # Clean up thread-local cache after use
-                    delattr(self._cached_template_local, 'cluster_template')
                     
                     # Quality validation for cached reflection
                     if reflection.confidence_score < 0.6:
@@ -625,8 +623,8 @@ class TieredReflectionService:
                         f"Selected CACHED tier (cluster {cluster_template.cluster_id}, "
                         f"match_similarity: {(match_similarity if match_similarity is not None else 0.0):.2f})"
                     )
-                    # Store template in thread-local storage (prevents race conditions)
-                    self._cached_template_local.cluster_template = cluster_template
+                    # Store template in a task-local ContextVar (safe under asyncio concurrency).
+                    _cached_cluster_template_var.set(cluster_template)
                     return ReflectionTier.CACHED
             except Exception as e:
                 logger.warning(f"Cluster matching failed: {e}, falling back to normal tier selection")

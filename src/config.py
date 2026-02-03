@@ -339,7 +339,7 @@ class SearchConfig(BaseSettings):
 
     # LLM semantic validation
     enable_llm_validation: bool = Field(
-        default=True,
+        default=False,
         description="Enable LLM semantic validation for preconditions to prevent false blocks in context-sensitive scenarios"
     )
     llm_similarity_threshold: float = Field(

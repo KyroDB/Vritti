@@ -36,7 +36,6 @@ from src.ingestion.tiered_reflection import (
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode, EpisodeCreate, Reflection, ReflectionTier
 from src.utils.identifiers import (
-    generate_episode_id,
     hash_environment,
     hash_error_signature,
 )
@@ -51,7 +50,7 @@ class IngestionPipeline:
 
     Components:
     - PII redaction (regex-based, <1ms)
-    - ID generation (Snowflake, <1μs)
+    - ID allocation (SQLite counter, <1ms)
     - Embedding generation (5-30ms)
     - KyroDB storage (100-200ns)
     - Async reflection (background, 2-5s)
@@ -179,8 +178,11 @@ class IngestionPipeline:
                 environment_hash=env_hash,
             )
 
-            # Step 3: Generate episode ID (<1μs)
-            episode_id = generate_episode_id()
+            # Step 3: Allocate episode ID (KyroDB doc_id must be dense/small)
+            from src.storage.database import get_customer_db
+
+            db = await get_customer_db()
+            episode_id = await db.allocate_doc_id()
 
             # Step 4: Generate embeddings (~10-40ms total)
             text_embedding, image_embedding = await self._generate_embeddings(episode_data)
@@ -202,6 +204,22 @@ class IngestionPipeline:
                 env_hash=env_hash,
                 error_sig=error_sig,
             )
+
+            # Maintain the local episode index for offline jobs (clustering/decay).
+            # Best-effort: do not fail ingestion if indexing fails.
+            try:
+                await db.index_episode(
+                    episode_id=episode.episode_id,
+                    customer_id=episode.create_data.customer_id,
+                    collection="failures",
+                    created_at=episode.created_at,
+                    has_image=episode.image_embedding_id is not None,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Episode indexing failed for {episode.episode_id}: {e}",
+                    exc_info=True,
+                )
 
             # Step 7: Queue async reflection generation (non-blocking)
             if generate_reflection and self.reflection_service:
@@ -491,6 +509,7 @@ class IngestionPipeline:
             # Generate reflection using tiered service with optional override
             reflection = await self.reflection_service.generate_reflection(
                 episode_data,
+                episode_id=episode_id,
                 tier=tier_override  # Auto-selects if None
             )
 

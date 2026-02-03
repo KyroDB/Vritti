@@ -20,7 +20,8 @@ class ClusterInfo(BaseModel):
     
     cluster_id: int = Field(
         ...,
-        description="Unique cluster identifier (HDBSCAN label)"
+        ge=1,
+        description="Unique cluster identifier used as KyroDB doc_id for the cluster template (>=1)."
     )
     
     customer_id: str = Field(
@@ -73,7 +74,8 @@ class ClusterTemplate(BaseModel):
     
     cluster_id: int = Field(
         ...,
-        description="Cluster this template represents"
+        gt=0,
+        description="Cluster identifier (KyroDB doc_id for this template)"
     )
     
     customer_id: str = Field(

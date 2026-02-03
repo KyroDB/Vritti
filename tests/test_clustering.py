@@ -102,8 +102,8 @@ class TestEpisodeClusterer:
         customer_id = "test_customer"
         
         clusters = {
-            0: ClusterInfo(
-                cluster_id=0,
+            1: ClusterInfo(
+                cluster_id=1,
                 customer_id=customer_id,
                 episode_ids=[1, 2, 3],
                 centroid_embedding=[0.5, 0.5, 0.0],
@@ -118,9 +118,9 @@ class TestEpisodeClusterer:
         centroids = clusterer._get_cached_centroids(customer_id)
         
         assert customer_id in clusterer._cluster_cache
-        assert 0 in centroids
-        assert isinstance(centroids[0], np.ndarray)
-        assert np.array_equal(centroids[0], np.array([0.5, 0.5, 0.0]))
+        assert 1 in centroids
+        assert isinstance(centroids[1], np.ndarray)
+        assert np.array_equal(centroids[1], np.array([0.5, 0.5, 0.0]))
     
     def test_cache_expiration(self, clusterer):
         """Test that cache expires after TTL."""
@@ -130,8 +130,8 @@ class TestEpisodeClusterer:
         clusterer.cache_ttl = 0
         
         clusters = {
-            0: ClusterInfo(
-                cluster_id=0,
+            1: ClusterInfo(
+                cluster_id=1,
                 customer_id=customer_id,
                 episode_ids=[1, 2, 3],
                 centroid_embedding=[0.5, 0.5, 0.0],
@@ -148,7 +148,7 @@ class TestEpisodeClusterer:
     @pytest.mark.asyncio
     async def test_cluster_customer_episodes_insufficient(self, clusterer, mock_kyrodb_router):
         """Test clustering with insufficient episodes."""
-        clusterer._fetch_active_episodes = AsyncMock(return_value=[])
+        clusterer._fetch_active_episode_embeddings = AsyncMock(return_value=[])
         
         result = await clusterer.cluster_customer_episodes("test_customer")
         
@@ -174,8 +174,8 @@ class TestEpisodeClusterer:
         
         # Add cluster to cache
         clusters = {
-            0: ClusterInfo(
-                cluster_id=0,
+            1: ClusterInfo(
+                cluster_id=1,
                 customer_id=customer_id,
                 episode_ids=[1, 2, 3],
                 centroid_embedding=[1.0, 0.0, 0.0],  # Different from query
@@ -214,8 +214,8 @@ class TestClusterMatching:
         
         # Create cluster with specific centroid
         clusters = {
-            0: ClusterInfo(
-                cluster_id=0,
+            1: ClusterInfo(
+                cluster_id=1,
                 customer_id=customer_id,
                 episode_ids=[1, 2, 3],
                 centroid_embedding=[0.9, 0.1, 0.0],
@@ -226,7 +226,7 @@ class TestClusterMatching:
         
         # Mock template retrieval
         mock_template = ClusterTemplate(
-            cluster_id=0,
+            cluster_id=1,
             customer_id=customer_id,
             template_reflection={"root_cause": "test"},
             source_episode_id=1,
@@ -245,7 +245,7 @@ class TestClusterMatching:
         )
         
         assert result is not None
-        assert result.cluster_id == 0
+        assert result.cluster_id == 1
 
 
 @pytest.mark.asyncio

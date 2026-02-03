@@ -9,7 +9,7 @@ import re
 from datetime import UTC, datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class SubscriptionTier(str, Enum):
@@ -155,15 +155,12 @@ class APIKey(BaseModel):
     API keys are stored as SHA-256 digest (never plaintext).
     """
 
-    model_config = ConfigDict(populate_by_name=True)
-
     key_id: str = Field(..., description="Unique key identifier (UUID)")
     customer_id: str = Field(..., description="Owner customer ID")
     key_hash_sha256: str = Field(
         ...,
         min_length=64,
         max_length=64,
-        alias="key_hash",
         description="SHA-256 digest of API key",
     )
     key_prefix: str = Field(

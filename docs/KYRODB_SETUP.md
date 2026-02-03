@@ -19,38 +19,43 @@ cargo build --release
 
 ### 2. Create Configuration
 
-Create `kyrodb_config.toml`:
+KyroDB supports YAML/TOML configs. This repo’s examples use **YAML** because it matches KyroDB’s
+current documented config schema (`config.example.yaml` in the KyroDB repo).
 
-```toml
-[server]
-port = 50051
-max_connections = 100
+Create `kyrodb_text.yaml` (384-dim text embeddings):
 
-[storage]
-data_dir = "./kyrodb_data"
-wal_sync = "immediate"
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 50051
+  max_connections: 10000
 
-[hnsw]
-dimension = 384
-distance = "cosine"
-M = 16
-ef_construction = 100
-ef_search = 50
-max_elements = 100000
+hnsw:
+  dimension: 384
+  distance: cosine
+  max_elements: 200000
+  m: 16
+  ef_construction: 200
+  ef_search: 50
 
-[cache]
-enable_learned_cache = true
-l1_cache_size_mb = 64
-l2_cache_size_mb = 128
+persistence:
+  data_dir: "./kyrodb_text_data"
+  enable_wal: true
+  fsync_policy: data_only
 
-[logging]
-level = "info"
+cache:
+  capacity: 10000
+  strategy: learned
+
+logging:
+  level: info
+  format: text
 ```
 
 ### 3. Start KyroDB
 
 ```bash
-./target/release/kyrodb_server --config kyrodb_config.toml
+./target/release/kyrodb_server --config kyrodb_text.yaml
 ```
 
 Verify it's running:
@@ -90,6 +95,7 @@ dimension = 384
 ```
 
 Mismatch will cause errors:
+
 ```
 grpc.aio._call.AioRpcError: query dimension mismatch: expected 768 found 384
 ```
@@ -99,25 +105,26 @@ grpc.aio._call.AioRpcError: query dimension mismatch: expected 768 found 384
 For production, run two KyroDB instances:
 
 **Text instance** (port 50051):
-```toml
-[hnsw]
-dimension = 384
-```
 
 **Image instance** (port 50052):
-```toml
-[hnsw]
-dimension = 512
+
+```yaml
+server:
+  port: 50052
+hnsw:
+  dimension: 512
+persistence:
+  data_dir: "./kyrodb_image_data"
 ```
 
 Start both:
 
 ```bash
 # Terminal 1
-./kyrodb_server --config text_config.toml
+./kyrodb_server --config kyrodb_text.yaml
 
 # Terminal 2
-./kyrodb_server --config image_config.toml
+./kyrodb_server --config kyrodb_image.yaml
 ```
 
 ## Troubleshooting
@@ -139,10 +146,12 @@ Ensure KyroDB config has `dimension = 384` for text instance.
 ### Performance Issues
 
 Expected performance:
+
 - Insert: <1ms per document
 - Search: <5ms P99 for k=10
 
 If slower, check:
+
 - Disk I/O (use SSD)
 - Memory (increase cache sizes)
 - Network latency (use localhost for testing)

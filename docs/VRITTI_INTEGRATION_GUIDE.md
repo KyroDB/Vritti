@@ -6,17 +6,17 @@ Quick guide to integrate Vritti with AI agents.
 
 ### Prerequisites
 - **Two KyroDB instances running**:
-  - Text instance: `port 50051` (384/ or 768-dim embeddings)
+  - Text instance: `port 50051` (384-dim text embeddings)
   - Image instance: `port 50052` (512-dim CLIP embeddings)
 - **Vritti service**: `port 8000`
 
 ### Start Services
 ```bash
 # Terminal 1: Text instance
-./target/release/kyrodb_server --config kyrodb_config.toml --data-dir ./data/kyrodb
+./target/release/kyrodb_server --config kyrodb_text.yaml
 
 # Terminal 2: Image instance
-./target/release/kyrodb_server --config kyrodb_config_images.toml
+./target/release/kyrodb_server --config kyrodb_image.yaml
 
 # Terminal 3: Vritti
 cd Vritti && uvicorn src.main:app --port 8000
@@ -121,18 +121,35 @@ class MyAgent:
 
 ### KyroDB Instances
 
-**Text instance** (`kyrodb_config.toml`):
-```toml
-grpc_port = 50051
-dimension = 768  # or 384 for MiniLM
-data_dir = "./data/kyrodb"
+KyroDB config schema matches `config.example.yaml` in the KyroDB repo.
+
+**Text instance** (`kyrodb_text.yaml`):
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 50051
+
+hnsw:
+  dimension: 384
+  distance: cosine
+
+persistence:
+  # IMPORTANT: use a dedicated data_dir per instance
+  data_dir: "./kyrodb_text_data"
 ```
 
-**Image instance** (`kyrodb_config_images.toml`):
-```toml
-grpc_port = 50052
-dimension = 512  # CLIP embeddings
-data_dir = "./data/kyrodb_images"
+**Image instance** (`kyrodb_image.yaml`):
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 50052
+
+hnsw:
+  dimension: 512
+  distance: cosine
+
+persistence:
+  data_dir: "./kyrodb_image_data"
 ```
 
 ### Vritti `.env`
