@@ -322,28 +322,28 @@ async def get_usage(
             detail="API key does not have access to this customer",
         )
 
-    customer = await db.get_customer(customer_id)
+    fetched_customer = await db.get_customer(customer_id)
 
-    if customer is None:
+    if fetched_customer is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Customer '{customer_id}' not found",
         )
 
-    remaining = customer.monthly_credit_limit - customer.credits_used_current_month
+    remaining = fetched_customer.monthly_credit_limit - fetched_customer.credits_used_current_month
     percentage = (
-        (customer.credits_used_current_month / customer.monthly_credit_limit * 100)
-        if customer.monthly_credit_limit > 0
+        (fetched_customer.credits_used_current_month / fetched_customer.monthly_credit_limit * 100)
+        if fetched_customer.monthly_credit_limit > 0
         else 0.0
     )
 
     return UsageResponse(
-        customer_id=customer.customer_id,
-        credits_used=customer.credits_used_current_month,
-        credit_limit=customer.monthly_credit_limit,
+        customer_id=fetched_customer.customer_id,
+        credits_used=fetched_customer.credits_used_current_month,
+        credit_limit=fetched_customer.monthly_credit_limit,
         remaining_credits=max(0, remaining),
         usage_percentage=round(percentage, 2),
-        over_quota=customer.is_quota_exceeded(),
+        over_quota=fetched_customer.is_quota_exceeded(),
     )
 
 

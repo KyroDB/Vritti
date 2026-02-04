@@ -13,6 +13,7 @@ import os
 import socket
 
 import pytest
+import pytest_asyncio
 
 from src.config import KyroDBConfig, get_settings
 from src.gating.service import GatingService
@@ -26,11 +27,7 @@ LOAD_CUSTOMER_ID = "load-test-customer"
 
 
 def _is_port_open(host: str, port: int) -> bool:
-    candidates = []
-    if host == "localhost":
-        candidates = ["127.0.0.1", "::1", host]
-    else:
-        candidates = [host]
+    candidates = ["127.0.0.1", "::1", host] if host == "localhost" else [host]
 
     for target in dict.fromkeys(candidates):
         try:
@@ -78,6 +75,29 @@ def _configure_load_customer_db(tmp_path_factory):
     import src.storage.database as customer_db_module
 
     customer_db_module._db = None
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _isolate_customer_db_event_loop():
+    """
+    Ensure each load test gets a fresh CustomerDatabase bound to its current event loop.
+
+    pytest-asyncio may create different loops per test class/function; reusing a singleton DB
+    with asyncio locks across loops can trigger "bound to a different event loop" errors.
+    """
+    import src.storage.database as customer_db_module
+
+    existing = customer_db_module._db
+    customer_db_module._db = None
+    if existing is not None:
+        await existing.close()
+
+    yield
+
+    current = customer_db_module._db
+    customer_db_module._db = None
+    if current is not None:
+        await current.close()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -134,12 +154,15 @@ async def kyrodb_router(skip_if_no_kyrodb):
         await router.close()
 
 
-@pytest.fixture(scope="session")
-def embedding_service():
+@pytest_asyncio.fixture
+async def embedding_service():
     settings = get_settings()
     service = EmbeddingService(config=settings.embedding)
     service.warmup()
-    return service
+    try:
+        yield service
+    finally:
+        await service.shutdown()
 
 
 @pytest.fixture

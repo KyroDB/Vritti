@@ -14,7 +14,7 @@ X-API-Key: em_live_your_api_key
 ### 1. Capture Failure
 `POST /api/v1/capture`
 
-When your agent fails, capture it:
+When your agent fails, capture it. Reflection is generated asynchronously for every accepted capture:
 ```json
 {
   "episode_type": "failure",
@@ -93,7 +93,8 @@ Find similar problems you've solved:
   "goal": "UI screenshot error",
   "k": 5,
   "image_base64": "<base64-encoded image bytes>",
-  "image_weight": 0.3
+  "image_weight": 0.3,
+  "include_archived": false
 }
 ```
 

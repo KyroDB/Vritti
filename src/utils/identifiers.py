@@ -40,4 +40,3 @@ def hash_text_content(text: str) -> str:
     hasher = hashlib.sha256()
     hasher.update(text.strip().encode("utf-8"))
     return hasher.hexdigest()
-

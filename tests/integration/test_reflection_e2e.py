@@ -189,8 +189,12 @@ def mock_kyrodb_router_with_reflection() -> MagicMock:
         }
 
         if reflection.consensus:
-            reflection_metadata["reflection_consensus_method"] = reflection.consensus.consensus_method
-            reflection_metadata["reflection_consensus_confidence"] = f"{reflection.consensus.consensus_confidence:.4f}"
+            reflection_metadata["reflection_consensus_method"] = (
+                reflection.consensus.consensus_method
+            )
+            reflection_metadata["reflection_consensus_confidence"] = (
+                f"{reflection.consensus.consensus_confidence:.4f}"
+            )
 
         storage[key]["metadata"].update(reflection_metadata)
         return True
@@ -404,9 +408,7 @@ class TestReflectionE2EMock:
     ):
         """Test that failed reflections are logged to dead-letter queue."""
         # Make update always fail
-        mock_kyrodb_router_with_reflection.update_episode_reflection = AsyncMock(
-            return_value=False
-        )
+        mock_kyrodb_router_with_reflection.update_episode_reflection = AsyncMock(return_value=False)
 
         pipeline = IngestionPipeline(
             kyrodb_router=mock_kyrodb_router_with_reflection,
@@ -546,6 +548,7 @@ class TestReflectionE2EWithRealConfig:
         """
         # Load real configuration structure (but will use mocked LLM calls)
         from src.config import get_settings
+
         settings = get_settings()
 
         # Create mocked tiered reflection service for automated testing
@@ -565,8 +568,9 @@ class TestReflectionE2EWithRealConfig:
                 confidence_score=0.9,
                 llm_model="mock-model",
                 cost_usd=0.01,
-                tier=ReflectionTier.PREMIUM
+                tier=ReflectionTier.PREMIUM,
             )
+
         reflection_service.generate_reflection = AsyncMock(side_effect=mock_generate)
 
         pipeline = IngestionPipeline(
@@ -582,7 +586,7 @@ class TestReflectionE2EWithRealConfig:
         )
 
         # Wait for async reflection (real LLM calls take 10-30s)
-        await asyncio.sleep(1) # Reduced wait time for mock
+        await asyncio.sleep(1)  # Reduced wait time for mock
 
         # Verify reflection was persisted
         stored = await mock_kyrodb_router_with_reflection.get_episode(
@@ -622,6 +626,7 @@ class TestDailyCostTracking:
 
             # Initialize required attributes
             import threading
+
             service._stats_lock = threading.Lock()
             service._daily_cost_usd = 0.0
             service._daily_cost_date = datetime.now(UTC).date()
@@ -659,6 +664,7 @@ class TestDailyCostTracking:
 
             # Initialize required attributes
             import threading
+
             service._stats_lock = threading.Lock()
             service._daily_cost_usd = 55.0  # Over limit
             service._daily_cost_date = datetime.now(UTC).date()
@@ -682,6 +688,7 @@ class TestDailyCostTracking:
 
             # Initialize with yesterday's date (UTC to match the implementation)
             import threading
+
             service._stats_lock = threading.Lock()
             service._daily_cost_usd = 100.0  # Over limit
             # Use UTC date to match implementation's datetime.now(timezone.utc).date()

@@ -5,11 +5,11 @@ Prevents memory exhaustion attacks from large payloads.
 """
 
 import logging
-from collections.abc import Callable
 
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.types import ASGIApp
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         max_body_size: Maximum request body size in bytes (default: 10MB)
     """
 
-    def __init__(self, app, max_body_size: int = 10 * 1024 * 1024):
+    def __init__(self, app: ASGIApp, max_body_size: int = 10 * 1024 * 1024) -> None:
         """
         Initialize request size limit middleware.
 
@@ -42,7 +42,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
             f"Request size limit middleware enabled (max: {max_body_size / 1024 / 1024:.1f}MB)"
         )
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """
         Check request body size before processing.
 

@@ -16,87 +16,94 @@ Performance:
 
 import logging
 from datetime import UTC, datetime
+from typing import Protocol
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.clustering import ClusterInfo, ClusterTemplate
-from src.models.episode import Episode, Reflection, ReflectionTier
+from src.models.episode import Episode, EpisodeCreate, Reflection, ReflectionTier
 
 logger = logging.getLogger(__name__)
+
+
+class ReflectionGenerator(Protocol):
+    async def generate_reflection(
+        self,
+        episode: EpisodeCreate,
+        *,
+        episode_id: int,
+        tier: ReflectionTier | None = None,
+    ) -> Reflection: ...
 
 
 class TemplateGenerator:
     """
     Generate and manage cluster reflection templates.
-    
+
     Strategy:
     1. Find best episode in cluster (highest confidence reflection)
     2. If no reflections exist, generate one using PREMIUM tier
     3. Store as template for future reuse
     """
-    
+
     def __init__(
         self,
         kyrodb_router: KyroDBRouter,
-        reflection_service: object | None = None  # TieredReflectionService
-    ):
+        reflection_service: ReflectionGenerator | None = None,
+    ) -> None:
         """
         Initialize template generator.
-        
+
         Args:
             kyrodb_router: KyroDB router for data access
             reflection_service: Optional reflection service for generating templates
         """
         self.kyrodb_router = kyrodb_router
         self.reflection_service = reflection_service
-    
+
     async def generate_cluster_template(
-        self,
-        customer_id: str,
-        cluster_info: ClusterInfo
+        self, customer_id: str, cluster_info: ClusterInfo
     ) -> ClusterTemplate:
         """
         Generate template reflection for a cluster.
-        
+
         Strategy:
         1. Fetch all episodes in cluster
         2. Find episode with best reflection (highest confidence)
         3. If no reflections, generate one using premium tier
         4. Create and persist template
-        
+
         Args:
             customer_id: Customer ID
             cluster_info: Cluster information
-            
+
         Returns:
             ClusterTemplate
-            
+
         Security:
             - Validates customer_id matches cluster
             - Ensures template quality (confidence >= 0.7)
         """
         if customer_id != cluster_info.customer_id:
-            raise ValueError(
-                f"Customer ID mismatch: {customer_id} != {cluster_info.customer_id}"
-            )
-        
+            raise ValueError(f"Customer ID mismatch: {customer_id} != {cluster_info.customer_id}")
+
         logger.info(
             f"Generating template for cluster {cluster_info.cluster_id} "
             f"({len(cluster_info.episode_ids)} episodes)"
         )
-        
+
         # Fetch episodes in cluster using bulk operation
         episodes = await self._fetch_cluster_episodes(cluster_info)
-        
+
         if not episodes:
             raise ValueError(
                 f"No episodes found for cluster {cluster_info.cluster_id}. "
                 f"Cluster has {len(cluster_info.episode_ids)} episode IDs."
             )
-        
+
         # Find episode with best reflection (highest confidence)
         best_reflection: Reflection | None = None
-        source_episode_id: int | None = None
-        
+        source_episode_id: int = episodes[0].episode_id
+
         for episode in episodes:
             if (
                 episode.reflection
@@ -108,7 +115,7 @@ class TemplateGenerator:
             ):
                 best_reflection = episode.reflection
                 source_episode_id = episode.episode_id
-        
+
         # If no good reflection exists, generate one with premium tier
         if best_reflection is None:
             logger.info(
@@ -118,7 +125,7 @@ class TemplateGenerator:
             best_reflection, source_episode_id = await self._generate_premium_reflection(
                 episodes[0]
             )
-        
+
         # Validate template quality
         if best_reflection.confidence_score < 0.7:
             logger.warning(
@@ -128,25 +135,27 @@ class TemplateGenerator:
             best_reflection, source_episode_id = await self._generate_premium_reflection(
                 episodes[0]
             )
-            
+
             # Validate regenerated reflection
             if best_reflection.confidence_score < 0.7:
                 raise ValueError(
                     f"Failed to generate high-quality template for cluster {cluster_info.cluster_id}: "
                     f"confidence {best_reflection.confidence_score:.2f} < 0.7 after premium regeneration"
                 )
-        
+
         # Create template
         template = ClusterTemplate(
             cluster_id=cluster_info.cluster_id,
             customer_id=customer_id,
-            template_reflection=best_reflection.model_dump(),  # Serialize to dict
+            # Persist a JSON-safe payload (datetimes -> isoformat strings) so it can be
+            # stored as metadata.template_reflection_json.
+            template_reflection=best_reflection.model_dump(mode="json"),
             source_episode_id=source_episode_id,
             episode_count=len(cluster_info.episode_ids),
             avg_similarity=cluster_info.avg_intra_cluster_similarity,
-            usage_count=0
+            usage_count=0,
         )
-        
+
         # Persist template using the cluster centroid embedding for matching.
         persisted = await self._persist_template(
             template, template_embedding=cluster_info.centroid_embedding
@@ -156,90 +165,80 @@ class TemplateGenerator:
                 f"Failed to persist template for cluster {cluster_info.cluster_id} "
                 f"(customer: {customer_id})"
             )
-        
+
         logger.info(
             f"Template generated for cluster {cluster_info.cluster_id} "
             f"(source: episode {source_episode_id}, "
             f"confidence: {best_reflection.confidence_score:.2f})"
         )
-        
+
         return template
-    
+
     async def get_cached_reflection(
-        self,
-        cluster_template: ClusterTemplate,
-        episode_id: int
+        self, cluster_template: ClusterTemplate, episode_id: int
     ) -> Reflection:
         """
         Generate cached reflection from cluster template.
-        
+
         Clones template reflection and updates episode-specific metadata.
-        
+
         Args:
             cluster_template: Cluster template to use
             episode_id: New episode ID
-            
+
         Returns:
             Reflection with tier=cached, cost=0
         """
         # Deserialize template reflection
         template_refl_dict = cluster_template.template_reflection
         template_refl = Reflection.model_validate(template_refl_dict)
-        
+
         # Clone and update
         cached_reflection = template_refl.model_copy(deep=True)
-        
+
         # Mark as cached
-        cached_reflection.tier = ReflectionTier.CACHED.value
+        cached_reflection.tier = ReflectionTier.CACHED
         cached_reflection.cost_usd = 0.0  # $0 for cached reflections
         cached_reflection.llm_model = f"cluster-template-{cluster_template.cluster_id}"
         cached_reflection.generated_at = datetime.now(UTC)
-        
+
         # Track template usage
-        await self._track_template_usage(
-            cluster_template.cluster_id,
-            cluster_template.customer_id
-        )
-        
+        await self._track_template_usage(cluster_template.cluster_id, cluster_template.customer_id)
+
         logger.debug(
             f"Generated cached reflection for episode {episode_id} "
             f"using template {cluster_template.cluster_id}"
         )
-        
+
         return cached_reflection
-    
-    async def _generate_premium_reflection(
-        self,
-        episode: Episode
-    ) -> tuple[Reflection, int]:
+
+    async def _generate_premium_reflection(self, episode: Episode) -> tuple[Reflection, int]:
         """
         Generate premium reflection for episode (for template).
-        
+
         Args:
             episode: Episode to generate reflection for
-            
+
         Returns:
             (reflection, episode_id)
         """
         if self.reflection_service is None:
             raise RuntimeError("Reflection service not available for template generation")
-        
+
         # Generate premium reflection
         reflection = await self.reflection_service.generate_reflection(
-            episode.create_data,
-            episode_id=episode.episode_id,
-            tier=ReflectionTier.PREMIUM
+            episode.create_data, episode_id=episode.episode_id, tier=ReflectionTier.PREMIUM
         )
-        
+
         return reflection, episode.episode_id
-    
+
     async def _fetch_cluster_episodes(self, cluster_info: ClusterInfo) -> list[Episode]:
         """
         Fetch all episodes for a cluster.
-        
+
         Args:
             cluster_info: Cluster information
-        
+
         Returns:
             list[Episode]: Episodes in cluster
         """
@@ -250,33 +249,33 @@ class TemplateGenerator:
                 customer_id=cluster_info.customer_id,
                 collection="failures",
             )
-            
+
             logger.info(
                 f"Bulk fetched {len(episodes)}/{len(cluster_info.episode_ids)} episodes "
                 f"for cluster {cluster_info.cluster_id}"
             )
-            
+
             return episodes
-            
+
         except Exception as e:
             logger.error(
                 f"Failed to bulk fetch episodes for cluster {cluster_info.cluster_id}: {e}",
                 exc_info=True,
             )
             raise  # Re-raise so caller knows fetch failed vs no episodes found
-    
+
     async def _persist_template(
         self, cluster_template: ClusterTemplate, template_embedding: list[float]
     ) -> bool:
         """
         Persist cluster template to KyroDB for reuse across restarts.
-        
+
         Critical: Without persistence, templates are lost on service restart,
         defeating the purpose of template caching.
-        
+
         Args:
             cluster_template: Template to persist
-        
+
         Returns:
             bool: Success status
         """
@@ -289,9 +288,9 @@ class TemplateGenerator:
                 customer_id=cluster_template.customer_id,
                 cluster_id=cluster_template.cluster_id,
                 template_embedding=template_embedding,
-                template_metadata=template_metadata
+                template_metadata=template_metadata,
             )
-            
+
             if success:
                 logger.info(
                     f"Persisted template for cluster {cluster_template.cluster_id} "
@@ -301,17 +300,17 @@ class TemplateGenerator:
                 logger.error(
                     f"Failed to persist template for cluster {cluster_template.cluster_id}"
                 )
-            
+
             return success
-            
+
         except Exception as e:
             logger.error(
                 f"Error persisting template for cluster {cluster_template.cluster_id}: {e}",
-                exc_info=True
+                exc_info=True,
             )
             return False
-    
-    async def _track_template_usage(self, cluster_id: int, customer_id: str):
+
+    async def _track_template_usage(self, cluster_id: int, customer_id: str) -> None:
         """
         Increment template usage counter.
         """

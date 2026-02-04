@@ -18,6 +18,7 @@ Endpoint Types:
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.models.customer import SubscriptionTier
@@ -28,11 +29,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RateLimitConfig:
     """Rate limit configuration for an endpoint."""
-    
+
     per_minute: int
     per_hour: int
     burst_limit: int  # Maximum concurrent requests
-    
+
     def to_slowapi_string(self, period: str = "minute") -> str:
         """Convert to slowapi rate limit string format."""
         if period == "minute":
@@ -86,11 +87,11 @@ def get_rate_limit_for_tier(
 ) -> RateLimitConfig:
     """
     Get rate limit configuration for a subscription tier and endpoint type.
-    
+
     Args:
         tier: Customer subscription tier
         endpoint_type: Type of endpoint (capture, search, reflect, skills, admin, default)
-        
+
     Returns:
         RateLimitConfig for the tier/endpoint combination
     """
@@ -105,12 +106,12 @@ def get_rate_limit_string(
 ) -> str:
     """
     Get rate limit string for slowapi decorator.
-    
+
     Args:
         tier: Customer subscription tier
         endpoint_type: Type of endpoint
         period: Time period (minute or hour)
-        
+
     Returns:
         Rate limit string (e.g., "100/minute")
     """
@@ -126,59 +127,59 @@ UNAUTHENTICATED_LIMITS = RateLimitConfig(
 )
 
 
-def get_dynamic_rate_limit(endpoint_type: str = "default"):
+def get_dynamic_rate_limit(endpoint_type: str = "default") -> Callable[[str], str]:
     """
     Create a dynamic rate limit function for slowapi.
-    
+
     This function returns a callable that determines the rate limit
     based on the rate limit key (customer_id or IP address).
-    
+
     NOTE: slowapi calls this callable with the key extracted by key_func.
     The key is customer_id if authenticated, or IP address if not.
     Since we don't have tier info from just the key, we use a default
     tier (STARTER) for rate limiting. Actual quota enforcement happens
     via the quota tracking system.
-    
+
     For true tier-based rate limiting, a middleware approach is recommended:
     1. AuthenticationMiddleware attaches customer to request.state
     2. Custom rate limiter checks request.state.customer for tier
-    
+
     Usage:
         @app.post("/api/v1/capture")
         @limiter.limit(get_dynamic_rate_limit("capture"))
         async def capture_episode(request: Request, ...):
             ...
-    
+
     Args:
         endpoint_type: Type of endpoint for limit lookup
-        
+
     Returns:
         Callable that returns rate limit string (slowapi calls with key parameter)
     """
+
     def rate_limit_value(key: str) -> str:
         """
         Return rate limit based on endpoint type.
-        
+
         Note: We use STARTER tier limits as the default since we don't have
         access to customer tier information at this point. The key is just
         the customer_id or IP address.
-        
+
         Real tier-based enforcement happens via quota tracking.
         """
         # Use STARTER tier as default - provides reasonable limits
         # FREE tier is too restrictive, ENTERPRISE would allow abuse
         default_config = TIER_RATE_LIMITS[SubscriptionTier.STARTER].get(
-            endpoint_type,
-            TIER_RATE_LIMITS[SubscriptionTier.STARTER]["default"]
+            endpoint_type, TIER_RATE_LIMITS[SubscriptionTier.STARTER]["default"]
         )
-        
+
         logger.debug(
             f"Rate limit for key={key[:8]}... on {endpoint_type}: "
             f"{default_config.per_minute}/min (STARTER tier default)"
         )
-        
+
         return default_config.to_slowapi_string("minute")
-    
+
     return rate_limit_value
 
 
@@ -192,7 +193,7 @@ ADMIN_RATE_LIMIT = get_dynamic_rate_limit("admin")
 
 class RateLimitExceededError(Exception):
     """Raised when rate limit is exceeded."""
-    
+
     def __init__(
         self,
         customer_id: str,
@@ -206,7 +207,7 @@ class RateLimitExceededError(Exception):
         self.endpoint_type = endpoint_type
         self.limit = limit
         self.retry_after_seconds = retry_after_seconds
-        
+
         super().__init__(
             f"Rate limit exceeded for {customer_id} ({tier.value}): "
             f"{limit}/min on {endpoint_type}. Retry after {retry_after_seconds}s."
@@ -219,10 +220,10 @@ def log_rate_limit_exceeded(
     endpoint_type: str,
 ) -> None:
     """Log rate limit exceeded event."""
-    
+
     logger.warning(
         f"Rate limit exceeded: customer={customer_id}, tier={tier.value}, "
         f"endpoint={endpoint_type}"
     )
-    
+
     # Intentionally no external telemetry here; logs are the source of truth.

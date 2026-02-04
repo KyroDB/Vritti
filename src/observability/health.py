@@ -134,13 +134,12 @@ class HealthChecker:
     def __init__(self, config: HealthCheckConfig | None = None):
         """
         Initialize health checker with optional configuration.
-        
+
         Args:
             config: Health check configuration. If None, uses defaults.
         """
         self.start_time = time.time()
         self.version = "0.1.0"
-
 
         # Load configuration (use defaults if not provided)
         self.config = config or HealthCheckConfig()
@@ -171,24 +170,24 @@ class HealthChecker:
     ) -> tuple[HealthStatus, str]:
         """
         Evaluate health status based on latency thresholds.
-        
+
         Args:
             latency_ms: Measured latency in milliseconds
             warning_threshold_ms: Threshold for degraded status
             error_threshold_ms: Threshold for unhealthy status
-            
+
         Returns:
             Tuple of (HealthStatus, status_message)
         """
         if latency_ms >= error_threshold_ms:
             return (
                 HealthStatus.UNHEALTHY,
-                f"Latency {latency_ms:.1f}ms exceeds error threshold {error_threshold_ms:.1f}ms"
+                f"Latency {latency_ms:.1f}ms exceeds error threshold {error_threshold_ms:.1f}ms",
             )
         elif latency_ms >= warning_threshold_ms:
             return (
                 HealthStatus.DEGRADED,
-                f"Latency {latency_ms:.1f}ms exceeds warning threshold {warning_threshold_ms:.1f}ms"
+                f"Latency {latency_ms:.1f}ms exceeds warning threshold {warning_threshold_ms:.1f}ms",
             )
         else:
             return (HealthStatus.HEALTHY, f"Latency {latency_ms:.1f}ms within limits")
@@ -196,9 +195,9 @@ class HealthChecker:
     def _update_circuit_state(self, component: str, success: bool) -> None:
         """
         Update circuit breaker state for a component.
-        
+
         Tracks consecutive failures/successes for smarter health decisions.
-        
+
         Args:
             component: Component name
             success: Whether the health check succeeded
@@ -210,14 +209,12 @@ class HealthChecker:
             )
         else:
             self._consecutive_successes[component] = 0
-            self._consecutive_failures[component] = (
-                self._consecutive_failures.get(component, 0) + 1
-            )
+            self._consecutive_failures[component] = self._consecutive_failures.get(component, 0) + 1
 
     def _is_circuit_open(self, component: str) -> bool:
         """
         Check if circuit breaker is open for a component.
-        
+
         Returns True if consecutive failures exceed threshold.
         """
         failures = self._consecutive_failures.get(component, 0)
@@ -226,7 +223,7 @@ class HealthChecker:
     def _is_circuit_recovering(self, component: str) -> bool:
         """
         Check if circuit breaker is recovering for a component.
-        
+
         Returns True if consecutive successes meet recovery threshold.
         """
         successes = self._consecutive_successes.get(component, 0)
@@ -254,9 +251,9 @@ class HealthChecker:
 
     async def check_readiness(
         self,
-        kyrodb_router=None,
-        customer_db=None,
-        embedding_service=None,
+        kyrodb_router: Any | None = None,
+        customer_db: Any | None = None,
+        embedding_service: Any | None = None,
     ) -> ReadinessResponse:
         """
         Readiness probe: Is the service ready to accept traffic?
@@ -318,10 +315,10 @@ class HealthChecker:
 
     async def check_health(
         self,
-        kyrodb_router=None,
-        customer_db=None,
-        embedding_service=None,
-        reflection_service=None,
+        kyrodb_router: Any | None = None,
+        customer_db: Any | None = None,
+        embedding_service: Any | None = None,
+        reflection_service: Any | None = None,
     ) -> HealthCheckResponse:
         """
         Comprehensive health check with all components.
@@ -395,7 +392,7 @@ class HealthChecker:
 
         return response
 
-    async def _check_kyrodb_health(self, kyrodb_router) -> ComponentHealth:
+    async def _check_kyrodb_health(self, kyrodb_router: Any) -> ComponentHealth:
         """
         Check KyroDB connection health.
 
@@ -466,7 +463,7 @@ class HealthChecker:
             latency_ms = (time.perf_counter() - start_time) * 1000
 
             logger.error("KyroDB health check failed", error=str(e), exc_info=True)
-            
+
             # Update circuit breaker state
             self._update_circuit_state("kyrodb", False)
 
@@ -482,7 +479,7 @@ class HealthChecker:
                 },
             )
 
-    async def _check_database_health(self, customer_db) -> ComponentHealth:
+    async def _check_database_health(self, customer_db: Any) -> ComponentHealth:
         """
         Check customer database health.
 
@@ -525,7 +522,7 @@ class HealthChecker:
                 last_check=datetime.now(UTC),
             )
 
-    async def _check_embedding_service_health(self, embedding_service) -> ComponentHealth:
+    async def _check_embedding_service_health(self, embedding_service: Any) -> ComponentHealth:
         """
         Check embedding service health.
 
@@ -577,7 +574,7 @@ class HealthChecker:
                 last_check=datetime.now(UTC),
             )
 
-    async def _check_reflection_service_health(self, reflection_service) -> ComponentHealth:
+    async def _check_reflection_service_health(self, reflection_service: Any) -> ComponentHealth:
         """
         Check reflection service health.
 
@@ -591,7 +588,11 @@ class HealthChecker:
         try:
             # Check if API key is configured (check LLM config)
             has_config = hasattr(reflection_service, "llm_config")
-            api_key_configured = has_config and reflection_service.llm_config.has_any_api_key if has_config else False
+            api_key_configured = (
+                has_config and reflection_service.llm_config.has_any_api_key
+                if has_config
+                else False
+            )
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -636,7 +637,7 @@ _health_checker: HealthChecker | None = None
 def get_health_checker(config: HealthCheckConfig | None = None) -> HealthChecker:
     """
     Get global health checker instance.
-    
+
     Args:
         config: Optional health check configuration. Only used on first call.
 
@@ -652,7 +653,7 @@ def get_health_checker(config: HealthCheckConfig | None = None) -> HealthChecker
 def reset_health_checker() -> None:
     """
     Reset the global health checker instance.
-    
+
     Used for testing or when configuration changes require a fresh instance.
     """
     global _health_checker

@@ -15,7 +15,6 @@ Security:
 import logging
 import re
 
-
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode
@@ -99,9 +98,7 @@ class SkillPromotionService:
 
             # Step 2: Check if fix is substantial
             if not self._has_substantial_fix(episode):
-                logger.debug(
-                    f"Episode {episode_id} fix not substantial enough for promotion"
-                )
+                logger.debug(f"Episode {episode_id} fix not substantial enough for promotion")
                 return None
 
             # Step 3: Check success rate
@@ -124,14 +121,12 @@ class SkillPromotionService:
                 return None
 
             # Step 5: Check similar episodes' success rate
-            avg_success_rate = sum(
-                e.usage_stats.fix_success_rate for e in similar_episodes
-            ) / len(similar_episodes)
+            avg_success_rate = sum(e.usage_stats.fix_success_rate for e in similar_episodes) / len(
+                similar_episodes
+            )
 
             if avg_success_rate < self.MIN_SUCCESS_RATE:
-                logger.debug(
-                    f"Similar episodes avg success rate too low: {avg_success_rate:.2f}"
-                )
+                logger.debug(f"Similar episodes avg success rate too low: {avg_success_rate:.2f}")
                 return None
 
             # Step 6: Promote to skill
@@ -152,9 +147,7 @@ class SkillPromotionService:
             )
             return None
 
-    async def _fetch_episode(
-        self, episode_id: int, customer_id: str
-    ) -> Episode | None:
+    async def _fetch_episode(self, episode_id: int, customer_id: str) -> Episode | None:
         """
         Fetch episode from KyroDB.
 
@@ -182,10 +175,18 @@ class SkillPromotionService:
 
             # Deserialize episode
             raw_metadata = getattr(response, "metadata", None)
-            try:
-                metadata = dict(raw_metadata) if raw_metadata else {}
-            except TypeError:
-                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+            metadata: dict[str, str] = {}
+            if raw_metadata:
+                if isinstance(raw_metadata, dict):
+                    metadata = raw_metadata
+                else:
+                    try:
+                        if hasattr(raw_metadata, "items"):
+                            metadata = dict(raw_metadata.items())
+                        else:
+                            metadata = dict(raw_metadata)
+                    except (TypeError, ValueError, AttributeError):
+                        metadata = {}
 
             episode = Episode.from_metadata_dict(episode_id, metadata)
             return episode
@@ -214,9 +215,7 @@ class SkillPromotionService:
         resolution = episode.reflection.resolution_strategy
 
         # Check for code
-        has_code = any(
-            re.search(pattern, resolution) for pattern in self.CODE_PATTERNS
-        )
+        has_code = any(re.search(pattern, resolution) for pattern in self.CODE_PATTERNS)
 
         # Check for procedural steps
         step_patterns = [
@@ -254,6 +253,9 @@ class SkillPromotionService:
 
         collection = "failures"
         namespaced_collection = get_namespaced_collection(customer_id, collection)
+        episode_reflection = episode.reflection
+        if episode_reflection is None:
+            return []
 
         try:
             # Generate embedding for episode goal
@@ -276,9 +278,7 @@ class SkillPromotionService:
                     continue
 
                 try:
-                    similar_ep = Episode.from_metadata_dict(
-                        result.doc_id, dict(result.metadata)
-                    )
+                    similar_ep = Episode.from_metadata_dict(result.doc_id, dict(result.metadata))
 
                     # Must have reflection
                     if not similar_ep.reflection:
@@ -297,21 +297,20 @@ class SkillPromotionService:
                         continue
 
                     # Check resolution similarity (text-based)
+                    similar_reflection = similar_ep.reflection
+                    if similar_reflection is None:
+                        continue
                     if self._resolutions_similar(
-                        episode.reflection.resolution_strategy,
-                        similar_ep.reflection.resolution_strategy,
+                        episode_reflection.resolution_strategy,
+                        similar_reflection.resolution_strategy,
                     ):
                         similar_episodes.append(similar_ep)
 
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to process similar episode {result.doc_id}: {e}"
-                    )
+                    logger.warning(f"Failed to process similar episode {result.doc_id}: {e}")
                     continue
 
-            logger.debug(
-                f"Found {len(similar_episodes)} similar episodes for {episode.episode_id}"
-            )
+            logger.debug(f"Found {len(similar_episodes)} similar episodes for {episode.episode_id}")
 
             return similar_episodes
 
@@ -337,12 +336,8 @@ class SkillPromotionService:
         res2_normalized = res2.lower().strip()
 
         # Extract key terms (words > 5 chars)
-        words1 = {
-            word for word in re.findall(r"\w+", res1_normalized) if len(word) > 5
-        }
-        words2 = {
-            word for word in re.findall(r"\w+", res2_normalized) if len(word) > 5
-        }
+        words1 = {word for word in re.findall(r"\w+", res1_normalized) if len(word) > 5}
+        words2 = {word for word in re.findall(r"\w+", res2_normalized) if len(word) > 5}
 
         if not words1 or not words2:
             return False
@@ -390,17 +385,16 @@ class SkillPromotionService:
         skill_docstring = self._generate_skill_docstring(primary_episode, all_episodes)
 
         # Extract code or procedure
-        resolution = primary_episode.reflection.resolution_strategy
+        primary_reflection = primary_episode.reflection
+        if primary_reflection is None:
+            raise ValueError("Primary episode reflection is required for skill creation")
+        resolution = primary_reflection.resolution_strategy
         code, procedure, language = self._extract_code_or_procedure(resolution)
 
         # Extract categorization
         tags = self._extract_tags(all_episodes)
         tools = list(
-            {
-                tool
-                for ep in all_episodes
-                for tool in ep.create_data.tool_chain[:2]  # Top 2 tools
-            }
+            {tool for ep in all_episodes for tool in ep.create_data.tool_chain[:2]}  # Top 2 tools
         )
 
         # Create skill
@@ -437,9 +431,7 @@ class SkillPromotionService:
         # Include representative episode context so skills are discoverable by the
         # same goal/error phrasing developers will search with.
         embedding_parts.append(f"example_goal: {primary_episode.create_data.goal}")
-        embedding_parts.append(
-            f"example_error: {primary_episode.create_data.error_trace[:500]}"
-        )
+        embedding_parts.append(f"example_error: {primary_episode.create_data.error_trace[:500]}")
 
         if primary_episode.reflection:
             embedding_parts.append(f"root_cause: {primary_episode.reflection.root_cause}")
@@ -561,10 +553,7 @@ class SkillPromotionService:
             return code, None, language
 
         # Check if it's a procedural fix
-        has_steps = any(
-            pattern in resolution
-            for pattern in ["\n1.", "\n2.", "Step 1:", "Step 2:"]
-        )
+        has_steps = any(pattern in resolution for pattern in ["\n1.", "\n2.", "Step 1:", "Step 2:"])
 
         if has_steps:
             # Extract procedure
@@ -586,7 +575,7 @@ class SkillPromotionService:
         Returns:
             list: Common tags
         """
-        tag_counts = {}
+        tag_counts: dict[str, int] = {}
 
         for episode in episodes:
             for tag in episode.create_data.tags:

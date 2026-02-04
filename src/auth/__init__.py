@@ -2,7 +2,7 @@
 Authentication and authorization for EpisodicMemory API.
 
 Security:
-- API key validation via SHA-256 digest lookup
+- API key validation via key_id lookup + adaptive hash verify
 - customer_id injection from validated key (prevents spoofing)
 - Rate limiting per customer
 - Admin API key for admin endpoints

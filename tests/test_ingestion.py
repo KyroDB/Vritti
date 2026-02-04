@@ -23,19 +23,14 @@ class TestIngestionPipeline:
     @pytest.mark.asyncio
     async def test_capture_episode_basic(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
         sample_episode_create: EpisodeCreate,
     ):
         """Test basic episode capture without reflection."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         # Capture episode
-        episode = await pipeline.capture_episode(
+        episode = await ingestion_pipeline.capture_episode(
             episode_data=sample_episode_create,
             generate_reflection=False,
         )
@@ -56,6 +51,7 @@ class TestIngestionPipeline:
     @pytest.mark.asyncio
     async def test_pii_redaction(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
     ):
@@ -74,13 +70,7 @@ class TestIngestionPipeline:
             error_class="network_error",
         )
 
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
-        episode = await pipeline.capture_episode(
+        episode = await ingestion_pipeline.capture_episode(
             episode_data=episode_data,
             generate_reflection=False,
         )
@@ -88,9 +78,10 @@ class TestIngestionPipeline:
         # Verify PII was redacted using standard placeholder format
         # Presidio NER uses [EMAIL_ADDRESS], regex fallback uses [EMAIL]
         # See: src/utils/pii_redaction.py:redact_all() for the two-stage redaction
-        assert "[EMAIL_ADDRESS]" in episode.create_data.error_trace or "[EMAIL]" in episode.create_data.error_trace, (
-            f"Expected email PII placeholder in redacted trace, got: {episode.create_data.error_trace}"
-        )
+        assert (
+            "[EMAIL_ADDRESS]" in episode.create_data.error_trace
+            or "[EMAIL]" in episode.create_data.error_trace
+        ), f"Expected email PII placeholder in redacted trace, got: {episode.create_data.error_trace}"
         assert "[API_KEY]" in episode.create_data.error_trace
         assert "sk-1234567890" not in episode.create_data.error_trace
         assert "admin@example.com" not in episode.create_data.error_trace
@@ -98,24 +89,19 @@ class TestIngestionPipeline:
     @pytest.mark.asyncio
     async def test_id_generation_uniqueness(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
         sample_episode_create: EpisodeCreate,
     ):
         """Test that episode IDs are unique."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         # Capture multiple episodes
-        episode1 = await pipeline.capture_episode(
+        episode1 = await ingestion_pipeline.capture_episode(
             episode_data=sample_episode_create,
             generate_reflection=False,
         )
 
-        episode2 = await pipeline.capture_episode(
+        episode2 = await ingestion_pipeline.capture_episode(
             episode_data=sample_episode_create,
             generate_reflection=False,
         )
@@ -128,6 +114,7 @@ class TestIngestionPipeline:
     @pytest.mark.asyncio
     async def test_multi_modal_embedding(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
     ):
@@ -142,13 +129,7 @@ class TestIngestionPipeline:
             screenshot_base64="ZmFrZS1pbWFnZS1ieXRlcw==",
         )
 
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
-        _episode = await pipeline.capture_episode(
+        _episode = await ingestion_pipeline.capture_episode(
             episode_data=episode_data,
             generate_reflection=False,
         )
@@ -165,30 +146,25 @@ class TestIngestionPipeline:
     @pytest.mark.asyncio
     async def test_ingestion_stats(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
         sample_episode_create: EpisodeCreate,
     ):
         """Test ingestion pipeline statistics tracking."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         # Initial stats
-        stats = pipeline.get_stats()
+        stats = ingestion_pipeline.get_stats()
         assert stats["total_ingested"] == 0
         assert stats["total_failures"] == 0
 
         # Capture episode
-        await pipeline.capture_episode(
+        await ingestion_pipeline.capture_episode(
             episode_data=sample_episode_create,
             generate_reflection=False,
         )
 
         # Verify stats updated
-        stats = pipeline.get_stats()
+        stats = ingestion_pipeline.get_stats()
         assert stats["total_ingested"] == 1
         assert stats["total_failures"] == 0
         assert stats["success_rate"] == 1.0
@@ -196,18 +172,13 @@ class TestIngestionPipeline:
     @pytest.mark.asyncio
     async def test_metadata_serialization(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
         sample_episode_create: EpisodeCreate,
     ):
         """Test episode metadata serialization for KyroDB."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
-        episode = await pipeline.capture_episode(
+        episode = await ingestion_pipeline.capture_episode(
             episode_data=sample_episode_create,
             generate_reflection=False,
         )
@@ -235,22 +206,17 @@ class TestBulkIngestion:
     @pytest.mark.asyncio
     async def test_bulk_capture(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
         sample_episode_create: EpisodeCreate,
     ):
         """Test bulk episode capture."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         # Create multiple episodes
         episodes_data = [sample_episode_create for _ in range(5)]
 
         # Bulk capture
-        episodes = await pipeline.bulk_capture(
+        episodes = await ingestion_pipeline.bulk_capture(
             episodes=episodes_data,
             generate_reflections=False,
         )
@@ -261,5 +227,5 @@ class TestBulkIngestion:
         assert len({ep.episode_id for ep in episodes}) == 5  # All unique IDs
 
         # Verify stats
-        stats = pipeline.get_stats()
+        stats = ingestion_pipeline.get_stats()
         assert stats["total_ingested"] == 5

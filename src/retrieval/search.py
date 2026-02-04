@@ -21,8 +21,8 @@ from threading import Lock
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
-from src.kyrodb.router import KyroDBRouter
 from src.kyrodb.kyrodb_pb2 import AndFilter, ExactMatch, MetadataFilter, RangeMatch
+from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode
 from src.models.search import SearchRequest, SearchResponse, SearchResult
 from src.retrieval.preconditions import (
@@ -48,8 +48,6 @@ class SearchPipeline:
 
     Total target: <50ms P99
     """
-
-
 
     def __init__(
         self,
@@ -80,12 +78,13 @@ class SearchPipeline:
         if settings.search.enable_llm_validation and self.advanced_precondition_matcher is None:
             try:
                 self.advanced_precondition_matcher = get_advanced_precondition_matcher(
-                    openrouter_api_key=settings.llm.openrouter_api_key,
-                    enable_llm=True
+                    openrouter_api_key=settings.llm.openrouter_api_key, enable_llm=True
                 )
                 logger.info("LLM-based semantic validation enabled for search pipeline")
             except Exception as e:
-                logger.warning(f"Failed to initialize LLM validation: {e}. Falling back to basic matcher.")
+                logger.warning(
+                    f"Failed to initialize LLM validation: {e}. Falling back to basic matcher."
+                )
                 self.advanced_precondition_matcher = None
 
         # Thread-safe metrics tracking
@@ -185,9 +184,7 @@ class SearchPipeline:
         padding = 2 if b64.endswith("==") else 1 if b64.endswith("=") else 0
         decoded_estimate = ((len(b64) + 3) // 4) * 3 - padding
         if decoded_estimate > max_size:
-            raise ValueError(
-                f"Image too large: {decoded_estimate} bytes (max {max_size} bytes)"
-            )
+            raise ValueError(f"Image too large: {decoded_estimate} bytes (max {max_size} bytes)")
 
         try:
             image_bytes = base64.b64decode(b64, validate=True)
@@ -195,9 +192,7 @@ class SearchPipeline:
             raise ValueError(f"Invalid image_base64: {e}") from e
 
         if len(image_bytes) > max_size:
-            raise ValueError(
-                f"Image too large: {len(image_bytes)} bytes (max {max_size} bytes)"
-            )
+            raise ValueError(f"Image too large: {len(image_bytes)} bytes (max {max_size} bytes)")
 
         start = time.perf_counter()
         image_embedding = await self.embedding_service.embed_image_bytes_async(image_bytes)
@@ -227,6 +222,8 @@ class SearchPipeline:
                 f"Requested k={request.k} would fetch {request.k * 2} candidates, "
                 f"capping at max_fetch_k={max_fetch_k} to prevent memory issues"
             )
+        if not request.customer_id:
+            raise ValueError("customer_id is required for search")
 
         candidates = await self._fetch_candidates(
             query_embedding=query_embedding,
@@ -305,37 +302,31 @@ class SearchPipeline:
     def _build_kyrodb_filter(self, request: SearchRequest) -> MetadataFilter | None:
         """
         Build a KyroDB structured metadata filter from search request.
-        
+
         Uses KyroDB's structured metadata filter to enforce:
         - Exact matches (tool, tags)
         - Numeric range matches (timestamp bounds)
-        
+
         Args:
             request: Search request with filter criteria
-            
+
         Returns:
             MetadataFilter | None: Structured filter for KyroDB (None = no filter)
         """
         filters: list[MetadataFilter] = []
-        
+
         if request.tool_filter:
             filters.append(
-                MetadataFilter(
-                    exact=ExactMatch(key="tool", value=request.tool_filter.lower())
-                )
+                MetadataFilter(exact=ExactMatch(key="tool", value=request.tool_filter.lower()))
             )
-            
+
         if request.min_timestamp is not None:
             filters.append(
-                MetadataFilter(
-                    range=RangeMatch(key="timestamp", gte=str(request.min_timestamp))
-                )
+                MetadataFilter(range=RangeMatch(key="timestamp", gte=str(request.min_timestamp)))
             )
         if request.max_timestamp is not None:
             filters.append(
-                MetadataFilter(
-                    range=RangeMatch(key="timestamp", lte=str(request.max_timestamp))
-                )
+                MetadataFilter(range=RangeMatch(key="timestamp", lte=str(request.max_timestamp)))
             )
 
         if request.tags:
@@ -345,7 +336,12 @@ class SearchPipeline:
                     filters.append(
                         MetadataFilter(exact=ExactMatch(key=f"tag:{safe_tag}", value="1"))
                     )
-            
+
+        # Hygiene: archived episodes are hidden from default search.
+        if not request.include_archived:
+            # Stored as `str(bool)` in Episode.to_metadata_dict() -> "True"/"False"
+            filters.append(MetadataFilter(exact=ExactMatch(key="archived", value="False")))
+
         if not filters:
             return None
         if len(filters) == 1:
@@ -425,7 +421,9 @@ class SearchPipeline:
                         episode, text_score, _ = candidate_map[result.doc_id]
                         candidate_map[result.doc_id] = (episode, text_score, result.score)
                     else:
-                        episode = Episode.from_metadata_dict(doc_id=result.doc_id, metadata=result.metadata)
+                        episode = Episode.from_metadata_dict(
+                            doc_id=result.doc_id, metadata=result.metadata
+                        )
                         candidate_map[result.doc_id] = (episode, None, result.score)
                 except Exception as e:
                     logger.warning(
@@ -453,14 +451,14 @@ class SearchPipeline:
     ) -> list[tuple[Episode, float]]:
         """
         Validate server-side metadata filtering (safety check).
-        
+
         This is a defensive check to ensure KyroDB's metadata filtering worked correctly.
         Under normal operation, this should not filter out any candidates.
-        
+
         Args:
             candidates: List of (episode, score) pairs from KyroDB
             request: Search request with filter criteria
-            
+
         Returns:
             list[tuple[Episode, float]]: Validated candidates
         """
@@ -495,6 +493,10 @@ class SearchPipeline:
                 if required_tags.issubset({tag.lower() for tag in ep.create_data.tags})
             ]
 
+        # Validate archived filter
+        if not request.include_archived:
+            filtered = [(ep, score) for ep, score in filtered if not ep.archived]
+
         # Log if validation removed candidates (indicates KyroDB filtering incomplete)
         removed_count = original_count - len(filtered)
         if removed_count > 0:
@@ -513,7 +515,7 @@ class SearchPipeline:
     ) -> list[tuple[Episode, float, float, list[str]]]:
         """
         Check preconditions for all candidates with optional LLM semantic validation.
-        
+
         Two-stage approach:
         1. Basic heuristic matching (fast)
         2. LLM semantic validation for high-similarity candidates (if enabled)
@@ -545,11 +547,16 @@ class SearchPipeline:
                     self.advanced_precondition_matcher is not None
                     and similarity_score >= llm_similarity_threshold
                 )
-                
+
                 if should_validate_with_llm:
                     try:
+                        advanced_matcher = self.advanced_precondition_matcher
+                        if advanced_matcher is None:
+                            raise RuntimeError(
+                                "advanced_precondition_matcher unavailable during LLM validation"
+                            )
                         llm_start = time.perf_counter()
-                        llm_result = await self.advanced_precondition_matcher.check_preconditions_with_llm(
+                        llm_result = await advanced_matcher.check_preconditions_with_llm(
                             candidate_episode=episode,
                             current_query=request.goal,
                             current_state=request.current_state,
@@ -557,12 +564,12 @@ class SearchPipeline:
                             threshold=request.precondition_threshold,
                         )
                         llm_latency = (time.perf_counter() - llm_start) * 1000
-                        
+
                         # Track LLM metrics (thread-safe)
                         with self._metrics_lock:
                             self.llm_validation_calls += 1
                             self.llm_latency_ms += llm_latency
-                        
+
                         if not llm_result.matched:
                             with self._metrics_lock:
                                 self.llm_rejections += 1
@@ -571,14 +578,14 @@ class SearchPipeline:
                                 f"(similarity={similarity_score:.3f}): {llm_result.explanation}"
                             )
                             continue  # Skip this candidate
-                        
+
                     except Exception as e:
                         logger.warning(
                             f"LLM validation failed for episode {episode.episode_id}: {e}. "
                             f"Falling back to basic match."
                         )
                         # Gracefully degrade to basic match
-                
+
                 # Accept candidate (passed both stages or LLM not enabled)
                 results.append(
                     (
@@ -639,37 +646,31 @@ class SearchPipeline:
         Returns:
             dict: Stats including total searches, latency, and LLM validation metrics
         """
-        avg_latency = (
-            self.total_latency_ms / self.total_searches if self.total_searches > 0 else 0.0
-        )
-        
         # Thread-safe metrics read
         with self._metrics_lock:
+            total_searches = self.total_searches
+            total_latency_ms = self.total_latency_ms
             llm_calls = self.llm_validation_calls
             llm_latency = self.llm_latency_ms
             llm_rejects = self.llm_rejections
-        
-        avg_llm_latency = (
-            llm_latency / llm_calls if llm_calls > 0 else 0.0
-        )
-        llm_rejection_rate = (
-            llm_rejects / llm_calls if llm_calls > 0 else 0.0
-        )
+        avg_latency = total_latency_ms / total_searches if total_searches > 0 else 0.0
+        avg_llm_latency = llm_latency / llm_calls if llm_calls > 0 else 0.0
+        llm_rejection_rate = llm_rejects / llm_calls if llm_calls > 0 else 0.0
 
         stats = {
-            "total_searches": self.total_searches,
+            "total_searches": total_searches,
             "avg_latency_ms": avg_latency,
             "llm_validation_calls": llm_calls,
             "llm_rejections": llm_rejects,
             "llm_rejection_rate": llm_rejection_rate,
             "avg_llm_latency_ms": avg_llm_latency,
         }
-        
+
         # Add advanced matcher stats if available
         if self.advanced_precondition_matcher:
             advanced_stats = self.advanced_precondition_matcher.get_stats()
             stats["llm_cache_hits"] = advanced_stats.get("cache_hits", 0)
             stats["llm_cache_hit_rate"] = advanced_stats.get("cache_hit_rate", 0.0)
             stats["llm_total_cost_usd"] = advanced_stats.get("total_cost_usd", 0.0)
-        
+
         return stats

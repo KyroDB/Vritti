@@ -48,6 +48,33 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+exclude = "src/kyrodb/kyrodb_pb2(_grpc)?\\.py$"
+
+[[tool.mypy.overrides]]
+module = [
+    "grpc",
+    "grpc.*",
+    "sentence_transformers",
+    "transformers",
+    "pybreaker",
+    "hdbscan",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "src.kyrodb.kyrodb_pb2",
+    "src.kyrodb.kyrodb_pb2_grpc",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "src.kyrodb.client",
+    "src.kyrodb.router",
+    "src.retrieval.search",
+]
+disable_error_code = "attr-defined"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

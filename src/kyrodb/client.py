@@ -12,8 +12,10 @@ import asyncio
 import logging
 import math
 import time
-import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
+from types import TracebackType
+from typing import TypeVar
 
 import grpc
 from grpc import StatusCode
@@ -43,6 +45,8 @@ from src.kyrodb.kyrodb_pb2_grpc import KyroDBServiceStub
 from src.resilience.circuit_breakers import with_kyrodb_circuit_breaker
 
 logger = logging.getLogger(__name__)
+RpcRequestT = TypeVar("RpcRequestT")
+RpcResponseT = TypeVar("RpcResponseT")
 
 
 class _AsyncInsertBatcher:
@@ -50,9 +54,9 @@ class _AsyncInsertBatcher:
 
     def __init__(
         self,
-        bulk_insert_fn,
-        direct_insert_fn,
-        bulk_query_fn,
+        bulk_insert_fn: Callable[[list[InsertRequest]], Awaitable[InsertResponse]],
+        direct_insert_fn: Callable[[InsertRequest], Awaitable[InsertResponse]],
+        bulk_query_fn: Callable[[list[InsertRequest]], Awaitable[set[tuple[str, int]]]],
         *,
         max_batch_size: int,
         max_wait_ms: int,
@@ -62,9 +66,10 @@ class _AsyncInsertBatcher:
         self._bulk_query_fn = bulk_query_fn
         self._max_batch_size = max(1, int(max_batch_size))
         self._max_wait_s = max(0.0, float(max_wait_ms) / 1000.0)
-        self._queue: asyncio.Queue[
-            tuple[InsertRequest, asyncio.Future[InsertResponse]] | None
-        ] = asyncio.Queue()
+        self._idle_shutdown_s = 2.0
+        self._queue: asyncio.Queue[tuple[InsertRequest, asyncio.Future[InsertResponse]] | None] = (
+            asyncio.Queue()
+        )
         self._worker_task: asyncio.Task | None = None
         self._start_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
@@ -92,7 +97,12 @@ class _AsyncInsertBatcher:
 
     async def _run(self) -> None:
         while True:
-            item = await self._queue.get()
+            try:
+                item = await asyncio.wait_for(self._queue.get(), timeout=self._idle_shutdown_s)
+            except asyncio.TimeoutError:
+                if self._queue.empty() and not self._stop_event.is_set():
+                    break
+                continue
             if item is None:
                 break
             if self._stop_event.is_set():
@@ -103,6 +113,7 @@ class _AsyncInsertBatcher:
             request, future = item
             batch = [(request, future)]
             start = time.monotonic()
+            shutdown_requested = False
 
             while len(batch) < self._max_batch_size:
                 timeout = self._max_wait_s - (time.monotonic() - start)
@@ -113,6 +124,7 @@ class _AsyncInsertBatcher:
                 except asyncio.TimeoutError:
                     break
                 if next_item is None:
+                    shutdown_requested = True
                     break
                 batch.append(next_item)
 
@@ -150,6 +162,8 @@ class _AsyncInsertBatcher:
                 for _, fut in batch:
                     if not fut.cancelled():
                         fut.set_exception(error)
+                if shutdown_requested:
+                    break
                 continue
 
             missing: list[tuple[InsertRequest, asyncio.Future[InsertResponse]]] = []
@@ -175,13 +189,16 @@ class _AsyncInsertBatcher:
                     *[self._direct_insert_fn(req) for req, _ in missing],
                     return_exceptions=True,
                 )
-                for result, (_, fut) in zip(direct_results, missing):
+                for result, (_, fut) in zip(direct_results, missing, strict=False):
                     if fut.cancelled():
                         continue
                     if isinstance(result, Exception):
                         fut.set_exception(result)
                     else:
                         fut.set_result(result)
+
+            if shutdown_requested or self._stop_event.is_set():
+                break
 
         # Drain remaining queued items and cancel their futures.
         while not self._queue.empty():
@@ -241,7 +258,7 @@ class KyroDBClient:
         tls_client_cert_path: str | None = None,
         tls_client_key_path: str | None = None,
         tls_verify_server: bool = True,
-    ):
+    ) -> None:
         """
         Initialize KyroDB client with optional TLS support.
 
@@ -366,9 +383,7 @@ class KyroDBClient:
         )
 
         if not self.tls_verify_server:
-            logger.warning(
-                "⚠️  Server certificate verification DISABLED - only use in development!"
-            )
+            logger.warning("⚠️  Server certificate verification DISABLED - only use in development!")
             # Override target name to skip verification (dev only)
             # In production, always verify the server certificate
             credentials = grpc.composite_channel_credentials(
@@ -444,8 +459,11 @@ class KyroDBClient:
 
     async def close(self) -> None:
         """Close connection to KyroDB."""
-        if self._insert_batcher is not None:
-            await self._insert_batcher.shutdown()
+        async with self._insert_batcher_lock:
+            batcher = self._insert_batcher
+            self._insert_batcher = None
+        if batcher is not None:
+            await batcher.shutdown()
         if self._channel:
             await self._channel.close()
             self._channel = None
@@ -458,11 +476,27 @@ class KyroDBClient:
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Context manager exit."""
         await self.close()
 
-    async def _call_with_retry(self, rpc_func, request, operation: str):
+    def _require_stub(self) -> KyroDBServiceStub:
+        stub = self._stub
+        if stub is None:
+            raise ConnectionError("KyroDB client is not connected")
+        return stub
+
+    async def _call_with_retry(
+        self,
+        rpc_func: Callable[[RpcRequestT], Awaitable[RpcResponseT]],
+        request: RpcRequestT,
+        operation: str,
+    ) -> RpcResponseT:
         """
         Execute gRPC call with retry logic.
 
@@ -524,7 +558,12 @@ class KyroDBClient:
 
         raise KyroDBError(f"{operation} failed after {self.max_retries} retries")
 
-    async def _call_stream_unary_with_retry(self, rpc_func, request_factory, operation: str):
+    async def _call_stream_unary_with_retry(
+        self,
+        rpc_func: Callable[[AsyncIterator[InsertRequest]], Awaitable[InsertResponse]],
+        request_factory: Callable[[], AsyncIterator[InsertRequest]],
+        operation: str,
+    ) -> InsertResponse:
         """
         Execute streaming gRPC call with retry logic.
 
@@ -596,9 +635,7 @@ class KyroDBClient:
                     )
         return self._insert_batcher
 
-    async def _bulk_query_existing(
-        self, requests: list[InsertRequest]
-    ) -> set[tuple[str, int]]:
+    async def _bulk_query_existing(self, requests: list[InsertRequest]) -> set[tuple[str, int]]:
         if not requests:
             return set()
 
@@ -606,10 +643,11 @@ class KyroDBClient:
         for req in requests:
             grouped.setdefault(req.namespace, []).append(int(req.doc_id))
 
+        stub = self._require_stub()
         found: set[tuple[str, int]] = set()
         for namespace, doc_ids in grouped.items():
             response = await self._call_with_retry(
-                self._stub.BulkQuery,
+                stub.BulkQuery,
                 BulkQueryRequest(
                     doc_ids=doc_ids,
                     include_embeddings=False,
@@ -629,17 +667,17 @@ class KyroDBClient:
         if not requests:
             return InsertResponse(success=True, total_inserted=0, total_failed=0)
 
-        async def request_iter():
+        async def request_iter() -> AsyncIterator[InsertRequest]:
             for req in requests:
                 yield req
 
-        return await self._call_stream_unary_with_retry(
-            self._stub.BulkInsert, request_iter, "BulkInsert"
-        )
+        stub = self._require_stub()
+        return await self._call_stream_unary_with_retry(stub.BulkInsert, request_iter, "BulkInsert")
 
     async def _insert_direct_request(self, request: InsertRequest) -> InsertResponse:
+        stub = self._require_stub()
         async with self._insert_semaphore:
-            return await self._call_with_retry(self._stub.Insert, request, "Insert")
+            return await self._call_with_retry(stub.Insert, request, "Insert")
 
     @with_kyrodb_circuit_breaker
     async def insert(
@@ -705,9 +743,7 @@ class KyroDBClient:
         Raises:
             KyroDBError: On search failure
         """
-        normalized_query_embedding = self._l2_normalize(
-            query_embedding, name="query_embedding"
-        )
+        normalized_query_embedding = self._l2_normalize(query_embedding, name="query_embedding")
         request = SearchRequest(
             query_embedding=normalized_query_embedding,
             k=k,
@@ -718,7 +754,8 @@ class KyroDBClient:
         )
         if metadata_filter is not None:
             request.filter.CopyFrom(metadata_filter)
-        return await self._call_with_retry(self._stub.Search, request, "Search")
+        stub = self._require_stub()
+        return await self._call_with_retry(stub.Search, request, "Search")
 
     async def query(
         self, doc_id: int, namespace: str = "", include_embedding: bool = True
@@ -741,7 +778,8 @@ class KyroDBClient:
         request = QueryRequest(
             doc_id=doc_id, namespace=namespace, include_embedding=include_embedding
         )
-        return await self._call_with_retry(self._stub.Query, request, "Query")
+        stub = self._require_stub()
+        return await self._call_with_retry(stub.Query, request, "Query")
 
     async def delete(self, doc_id: int, namespace: str = "") -> DeleteResponse:
         """
@@ -758,7 +796,8 @@ class KyroDBClient:
             KyroDBError: On deletion failure
         """
         request = DeleteRequest(doc_id=doc_id, namespace=namespace)
-        return await self._call_with_retry(self._stub.Delete, request, "Delete")
+        stub = self._require_stub()
+        return await self._call_with_retry(stub.Delete, request, "Delete")
 
     async def update_metadata(
         self,
@@ -785,7 +824,8 @@ class KyroDBClient:
             merge=merge,
             namespace=namespace,
         )
-        return await self._call_with_retry(self._stub.UpdateMetadata, request, "UpdateMetadata")
+        stub = self._require_stub()
+        return await self._call_with_retry(stub.UpdateMetadata, request, "UpdateMetadata")
 
     @with_kyrodb_circuit_breaker
     async def bulk_query(
@@ -796,15 +836,15 @@ class KyroDBClient:
     ) -> BulkQueryResponse:
         """
         Batch retrieve multiple documents by ID.
-        
+
         Args:
             doc_ids: List of document IDs to retrieve
             namespace: Optional namespace filter
             include_embeddings: Return embeddings in results
-            
+
         Returns:
             BulkQueryResponse with results for each requested ID
-            
+
         Raises:
             KyroDBError: On bulk query failure
         """
@@ -816,7 +856,8 @@ class KyroDBClient:
             include_embeddings=include_embeddings,
             namespace=namespace,
         )
-        return await self._call_with_retry(self._stub.BulkQuery, request, "BulkQuery")
+        stub = self._require_stub()
+        return await self._call_with_retry(stub.BulkQuery, request, "BulkQuery")
 
     @with_kyrodb_circuit_breaker
     async def batch_delete(
@@ -826,14 +867,14 @@ class KyroDBClient:
     ) -> BatchDeleteResponse:
         """
         Batch delete multiple documents by ID.
-        
+
         Args:
             doc_ids: List of document IDs to delete
             namespace: Optional namespace filter
-            
+
         Returns:
             BatchDeleteResponse with deletion count
-            
+
         Raises:
             KyroDBError: On batch delete failure
         """
@@ -844,7 +885,8 @@ class KyroDBClient:
             ids=IdList(doc_ids=doc_ids),
             namespace=namespace,
         )
-        return await self._call_with_retry(self._stub.BatchDelete, request, "BatchDelete")
+        stub = self._require_stub()
+        return await self._call_with_retry(stub.BatchDelete, request, "BatchDelete")
 
     @with_kyrodb_circuit_breaker
     async def health_check(self) -> HealthResponse:
@@ -859,8 +901,9 @@ class KyroDBClient:
         """
         request = HealthRequest()
         try:
+            stub = self._require_stub()
             response = await asyncio.wait_for(
-                self._stub.Health(request), timeout=5.0  # Short timeout for health check
+                stub.Health(request), timeout=5.0  # Short timeout for health check
             )
             if response.status != 1:  # HEALTHY
                 logger.warning(f"KyroDB health check returned status: {response.status}")

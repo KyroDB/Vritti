@@ -33,10 +33,11 @@ async def _allocate_doc_id() -> int:
 def is_kyrodb_running() -> bool:
     """Check if KyroDB is running on localhost:50051."""
     import socket
+
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
-        result = sock.connect_ex(('localhost', 50051))
+        result = sock.connect_ex(("localhost", 50051))
         sock.close()
         return result == 0
     except Exception:
@@ -76,21 +77,23 @@ class TestGatingThresholds:
     """Test gating threshold logic with real KyroDB data."""
 
     @pytest.mark.asyncio
-    async def test_block_recommendation_high_similarity(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_block_recommendation_high_similarity(
+        self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter
+    ):
         """
         Test BLOCK recommendation for high-similarity match (>0.9).
-        
+
         Scenario: Agent attempts to deploy with 'latest' tag,
         matching a past failure with the same issue.
         """
         customer_id = f"test-gating-block-{int(time.time())}"
         collection = "failures"
         episode_id = await _allocate_doc_id()
-        
+
         print(f"\n{'='*60}")
         print("Test: BLOCK Recommendation (High Similarity)")
         print(f"{'='*60}")
-        
+
         try:
             # Insert a past failure episode
             failure_embedding = generate_embedding(0.1)
@@ -102,7 +105,7 @@ class TestGatingThresholds:
                 "error_class": "ImagePullBackOff",
                 "error_trace": "Error: ImagePullBackOff - myapp:latest not found",
             }
-            
+
             await kyrodb_router.insert_episode(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -111,7 +114,7 @@ class TestGatingThresholds:
                 metadata=failure_metadata,
             )
             print(f"\n  Inserted past failure episode {episode_id}")
-            
+
             # Add reflection with root cause and resolution
             reflection = Reflection(
                 consensus=None,
@@ -128,7 +131,7 @@ class TestGatingThresholds:
                 generation_latency_ms=500.0,
                 tier=ReflectionTier.CHEAP.value,
             )
-            
+
             await kyrodb_router.update_episode_reflection(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -136,10 +139,10 @@ class TestGatingThresholds:
                 reflection=reflection,
             )
             print("  Added reflection with root cause")
-            
+
             # Search with identical embedding (should get very high similarity)
             query_embedding = generate_embedding(0.1)  # Same as failure
-            
+
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
                 customer_id=customer_id,
@@ -147,28 +150,32 @@ class TestGatingThresholds:
                 k=5,
                 min_score=0.5,
             )
-            
+
             print("\n  Search Results:")
             for result in search_response.results:
                 print(f"    Doc {result.doc_id}: score={result.score:.4f}")
-            
+
             # Verify high similarity would trigger BLOCK
             if search_response.results:
                 top_result = search_response.results[0]
                 similarity_score = top_result.score
-                
+
                 # BLOCK threshold is 0.9 similarity
                 if similarity_score >= 0.9:
-                    print(f"\n  Expected Recommendation: BLOCK (similarity={similarity_score:.4f} >= 0.9)")
+                    print(
+                        f"\n  Expected Recommendation: BLOCK (similarity={similarity_score:.4f} >= 0.9)"
+                    )
                 elif similarity_score >= 0.8:
-                    print(f"\n  Expected Recommendation: REWRITE (similarity={similarity_score:.4f} >= 0.8)")
+                    print(
+                        f"\n  Expected Recommendation: REWRITE (similarity={similarity_score:.4f} >= 0.8)"
+                    )
                 else:
                     print(f"\n  Expected Recommendation: HINT (similarity={similarity_score:.4f})")
-                
+
                 # With identical embeddings, should get 1.0 similarity
                 assert similarity_score >= 0.9, f"Expected high similarity, got {similarity_score}"
                 print(f"\n  Test PASSED: High similarity ({similarity_score:.4f}) triggers BLOCK")
-            
+
         finally:
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
@@ -178,20 +185,22 @@ class TestGatingThresholds:
             print(f"\n  Cleaned up episode {episode_id}")
 
     @pytest.mark.asyncio
-    async def test_rewrite_recommendation_medium_similarity(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_rewrite_recommendation_medium_similarity(
+        self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter
+    ):
         """
         Test REWRITE recommendation for medium-similarity match (0.8-0.9).
-        
+
         Scenario: Agent attempts similar action with resolution available.
         """
         customer_id = f"test-gating-rewrite-{int(time.time())}"
         collection = "failures"
         episode_id = await _allocate_doc_id()
-        
+
         print(f"\n{'='*60}")
         print("Test: REWRITE Recommendation (Medium Similarity)")
         print(f"{'='*60}")
-        
+
         try:
             # Insert past failure
             failure_embedding = generate_embedding(0.1)
@@ -201,7 +210,7 @@ class TestGatingThresholds:
                 "goal": "Run database migration script",
                 "error_class": "ConnectionError",
             }
-            
+
             await kyrodb_router.insert_episode(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -210,7 +219,7 @@ class TestGatingThresholds:
                 metadata=failure_metadata,
             )
             print(f"\n  Inserted past failure episode {episode_id}")
-            
+
             # Add reflection with resolution
             reflection = Reflection(
                 consensus=None,
@@ -227,7 +236,7 @@ class TestGatingThresholds:
                 generation_latency_ms=500.0,
                 tier=ReflectionTier.CHEAP.value,
             )
-            
+
             await kyrodb_router.update_episode_reflection(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -235,10 +244,10 @@ class TestGatingThresholds:
                 reflection=reflection,
             )
             print("  Added reflection with resolution")
-            
+
             # Search with slightly different embedding (medium similarity)
             query_embedding = generate_embedding(0.11)  # Slightly different
-            
+
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
                 customer_id=customer_id,
@@ -246,22 +255,22 @@ class TestGatingThresholds:
                 k=5,
                 min_score=0.5,
             )
-            
+
             print("\n  Search Results:")
             for result in search_response.results:
                 print(f"    Doc {result.doc_id}: score={result.score:.4f}")
-            
+
             if search_response.results:
                 top_result = search_response.results[0]
                 similarity_score = top_result.score
-                
+
                 print(f"\n  Similarity score: {similarity_score:.4f}")
-                
+
                 # With our test embeddings, we get high similarity but in real scenario
                 # similar but not identical embeddings would give 0.8-0.9 similarity
                 assert similarity_score > 0.5, f"Expected match, got {similarity_score}"
                 print("  Test PASSED: Resolution available for similar failure")
-            
+
         finally:
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
@@ -271,22 +280,24 @@ class TestGatingThresholds:
             print(f"\n  Cleaned up episode {episode_id}")
 
     @pytest.mark.asyncio
-    async def test_proceed_recommendation_no_matches(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_proceed_recommendation_no_matches(
+        self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter
+    ):
         """
         Test PROCEED recommendation when no similar failures exist.
-        
+
         Scenario: Agent attempts a novel action with no past failures.
         """
         customer_id = f"test-gating-proceed-{int(time.time())}"
         collection = "failures"
-        
+
         print(f"\n{'='*60}")
         print("Test: PROCEED Recommendation (No Matches)")
         print(f"{'='*60}")
-        
+
         # Search for something that doesn't exist
         query_embedding = generate_embedding(0.9)  # Very different from typical failures
-        
+
         search_response = await kyrodb_router.search_episodes(
             query_embedding=query_embedding,
             customer_id=customer_id,
@@ -294,9 +305,9 @@ class TestGatingThresholds:
             k=5,
             min_score=0.7,  # High threshold
         )
-        
+
         print(f"\n  Search Results: {len(search_response.results)} matches")
-        
+
         # Should find nothing in empty namespace
         if len(search_response.results) == 0:
             print("  Expected Recommendation: PROCEED (no similar failures)")
@@ -308,21 +319,23 @@ class TestGatingThresholds:
             assert top_score < 0.7, f"Unexpected high similarity match: {top_score}"
 
     @pytest.mark.asyncio
-    async def test_hint_recommendation_low_medium_similarity(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
+    async def test_hint_recommendation_low_medium_similarity(
+        self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter
+    ):
         """
         Test HINT recommendation for low-medium similarity (0.7-0.8).
-        
+
         Scenario: Agent attempts action with some similarity to past failures,
         but not enough to block or suggest rewrite.
         """
         customer_id = f"test-gating-hint-{int(time.time())}"
         collection = "failures"
         episode_id = await _allocate_doc_id()
-        
+
         print(f"\n{'='*60}")
         print("Test: HINT Recommendation (Low-Medium Similarity)")
         print(f"{'='*60}")
-        
+
         try:
             # Insert past failure
             failure_embedding = generate_embedding(0.1)
@@ -332,7 +345,7 @@ class TestGatingThresholds:
                 "goal": "Deploy microservice A to cluster",
                 "error_class": "ResourceQuotaExceeded",
             }
-            
+
             await kyrodb_router.insert_episode(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -341,7 +354,7 @@ class TestGatingThresholds:
                 metadata=failure_metadata,
             )
             print(f"\n  Inserted past failure episode {episode_id}")
-            
+
             # Add reflection
             reflection = Reflection(
                 consensus=None,
@@ -358,17 +371,17 @@ class TestGatingThresholds:
                 generation_latency_ms=500.0,
                 tier=ReflectionTier.CHEAP.value,
             )
-            
+
             await kyrodb_router.update_episode_reflection(
                 episode_id=episode_id,
                 customer_id=customer_id,
                 collection=collection,
                 reflection=reflection,
             )
-            
+
             # Search with moderately different embedding
             query_embedding = generate_embedding(0.15)  # Moderately different
-            
+
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
                 customer_id=customer_id,
@@ -376,21 +389,23 @@ class TestGatingThresholds:
                 k=5,
                 min_score=0.5,
             )
-            
+
             print("\n  Search Results:")
             for result in search_response.results:
                 print(f"    Doc {result.doc_id}: score={result.score:.4f}")
-            
+
             if search_response.results:
                 top_result = search_response.results[0]
                 similarity_score = top_result.score
-                
+
                 # HINT threshold is 0.7
                 if 0.7 <= similarity_score < 0.8:
-                    print(f"\n  Expected Recommendation: HINT (0.7 <= {similarity_score:.4f} < 0.8)")
-                
+                    print(
+                        f"\n  Expected Recommendation: HINT (0.7 <= {similarity_score:.4f} < 0.8)"
+                    )
+
                 print("  Test PASSED: Moderate similarity shows hints")
-            
+
         finally:
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
@@ -407,18 +422,18 @@ class TestSkillsInGating:
     async def test_skill_suggests_rewrite(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
         """
         Test that high-confidence skills suggest REWRITE.
-        
+
         Scenario: A proven skill exists for the action being attempted.
         """
         from src.models.skill import Skill
-        
+
         customer_id = f"test-gating-skill-{int(time.time())}"
         skill_id = await _allocate_doc_id()
-        
+
         print(f"\n{'='*60}")
         print("Test: Skill Suggests REWRITE")
         print(f"{'='*60}")
-        
+
         try:
             # Insert a proven skill
             skill = Skill(
@@ -435,41 +450,41 @@ class TestSkillsInGating:
                 failure_count=1,
                 created_at=datetime.now(UTC),
             )
-            
+
             skill_embedding = generate_embedding(0.2)
-            
+
             await kyrodb_router.insert_skill(
                 skill=skill,
                 embedding=skill_embedding,
             )
             print(f"\n  Inserted skill {skill_id}: {skill.name}")
             print(f"    Success rate: {skill.success_rate * 100:.0f}%")
-            
+
             # Search for the skill
             query_embedding = generate_embedding(0.2)  # Same as skill
-            
+
             results = await kyrodb_router.search_skills(
                 query_embedding=query_embedding,
                 customer_id=customer_id,
                 k=5,
                 min_score=0.7,
             )
-            
+
             print(f"\n  Skill Search Results: {len(results)} matches")
             for skill_result, score in results:
                 print(f"    {skill_result.name}: score={score:.4f}")
-            
+
             # Should find the skill with high similarity
             assert len(results) > 0, "Should find the skill"
-            
+
             top_skill, top_score = results[0]
             assert top_skill.skill_id == skill_id
             assert top_score >= 0.85, f"Expected high skill match, got {top_score}"
-            
+
             print(f"\n  High-confidence skill match (score={top_score:.4f})")
             print("  Expected Recommendation: REWRITE with skill code")
             print("  Test PASSED: Skills properly matched for gating")
-            
+
         finally:
             # Cleanup skill
             namespace = f"{customer_id}:skills"

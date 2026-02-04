@@ -107,21 +107,36 @@ def sample_reflection_single_llm():
 class TestReflectionSerialization:
     """Test reflection serialization to KyroDB metadata format."""
 
-    def test_serialize_reflection_with_consensus(
-        self, sample_reflection_with_consensus
-    ):
-        """Test serialization of multi-perspective reflection."""
-        router = KyroDBRouter(
-            config=MagicMock()
-        )  # Don't need real config for serialization
-
-        metadata = router._serialize_reflection_to_metadata(
-            sample_reflection_with_consensus
+    def test_reflection_accepts_structured_preconditions_dict(self):
+        """Structured preconditions dict is normalized to canonical list form."""
+        reflection = Reflection(
+            root_cause="Missing image tag in deployment spec",
+            preconditions={"tool": "kubectl", "image_tag": "latest"},
+            resolution_strategy="Pin image tag and redeploy",
+            environment_factors=["kubernetes"],
+            affected_components=["deployment"],
+            generalization_score=0.8,
+            confidence_score=0.9,
+            llm_model="test-model",
+            generated_at=datetime.now(UTC),
+            cost_usd=0.0,
+            generation_latency_ms=10.0,
         )
+
+        assert reflection.preconditions == ["tool=kubectl", "image_tag=latest"]
+
+    def test_serialize_reflection_with_consensus(self, sample_reflection_with_consensus):
+        """Test serialization of multi-perspective reflection."""
+        router = KyroDBRouter(config=MagicMock())  # Don't need real config for serialization
+
+        metadata = router._serialize_reflection_to_metadata(sample_reflection_with_consensus)
 
         # Core fields
         assert metadata["reflection_root_cause"] == sample_reflection_with_consensus.root_cause
-        assert metadata["reflection_resolution"] == sample_reflection_with_consensus.resolution_strategy
+        assert (
+            metadata["reflection_resolution"]
+            == sample_reflection_with_consensus.resolution_strategy
+        )
         assert "reflection_confidence" in metadata
         assert float(metadata["reflection_confidence"]) == 1.0
 
@@ -150,9 +165,7 @@ class TestReflectionSerialization:
         """Test serialization of single-LLM reflection (no consensus)."""
         router = KyroDBRouter(config=MagicMock())
 
-        metadata = router._serialize_reflection_to_metadata(
-            sample_reflection_single_llm
-        )
+        metadata = router._serialize_reflection_to_metadata(sample_reflection_single_llm)
 
         # Core fields should exist
         assert "reflection_root_cause" in metadata
@@ -164,15 +177,11 @@ class TestReflectionSerialization:
         assert "reflection_consensus_method" not in metadata
         assert "reflection_perspectives_count" not in metadata
 
-    def test_serialization_is_string_string_map(
-        self, sample_reflection_with_consensus
-    ):
+    def test_serialization_is_string_string_map(self, sample_reflection_with_consensus):
         """Test that all metadata values are strings (KyroDB requirement)."""
         router = KyroDBRouter(config=MagicMock())
 
-        metadata = router._serialize_reflection_to_metadata(
-            sample_reflection_with_consensus
-        )
+        metadata = router._serialize_reflection_to_metadata(sample_reflection_with_consensus)
 
         # All values must be strings
         for key, value in metadata.items():
@@ -188,9 +197,7 @@ class TestReflectionSerialization:
 class TestReflectionPersistence:
     """Test reflection persistence to KyroDB."""
 
-    async def test_update_episode_reflection_success(
-        self, sample_reflection_with_consensus
-    ):
+    async def test_update_episode_reflection_success(self, sample_reflection_with_consensus):
         """Test successful reflection persistence."""
         # Mock KyroDB client
         mock_client = AsyncMock()
@@ -227,9 +234,7 @@ class TestReflectionPersistence:
         assert insert_call.kwargs["doc_id"] == 12345
         assert "reflection_root_cause" in insert_call.kwargs["metadata"]
 
-    async def test_update_episode_reflection_not_found(
-        self, sample_reflection_with_consensus
-    ):
+    async def test_update_episode_reflection_not_found(self, sample_reflection_with_consensus):
         """Test persistence fails when episode doesn't exist."""
         # Mock episode not found
         mock_client = AsyncMock()

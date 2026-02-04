@@ -10,7 +10,7 @@ Uses Pydantic Settings for type-safe configuration with multiple sources:
 import logging
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,9 +30,7 @@ class KyroDBConfig(BaseSettings):
     """KyroDB dual-instance configuration for multi-modal embeddings."""
 
     model_config = SettingsConfigDict(
-        env_prefix="KYRODB_",
-        env_file=".env",
-        env_file_encoding="utf-8"
+        env_prefix="KYRODB_", env_file=".env", env_file_encoding="utf-8"
     )
 
     text_host: str = Field(default="localhost")
@@ -96,7 +94,7 @@ class KyroDBConfig(BaseSettings):
 
     @field_validator("tls_client_cert_path")
     @classmethod
-    def validate_tls_cert_path(cls, v: str | None, info) -> str | None:
+    def validate_tls_cert_path(cls, v: str | None, info: ValidationInfo) -> str | None:
         """Validate that if client cert is provided, client key must also be provided."""
         if v is not None:
             values = info.data
@@ -111,9 +109,7 @@ class EmbeddingConfig(BaseSettings):
     """Embedding model configuration."""
 
     model_config = SettingsConfigDict(
-        env_prefix="EMBEDDING_",
-        env_file=".env",
-        env_file_encoding="utf-8"
+        env_prefix="EMBEDDING_", env_file=".env", env_file_encoding="utf-8"
     )
 
     # Text/code embeddings (sentence-transformers)
@@ -144,6 +140,15 @@ class EmbeddingConfig(BaseSettings):
     image_dimension: int = Field(default=512, ge=1)
     image_batch_size: int = Field(default=16, ge=1)
 
+    # Hugging Face runtime policy
+    offline_mode: bool = Field(
+        default=False,
+        description=(
+            "Force Hugging Face offline mode. Use only in air-gapped environments "
+            "with preloaded model caches."
+        ),
+    )
+
     # Device allocation
     device: Literal["cpu", "cuda", "mps"] = Field(default="cpu")
     enable_gpu: bool = Field(default=False)
@@ -166,88 +171,66 @@ class LLMConfig(BaseSettings):
     Security: API keys are never logged or exposed in errors.
     """
 
-    model_config = SettingsConfigDict(
-        env_prefix="LLM_",
-        env_file=".env",
-        env_file_encoding="utf-8"
-    )
+    model_config = SettingsConfigDict(env_prefix="LLM_", env_file=".env", env_file_encoding="utf-8")
 
     # OpenRouter configuration (primary)
     openrouter_api_key: str = Field(
-        default="",
-        description="OpenRouter API key for unified LLM access"
+        default="", description="OpenRouter API key for unified LLM access"
     )
     openrouter_base_url: str = Field(
-        default="https://openrouter.ai/api/v1",
-        description="OpenRouter API base URL"
+        default="https://openrouter.ai/api/v1", description="OpenRouter API base URL"
     )
 
     # Consensus models (2 models for multi-perspective reflection)
     consensus_model_1: str = Field(
         default="kwaipilot/kat-coder-pro:free",
-        description="First consensus model (structured extraction specialist)"
+        description="First consensus model (structured extraction specialist)",
     )
     consensus_model_2: str = Field(
         default="tngtech/deepseek-r1t2-chimera:free",
-        description="Second consensus model (deep reasoning)"
+        description="Second consensus model (deep reasoning)",
     )
 
     # Cheap tier model
     cheap_model: str = Field(
         default="x-ai/grok-4.1-fast:free",
-        description="Cheap tier model for fast, cost-effective single reflections"
+        description="Cheap tier model for fast, cost-effective single reflections",
     )
-
-   
 
     # Shared parameters
     max_tokens: int = Field(
-        default=2000,
-        ge=100,
-        le=8000,
-        description="Maximum tokens for reflection generation"
+        default=2000, ge=100, le=8000, description="Maximum tokens for reflection generation"
     )
 
     temperature: float = Field(
         default=0.3,
         ge=0.0,
         le=1.0,
-        description="Temperature for reflection (lower = more consistent)"
+        description="Temperature for reflection (lower = more consistent)",
     )
 
-    timeout_seconds: int = Field(
-        default=60,
-        ge=1,
-        le=180,
-        description="Timeout for LLM API calls"
-    )
+    timeout_seconds: int = Field(default=60, ge=1, le=180, description="Timeout for LLM API calls")
 
     # Cost limits (security: prevent abuse)
     max_cost_per_reflection_usd: float = Field(
         default=0.0,
         ge=0.0,
         le=10.0,
-        description="Maximum allowed cost per reflection (0.0 for free tier)"
+        description="Maximum allowed cost per reflection (0.0 for free tier)",
     )
 
     # Retry configuration
     max_retries: int = Field(
-        default=3,
-        ge=0,
-        le=5,
-        description="Maximum retries for transient failures"
+        default=3, ge=0, le=5, description="Maximum retries for transient failures"
     )
 
     retry_backoff_seconds: float = Field(
-        default=1.0,
-        ge=0.1,
-        le=10.0,
-        description="Initial backoff for exponential retry"
+        default=1.0, ge=0.1, le=10.0, description="Initial backoff for exponential retry"
     )
 
     @field_validator("openrouter_api_key")
     @classmethod
-    def validate_api_key_security(cls, v: str, info) -> str:
+    def validate_api_key_security(cls, v: str, info: ValidationInfo) -> str:
         """
         Security: Validate API key format and prevent common mistakes.
 
@@ -256,11 +239,7 @@ class LLMConfig(BaseSettings):
         if not v:
             return ""
 
-        placeholder_patterns = [
-            "your-api-key-here",
-            "example",
-            "dummy"
-        ]
+        placeholder_patterns = ["your-api-key-here", "example", "dummy"]
 
         v_lower = v.lower()
         if any(pattern in v_lower for pattern in placeholder_patterns):
@@ -272,9 +251,7 @@ class LLMConfig(BaseSettings):
 
         if len(v) < 20:
             field_name = info.field_name
-            logging.warning(
-                f"{field_name} seems too short to be valid - reflection may fail"
-            )
+            logging.warning(f"{field_name} seems too short to be valid - reflection may fail")
 
         return v
 
@@ -380,42 +357,36 @@ class SearchConfig(BaseSettings):
     # LLM semantic validation
     enable_llm_validation: bool = Field(
         default=False,
-        description="Enable LLM semantic validation for preconditions to prevent false blocks in context-sensitive scenarios"
+        description="Enable LLM semantic validation for preconditions to prevent false blocks in context-sensitive scenarios",
     )
     llm_similarity_threshold: float = Field(
         default=0.85,
         ge=0.0,
         le=1.0,
-        description="Similarity threshold to trigger LLM validation (only validate high-similarity matches)"
+        description="Similarity threshold to trigger LLM validation (only validate high-similarity matches)",
     )
     llm_confidence_threshold: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=1.0,
-        description="Minimum LLM confidence score to accept a match"
+        default=0.7, ge=0.0, le=1.0, description="Minimum LLM confidence score to accept a match"
     )
     llm_timeout_seconds: int = Field(
-        default=2,
-        ge=1,
-        le=10,
-        description="Timeout for LLM validation calls in seconds"
+        default=2, ge=1, le=10, description="Timeout for LLM validation calls in seconds"
     )
     llm_cache_ttl_seconds: int = Field(
         default=300,
         ge=60,
         le=3600,
-        description="Time-to-live for LLM validation cache entries (5 minutes default)"
+        description="Time-to-live for LLM validation cache entries (5 minutes default)",
     )
     max_llm_cost_per_day_usd: float = Field(
         default=10.0,
         ge=0.1,
         le=1000.0,
-        description="Maximum daily cost for LLM validation (circuit breaker)"
+        description="Maximum daily cost for LLM validation (circuit breaker)",
     )
 
     @field_validator("max_k")
     @classmethod
-    def validate_max_k(cls, v: int, info) -> int:
+    def validate_max_k(cls, v: int, info: ValidationInfo) -> int:
         default_k = info.data.get("default_k", 20)
         if v < default_k:
             raise ValueError(f"max_k ({v}) must be >= default_k ({default_k})")
@@ -451,6 +422,13 @@ class ServiceConfig(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
     reload: bool = Field(default=False)
     workers: int = Field(default=1, ge=1)
+    require_llm_reflection: bool = Field(
+        default=True,
+        description=(
+            "Require LLM reflection service at startup. "
+            "If true and no LLM API key is configured, service startup fails."
+        ),
+    )
 
     # Request size limits (DoS protection)
     max_request_body_size: int = Field(
@@ -477,15 +455,15 @@ class ServiceConfig(BaseSettings):
     archive_storage_path: str = Field(default="./data/archive")
     dead_letter_queue_path: str = Field(
         default="./data/failed_reflections.log",
-        description="Path to dead letter queue file for failed reflections"
+        description="Path to dead letter queue file for failed reflections",
     )
-    
+
     # Dead letter queue file rotation settings
     dead_letter_queue_max_size_mb: int = Field(
         default=100,
         ge=1,
         le=1000,
-        description="Maximum size of dead letter queue file in MB before rotation"
+        description="Maximum size of dead letter queue file in MB before rotation",
     )
 
 
@@ -592,31 +570,23 @@ class HealthCheckConfig(BaseSettings):
 
     # KyroDB latency thresholds (for degraded state detection)
     kyrodb_latency_warning_ms: float = Field(
-        default=100.0,
-        ge=0.0,
-        description="KyroDB latency threshold for warning (degraded state)"
+        default=100.0, ge=0.0, description="KyroDB latency threshold for warning (degraded state)"
     )
     kyrodb_latency_error_ms: float = Field(
-        default=500.0,
-        ge=0.0,
-        description="KyroDB latency threshold for error (unhealthy state)"
+        default=500.0, ge=0.0, description="KyroDB latency threshold for error (unhealthy state)"
     )
 
     # Embedding service latency thresholds
     embedding_latency_warning_ms: float = Field(
-        default=50.0,
-        ge=0.0,
-        description="Embedding latency threshold for warning"
+        default=50.0, ge=0.0, description="Embedding latency threshold for warning"
     )
     embedding_latency_error_ms: float = Field(
-        default=200.0,
-        ge=0.0,
-        description="Embedding latency threshold for error"
+        default=200.0, ge=0.0, description="Embedding latency threshold for error"
     )
 
     @field_validator("kyrodb_latency_error_ms")
     @classmethod
-    def validate_kyrodb_thresholds(cls, v: float, info) -> float:
+    def validate_kyrodb_thresholds(cls, v: float, info: ValidationInfo) -> float:
         """Ensure error threshold is greater than warning threshold."""
         warning = info.data.get("kyrodb_latency_warning_ms")
         if warning is not None and v <= warning:
@@ -627,7 +597,7 @@ class HealthCheckConfig(BaseSettings):
 
     @field_validator("embedding_latency_error_ms")
     @classmethod
-    def validate_embedding_thresholds(cls, v: float, info) -> float:
+    def validate_embedding_thresholds(cls, v: float, info: ValidationInfo) -> float:
         """Ensure error threshold is greater than warning threshold."""
         warning = info.data.get("embedding_latency_warning_ms")
         if warning is not None and v <= warning:
@@ -638,22 +608,15 @@ class HealthCheckConfig(BaseSettings):
 
     # Cache settings
     cache_ttl_seconds: float = Field(
-        default=5.0,
-        ge=1.0,
-        le=60.0,
-        description="Health check result cache TTL in seconds"
+        default=5.0, ge=1.0, le=60.0, description="Health check result cache TTL in seconds"
     )
 
     # Probe timeout settings
     liveness_timeout_ms: float = Field(
-        default=5000.0,
-        ge=100.0,
-        description="Maximum time for liveness probe"
+        default=5000.0, ge=100.0, description="Maximum time for liveness probe"
     )
     readiness_timeout_ms: float = Field(
-        default=10000.0,
-        ge=100.0,
-        description="Maximum time for readiness probe"
+        default=10000.0, ge=100.0, description="Maximum time for readiness probe"
     )
 
     # Circuit breaker settings
@@ -661,16 +624,11 @@ class HealthCheckConfig(BaseSettings):
         default=3,
         ge=1,
         le=10,
-        description="Consecutive health check failures before marking unhealthy"
+        description="Consecutive health check failures before marking unhealthy",
     )
     recovery_threshold: int = Field(
-        default=2,
-        ge=1,
-        le=5,
-        description="Consecutive successes needed to recover from unhealthy"
+        default=2, ge=1, le=5, description="Consecutive successes needed to recover from unhealthy"
     )
-
-
 
 
 class ReflectionConfig(BaseSettings):
@@ -681,13 +639,13 @@ class ReflectionConfig(BaseSettings):
     # Tier defaults
     default_tier: Literal["auto", "cheap", "premium"] = Field(
         default="auto",
-        description="Default tier: auto (intelligent selection), cheap (OpenRouter free tier), premium (multi-perspective)"
+        description="Default tier: auto (intelligent selection), cheap (OpenRouter free tier), premium (multi-perspective)",
     )
 
     # Premium triggers (error classes that force premium tier)
     premium_error_classes: list[str] = Field(
         default_factory=lambda: ["data_loss", "security_breach", "production_outage", "corruption"],
-        description="Error classes that force premium tier regardless of auto-selection"
+        description="Error classes that force premium tier regardless of auto-selection",
     )
 
     # Quality gates
@@ -695,14 +653,14 @@ class ReflectionConfig(BaseSettings):
         default=0.6,
         ge=0.0,
         le=1.0,
-        description="Minimum confidence score for cheap tier (fallback to premium if lower)"
+        description="Minimum confidence score for cheap tier (fallback to premium if lower)",
     )
 
     min_preconditions: int = Field(
         default=1,
         ge=0,
         le=10,
-        description="Minimum number of preconditions required for cheap tier quality gate"
+        description="Minimum number of preconditions required for cheap tier quality gate",
     )
 
     # Cost controls (circuit breakers)
@@ -710,25 +668,24 @@ class ReflectionConfig(BaseSettings):
         default=50.0,
         ge=1.0,
         le=1000.0,
-        description="Maximum daily reflection cost in USD (circuit breaker - alerts when exceeded)"
+        description="Maximum daily reflection cost in USD (circuit breaker - alerts when exceeded)",
     )
 
     max_premium_percentage: float = Field(
         default=0.15,
         ge=0.0,
         le=1.0,
-        description="Maximum percentage of reflections using premium tier (alerts if exceeded)"
+        description="Maximum percentage of reflections using premium tier (alerts if exceeded)",
     )
 
     # Feature flags
     enable_quality_fallback: bool = Field(
         default=True,
-        description="Enable automatic fallback from cheap to premium if quality gates fail"
+        description="Enable automatic fallback from cheap to premium if quality gates fail",
     )
 
     enable_cost_tracking: bool = Field(
-        default=True,
-        description="Enable detailed cost tracking per tier"
+        default=True, description="Enable detailed cost tracking per tier"
     )
 
     @field_validator("default_tier")
@@ -764,12 +721,11 @@ class Settings(BaseSettings):
     cors: CORSConfig = Field(default_factory=CORSConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     health: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
-    
+
     # Admin authentication (optional but recommended for production)
     # Set ADMIN_API_KEY in environment to protect admin endpoints
     admin_api_key: str | None = Field(
-        default=None,
-        description="API key for admin endpoints (required for admin access)"
+        default=None, description="API key for admin endpoints (required for admin access)"
     )
 
     @field_validator("admin_api_key")
@@ -825,6 +781,11 @@ class Settings(BaseSettings):
         if self.embedding.image_dimension not in {512, 768, 1024}:
             logging.warning(
                 f"Non-standard image embedding dimension: {self.embedding.image_dimension}"
+            )
+
+        if self.embedding.offline_mode:
+            logging.warning(
+                "Embedding offline mode enabled. Ensure text/image models are preloaded in cache."
             )
 
 

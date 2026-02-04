@@ -21,22 +21,35 @@ import time
 
 import pytest
 
-from src.config import LLMConfig
+from src.config import LLMConfig, get_settings
 from src.ingestion.multi_perspective_reflection import MultiPerspectiveReflectionService
 from src.models.episode import EpisodeCreate, EpisodeType, ErrorClass
 
 
 def get_test_api_key() -> str:
-    """Get OpenRouter API key from environment."""
-    key = os.environ.get("LLM_OPENROUTER_API_KEY", "")
+    """Get OpenRouter API key from environment/.env-backed settings."""
+    key = os.environ.get("LLM_OPENROUTER_API_KEY", "").strip()
+    if not key:
+        configured_key = get_settings().llm.openrouter_api_key
+        key = (configured_key or "").strip()
     if not key:
         pytest.skip("LLM_OPENROUTER_API_KEY not set - run with real API key to test")
     return key
 
 
 def _require_env(name: str) -> str:
-    """Get required environment variable or skip test."""
-    value = os.environ.get(name, "")
+    """Get required LLM setting (env first, then .env-backed settings) or skip."""
+    value = os.environ.get(name, "").strip()
+    if not value:
+        llm = get_settings().llm
+        mapping = {
+            "LLM_OPENROUTER_BASE_URL": llm.openrouter_base_url,
+            "LLM_CONSENSUS_MODEL_1": llm.consensus_model_1,
+            "LLM_CONSENSUS_MODEL_2": llm.consensus_model_2,
+            "LLM_CHEAP_MODEL": llm.cheap_model,
+        }
+        mapped = mapping.get(name)
+        value = str(mapped).strip() if mapped is not None else ""
     if not value:
         pytest.skip(f"{name} not set - required for OpenRouter tests")
     return value
@@ -45,11 +58,11 @@ def _require_env(name: str) -> str:
 def _safe_float(name: str, default: float) -> float:
     """
     Parse environment variable as float with proper error handling.
-    
+
     Args:
         name: Environment variable name
         default: Default value if env var is not set or invalid
-        
+
     Returns:
         Parsed float value or default
     """
@@ -65,11 +78,11 @@ def _safe_float(name: str, default: float) -> float:
 def _safe_int(name: str, default: int) -> int:
     """
     Parse environment variable as int with proper error handling.
-    
+
     Args:
         name: Environment variable name
         default: Default value if env var is not set or invalid
-        
+
     Returns:
         Parsed int value or default
     """
@@ -137,15 +150,11 @@ def sample_episode() -> EpisodeCreate:
 class TestOpenRouterAPI:
     """
     Real OpenRouter API tests.
-    
+
     These tests make actual API calls and are skipped in CI.
     Run manually with LLM_OPENROUTER_API_KEY set.
     """
 
-    @pytest.mark.skipif(
-        not os.environ.get("LLM_OPENROUTER_API_KEY"),
-        reason="LLM_OPENROUTER_API_KEY not set"
-    )
     @pytest.mark.asyncio
     async def test_single_model_call(
         self,
@@ -154,7 +163,7 @@ class TestOpenRouterAPI:
     ):
         """
         Test single model call via OpenRouter.
-        
+
         Validates:
         - API connection works
         - JSON response is parseable
@@ -186,15 +195,14 @@ class TestOpenRouterAPI:
         assert 0 <= reflection.confidence_score <= 1, "Confidence should be 0-1"
         assert 0 <= reflection.generalization_score <= 1, "Generalization should be 0-1"
         # Verify LLM was actually called (not fallback heuristic)
-        assert reflection.llm_model != "fallback_heuristic", \
-            "Should use real LLM, not fallback. Check API key and model availability."
+        assert (
+            reflection.llm_model != "fallback_heuristic"
+        ), "Should use real LLM, not fallback. Check API key and model availability."
         # Verify cost tracking (should be >= 0 for real API call, even for free models)
-        assert reflection.generation_latency_ms > 0, "Should have non-zero latency from real API call"
+        assert (
+            reflection.generation_latency_ms > 0
+        ), "Should have non-zero latency from real API call"
 
-    @pytest.mark.skipif(
-        not os.environ.get("LLM_OPENROUTER_API_KEY"),
-        reason="LLM_OPENROUTER_API_KEY not set"
-    )
     @pytest.mark.asyncio
     async def test_consensus_with_two_models(
         self,
@@ -203,7 +211,7 @@ class TestOpenRouterAPI:
     ):
         """
         Test multi-perspective reflection with 2 models.
-        
+
         Validates:
         - Both models are called in parallel
         - Consensus is computed correctly
@@ -252,15 +260,11 @@ class TestOpenRouterAPI:
         # Single model takes ~5-15s, parallel should take ~10-20s (not 2x)
         assert elapsed_ms < 120_000, f"Latency too high: {elapsed_ms}ms (expected < 120s)"
 
-    @pytest.mark.skipif(
-        not os.environ.get("LLM_OPENROUTER_API_KEY"),
-        reason="LLM_OPENROUTER_API_KEY not set"
-    )
     @pytest.mark.asyncio
     async def test_error_handling_invalid_model(self, real_llm_config: LLMConfig):
         """
         Test error handling when model doesn't exist.
-        
+
         Should fall back gracefully without crashing.
         """
         # Create config with invalid model names to test error handling
@@ -300,10 +304,6 @@ class TestOpenRouterAPI:
         # Should either use fallback heuristic or succeed with partial results
         assert reflection is not None, "Should return a reflection even on partial failure"
 
-    @pytest.mark.skipif(
-        not os.environ.get("LLM_OPENROUTER_API_KEY"),
-        reason="LLM_OPENROUTER_API_KEY not set"
-    )
     @pytest.mark.asyncio
     async def test_semantic_similarity_for_root_cause(
         self,
@@ -311,7 +311,7 @@ class TestOpenRouterAPI:
     ):
         """
         Test that semantic similarity correctly identifies related root causes.
-        
+
         Uses embedding model to compare root cause texts.
         """
         async with MultiPerspectiveReflectionService(config=real_llm_config) as service:
@@ -338,24 +338,23 @@ class TestOpenRouterAPI:
         print(f"Different texts similarity: {different_score:.3f}")
 
         # Similar texts should have high similarity
-        assert similar_score > 0.5, f"Similar texts should have similarity > 0.5, got {similar_score}"
+        assert (
+            similar_score > 0.5
+        ), f"Similar texts should have similarity > 0.5, got {similar_score}"
 
         # Different texts should have lower similarity
-        assert different_score < similar_score, \
-            f"Different texts ({different_score}) should be less similar than related texts ({similar_score})"
+        assert (
+            different_score < similar_score
+        ), f"Different texts ({different_score}) should be less similar than related texts ({similar_score})"
 
 
 class TestOpenRouterRateLimits:
     """
     Rate limit handling tests.
-    
+
     These tests validate the retry logic for rate-limited requests.
     """
 
-    @pytest.mark.skipif(
-        not os.environ.get("LLM_OPENROUTER_API_KEY"),
-        reason="LLM_OPENROUTER_API_KEY not set"
-    )
     @pytest.mark.asyncio
     async def test_parallel_requests_respect_limits(
         self,
@@ -364,7 +363,7 @@ class TestOpenRouterRateLimits:
     ):
         """
         Test that parallel requests handle rate limits correctly.
-        
+
         Makes multiple concurrent requests and verifies they all complete.
         """
         async with MultiPerspectiveReflectionService(config=real_llm_config) as service:

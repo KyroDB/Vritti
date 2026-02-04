@@ -30,7 +30,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 
 **API Endpoints**
 - `POST /api/v1/capture` - Capture failure episodes
-- `POST /api/v1/reflect` - Reflection gate (proceed/block/rewrite/hint)
+- `POST /api/v1/reflect` - Pre-action reflection and gating (proceed/block/rewrite/hint)
 - `POST /api/v1/search` - Semantic search
 - `GET /health` - Health checks
 
@@ -69,7 +69,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 
 **Performance Targets**
 - Search latency: <50ms P99
-- Reflection decision: <100ms P99
+- Reflection generation: asynchronous background task (cheap/cached/premium tiers)
 - Episode capture: <200ms P99
 - Health checks: <5ms
 
@@ -83,7 +83,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 - API key authentication (em_live_ prefix)
 - Automatic PII redaction
 - Customer namespace isolation
-- bcrypt password hashing
+- SHA-256 API key digest lookup with in-memory TTL cache
 - Request validation and sanitization
 
 

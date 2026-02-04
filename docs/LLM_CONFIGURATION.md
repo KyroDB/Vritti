@@ -109,9 +109,9 @@ If cached tier is not triggering:
 5) Check logs for “Selected CACHED tier” / “No cluster match”.
 
 **Premium tier** if:
-- Authentication errors
-- Database connection failures
-- Complexity score >0.7
+- `error_class` is one of critical classes (`data_loss`, `security_breach`, `production_outage`, `corruption`)
+- `environment_info.retry_count > 0` (agent is retrying after prior failure)
+- `tags` includes `premium_reflection`
 
 **Cheap tier**:
 - Everything else (default)
@@ -162,10 +162,12 @@ Typical costs:
 
 ### No API Key Set
 
-Episodes stored but no reflection generated:
-- Storage works normally
-- Search returns episodes
-- Gating uses precondition matching only
+Startup behavior is controlled by `SERVICE_REQUIRE_LLM_REFLECTION`:
+- `true`: startup fails fast if LLM configuration is missing or placeholder.
+- `false`: service starts with reflection generation disabled.
+
+Note: `.env.production.example` ships with `SERVICE_REQUIRE_LLM_REFLECTION=false` for safe bootstrap.
+Set it to `true` before production rollout once valid LLM credentials are configured.
 
 ### Rate Limits
 

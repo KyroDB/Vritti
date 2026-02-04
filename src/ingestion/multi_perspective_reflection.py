@@ -31,16 +31,10 @@ import threading
 import time
 from collections import Counter
 from datetime import UTC, datetime
+from types import TracebackType
+from typing import Any
 
 import numpy as np
-
-try:
-    from openai import AsyncOpenAI
-    OPENAI_AVAILABLE = True
-except Exception:
-    OPENAI_AVAILABLE = False
-    AsyncOpenAI = None
-
 from pydantic import ValidationError
 
 from src.config import LLMConfig
@@ -50,6 +44,16 @@ from src.models.episode import (
     Reflection,
     ReflectionConsensus,
 )
+
+OpenAIAsyncClient: Any | None
+try:
+    from openai import AsyncOpenAI as _AsyncOpenAI
+
+    OPENAI_AVAILABLE = True
+    OpenAIAsyncClient = _AsyncOpenAI
+except ImportError:
+    OPENAI_AVAILABLE = False
+    OpenAIAsyncClient = None
 
 logger = logging.getLogger(__name__)
 
@@ -105,26 +109,20 @@ class PromptInjectionDefense:
 
         # Length limit
         if len(text) > cls.MAX_FIELD_LENGTH:
-            logger.warning(
-                f"Truncating {field_name}: {len(text)} chars -> {cls.MAX_FIELD_LENGTH}"
-            )
+            logger.warning(f"Truncating {field_name}: {len(text)} chars -> {cls.MAX_FIELD_LENGTH}")
             text = text[: cls.MAX_FIELD_LENGTH] + "... (truncated)"
 
         # Remove null bytes and control characters (except newlines, tabs)
-        text = "".join(
-            char for char in text
-            if char.isprintable() or char in ("\n", "\t", "\r")
-        )
+        text = "".join(char for char in text if char.isprintable() or char in ("\n", "\t", "\r"))
 
         # Detect injection patterns
         text_lower = text.lower()
         for pattern in cls.INJECTION_PATTERNS:
             if pattern in text_lower:
-                logger.warning(
-                    f"Potential prompt injection detected in {field_name}: '{pattern}'"
-                )
+                logger.warning(f"Potential prompt injection detected in {field_name}: '{pattern}'")
                 # Replace with safe placeholder (case-insensitive)
                 import re
+
                 text = re.sub(re.escape(pattern), "[REDACTED]", text, flags=re.IGNORECASE)
                 text_lower = text.lower()
 
@@ -137,9 +135,7 @@ class PromptInjectionDefense:
     def sanitize_list(cls, items: list[str], field_name: str = "list") -> list[str]:
         """Sanitize list of strings."""
         if len(items) > cls.MAX_LIST_ITEMS:
-            logger.warning(
-                f"Truncating {field_name}: {len(items)} items -> {cls.MAX_LIST_ITEMS}"
-            )
+            logger.warning(f"Truncating {field_name}: {len(items)} items -> {cls.MAX_LIST_ITEMS}")
             items = items[: cls.MAX_LIST_ITEMS]
 
         sanitized = []
@@ -215,8 +211,11 @@ Return ONLY valid JSON, no markdown."""
         self.config = config
 
         # Initialize OpenRouter client (uses OpenAI SDK with custom base_url)
+        self.openrouter_client: Any | None = None
         if config.use_openrouter and OPENAI_AVAILABLE:
-            self.openrouter_client = AsyncOpenAI(
+            if OpenAIAsyncClient is None:
+                raise RuntimeError("OpenRouter configured but OpenAI client is unavailable")
+            self.openrouter_client = OpenAIAsyncClient(
                 api_key=config.openrouter_api_key,
                 base_url=config.openrouter_base_url,
                 timeout=config.timeout_seconds,
@@ -224,7 +223,7 @@ Return ONLY valid JSON, no markdown."""
                 default_headers={
                     "HTTP-Referer": "https://kyrodb.dev",
                     "X-Title": "EpisodicMemory",
-                }
+                },
             )
             logger.info(
                 f"OpenRouter client initialized with models: "
@@ -242,7 +241,7 @@ Return ONLY valid JSON, no markdown."""
         self._stats_lock = threading.Lock()
         self.total_cost_usd = 0.0
         self.total_requests = 0
-        self.requests_by_model = Counter()
+        self.requests_by_model: Counter[str] = Counter()
 
         # Lazy-loaded embedding model for semantic similarity (root cause reconciliation)
         self._similarity_model = None
@@ -266,7 +265,12 @@ Return ONLY valid JSON, no markdown."""
     async def __aenter__(self) -> "MultiPerspectiveReflectionService":
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         await self.aclose()
 
     async def generate_multi_perspective_reflection(
@@ -316,38 +320,48 @@ Return ONLY valid JSON, no markdown."""
 
         if self.openrouter_client:
             tasks.append(
-                self._call_openrouter_model(
-                    self.config.consensus_model_1, user_prompt, max_retries
-                )
+                self._call_openrouter_model(self.config.consensus_model_1, user_prompt, max_retries)
             )
             task_names.append(self.config.consensus_model_1)
 
             tasks.append(
-                self._call_openrouter_model(
-                    self.config.consensus_model_2, user_prompt, max_retries
-                )
+                self._call_openrouter_model(self.config.consensus_model_2, user_prompt, max_retries)
             )
             task_names.append(self.config.consensus_model_2)
 
         if not tasks:
-            logger.warning("Premium reflection disabled (OpenRouter not configured); returning fallback")
+            logger.warning(
+                "Premium reflection disabled (OpenRouter not configured); returning fallback"
+            )
             return self._create_fallback_reflection(episode)
 
         try:
             logger.info(f"Calling {len(tasks)} LLM models in parallel for consensus...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            perspectives = []
+            perspectives: list[LLMPerspective] = []
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     logger.error(f"{task_names[i]} failed: {result}")
-                elif result is not None:
+                elif isinstance(result, LLMPerspective):
                     perspectives.append(result)
                     logger.info(f"{task_names[i]} succeeded")
 
             if not perspectives:
-                logger.error("All LLM models failed")
-                return self._create_fallback_reflection(episode)
+                logger.error("All consensus models failed")
+                cheap_fallback = await self._call_openrouter_model(
+                    self.config.cheap_model,
+                    user_prompt,
+                    max_retries,
+                )
+                if cheap_fallback is None:
+                    logger.error("Cheap model fallback also failed")
+                    return self._create_fallback_reflection(episode)
+                perspectives = [cheap_fallback]
+                logger.warning(
+                    "Using cheap model fallback for single-model consensus result",
+                    extra={"model": self.config.cheap_model},
+                )
 
             logger.info(f"Reconciling {len(perspectives)} perspectives...")
             consensus = self._reconcile_perspectives(perspectives)
@@ -484,11 +498,14 @@ Return ONLY valid JSON, no markdown."""
         Returns:
             LLMPerspective on success, None on failure
         """
-        last_error = None
+        last_error: Exception | None = None
 
         for attempt in range(max_retries):
             try:
-                response = await self.openrouter_client.chat.completions.create(
+                client = self.openrouter_client
+                if client is None:
+                    return None
+                response = await client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": self.SYSTEM_PROMPT},
@@ -500,6 +517,8 @@ Return ONLY valid JSON, no markdown."""
                 )
 
                 content = response.choices[0].message.content
+                if content is None:
+                    raise ValueError("Empty completion response content")
 
                 # Extract JSON from markdown if needed
                 if "```json" in content:
@@ -517,7 +536,7 @@ Return ONLY valid JSON, no markdown."""
                         "model": model,
                         "attempt": attempt + 1,
                         "confidence": perspective.confidence_score,
-                    }
+                    },
                 )
                 return perspective
 
@@ -525,14 +544,14 @@ Return ONLY valid JSON, no markdown."""
                 last_error = e
                 logger.warning(
                     "JSON parsing failed, will retry",
-                    extra={"model": model, "attempt": attempt + 1, "error": str(e)}
+                    extra={"model": model, "attempt": attempt + 1, "error": str(e)},
                 )
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2**attempt)
                     continue
                 logger.error(
                     "JSON parsing failed after all retries",
-                    extra={"model": model, "attempts": max_retries, "error": str(e)}
+                    extra={"model": model, "attempts": max_retries, "error": str(e)},
                 )
                 return None
 
@@ -540,14 +559,14 @@ Return ONLY valid JSON, no markdown."""
                 last_error = e
                 logger.warning(
                     "Pydantic validation failed, will retry",
-                    extra={"model": model, "attempt": attempt + 1, "error": str(e)}
+                    extra={"model": model, "attempt": attempt + 1, "error": str(e)},
                 )
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2**attempt)
                     continue
                 logger.error(
                     "Pydantic validation failed after all retries",
-                    extra={"model": model, "attempts": max_retries, "error": str(e)}
+                    extra={"model": model, "attempts": max_retries, "error": str(e)},
                 )
                 return None
 
@@ -558,32 +577,26 @@ Return ONLY valid JSON, no markdown."""
                 # Categorize errors
                 is_rate_limit = "429" in str(e) or "rate" in error_str
                 is_timeout = "timeout" in error_str or "timed out" in error_str
-                is_server_error = any(
-                    code in str(e) for code in ["500", "502", "503", "504"]
-                )
+                is_server_error = any(code in str(e) for code in ["500", "502", "503", "504"])
                 is_auth_error = "401" in str(e) or "403" in str(e)
                 is_bad_request = "400" in str(e) or "404" in str(e)
 
                 # Permanent errors: fail immediately
                 if is_auth_error:
                     logger.error(
-                        "Authentication failed (permanent)",
-                        extra={"model": model, "error": str(e)}
+                        "Authentication failed (permanent)", extra={"model": model, "error": str(e)}
                     )
                     return None
 
                 if is_bad_request:
-                    logger.error(
-                        "Bad request (permanent)",
-                        extra={"model": model, "error": str(e)}
-                    )
+                    logger.error("Bad request (permanent)", extra={"model": model, "error": str(e)})
                     return None
 
                 # Transient errors: retry with backoff
                 is_transient = is_rate_limit or is_timeout or is_server_error
 
                 if is_transient and attempt < max_retries - 1:
-                    backoff = 2 ** attempt
+                    backoff = 2**attempt
                     if is_rate_limit:
                         backoff = min(backoff * 2, 30)  # Extra backoff for rate limits
                     logger.warning(
@@ -594,8 +607,8 @@ Return ONLY valid JSON, no markdown."""
                             "backoff_seconds": backoff,
                             "is_rate_limit": is_rate_limit,
                             "is_timeout": is_timeout,
-                            "error": str(e)
-                        }
+                            "error": str(e),
+                        },
                     )
                     await asyncio.sleep(backoff)
                     continue
@@ -606,14 +619,14 @@ Return ONLY valid JSON, no markdown."""
                         "model": model,
                         "attempts": attempt + 1,
                         "error": str(e),
-                        "error_type": type(e).__name__
-                    }
+                        "error_type": type(e).__name__,
+                    },
                 )
                 return None
 
         logger.error(
             "OpenRouter call exhausted all retries",
-            extra={"model": model, "attempts": max_retries, "last_error": str(last_error)}
+            extra={"model": model, "attempts": max_retries, "last_error": str(last_error)},
         )
         return None
 
@@ -627,28 +640,26 @@ Return ONLY valid JSON, no markdown."""
             customer_id=episode.customer_id,  # Already validated by auth
             episode_type=episode.episode_type,
             goal=PromptInjectionDefense.sanitize_text(episode.goal, "goal"),
-            tool_chain=PromptInjectionDefense.sanitize_list(
-                episode.tool_chain, "tool_chain"
-            ),
+            tool_chain=PromptInjectionDefense.sanitize_list(episode.tool_chain, "tool_chain"),
             actions_taken=PromptInjectionDefense.sanitize_list(
                 episode.actions_taken, "actions_taken"
             ),
-            error_trace=PromptInjectionDefense.sanitize_text(
-                episode.error_trace, "error_trace"
-            ),
+            error_trace=PromptInjectionDefense.sanitize_text(episode.error_trace, "error_trace"),
             error_class=episode.error_class,
-            code_state_diff=PromptInjectionDefense.sanitize_text(
-                episode.code_state_diff or "", "code_state_diff"
-            )
-            if episode.code_state_diff
-            else None,
+            code_state_diff=(
+                PromptInjectionDefense.sanitize_text(
+                    episode.code_state_diff or "", "code_state_diff"
+                )
+                if episode.code_state_diff
+                else None
+            ),
             environment_info=episode.environment_info,  # Dict, handled separately
             screenshot_base64=None,  # Never send raw image data to LLM
-            resolution=PromptInjectionDefense.sanitize_text(
-                episode.resolution or "", "resolution"
-            )
-            if episode.resolution
-            else None,
+            resolution=(
+                PromptInjectionDefense.sanitize_text(episode.resolution or "", "resolution")
+                if episode.resolution
+                else None
+            ),
             time_to_resolve_seconds=episode.time_to_resolve_seconds,
             tags=PromptInjectionDefense.sanitize_list(episode.tags, "tags"),
             severity=episode.severity,
@@ -682,8 +693,7 @@ Return ONLY valid JSON, no markdown."""
         if episode.environment_info:
             # Sanitize dict values
             safe_env = {
-                str(k)[:100]: str(v)[:500]
-                for k, v in list(episode.environment_info.items())[:20]
+                str(k)[:100]: str(v)[:500] for k, v in list(episode.environment_info.items())[:20]
             }
             env_str = json.dumps(safe_env, indent=2)
             prompt_parts.append(f"\nEnvironment:\n{env_str}")
@@ -693,9 +703,7 @@ Return ONLY valid JSON, no markdown."""
 
         return "\n".join(prompt_parts)
 
-    def _reconcile_perspectives(
-        self, perspectives: list[LLMPerspective]
-    ) -> ReflectionConsensus:
+    def _reconcile_perspectives(self, perspectives: list[LLMPerspective]) -> ReflectionConsensus:
         """
         Reconcile multiple perspectives using semantic similarity consensus.
 
@@ -746,9 +754,7 @@ Return ONLY valid JSON, no markdown."""
         return self._reconcile_multiple_perspectives(perspectives, similarity_matrix)
 
     def _reconcile_two_perspectives(
-        self,
-        perspectives: list[LLMPerspective],
-        similarity: float
+        self, perspectives: list[LLMPerspective], similarity: float
     ) -> ReflectionConsensus:
         """
         Reconcile exactly two perspectives based on semantic similarity.
@@ -844,9 +850,7 @@ Return ONLY valid JSON, no markdown."""
         )
 
     def _reconcile_multiple_perspectives(
-        self,
-        perspectives: list[LLMPerspective],
-        similarity_matrix: np.ndarray
+        self, perspectives: list[LLMPerspective], similarity_matrix: np.ndarray
     ) -> ReflectionConsensus:
         """
         Reconcile 3+ perspectives using similarity clustering.
@@ -924,9 +928,7 @@ Return ONLY valid JSON, no markdown."""
             generated_at=datetime.now(UTC),
         )
 
-    def _compute_semantic_similarity_matrix(
-        self, texts: list[str]
-    ) -> np.ndarray:
+    def _compute_semantic_similarity_matrix(self, texts: list[str]) -> np.ndarray:
         """
         Compute pairwise cosine similarity matrix for texts.
 
@@ -957,7 +959,7 @@ Return ONLY valid JSON, no markdown."""
             # Cosine similarity for normalized vectors is just dot-product.
             sim = np.matmul(embeddings, embeddings.T)
             # Numerical safety.
-            return np.clip(sim, -1.0, 1.0)
+            return np.asarray(np.clip(sim, -1.0, 1.0), dtype=np.float32)
         except Exception as e:
             logger.warning(
                 "Semantic similarity computation failed; falling back to string equality: %s",
@@ -970,7 +972,7 @@ Return ONLY valid JSON, no markdown."""
                     matrix[i, j] = 1.0 if normalized[i] == normalized[j] else 0.0
             return matrix
 
-    def _get_similarity_model(self):
+    def _get_similarity_model(self) -> Any:
         """Lazy-load sentence-transformers model used for semantic similarity."""
         if self._similarity_model is not None:
             return self._similarity_model
@@ -993,9 +995,7 @@ Return ONLY valid JSON, no markdown."""
             self._similarity_model = SentenceTransformer(model_name, device="cpu")
             return self._similarity_model
 
-    def _merge_preconditions_semantic(
-        self, precondition_lists: list[list[str]]
-    ) -> list[str]:
+    def _merge_preconditions_semantic(self, precondition_lists: list[list[str]]) -> list[str]:
         """
         Merge preconditions from multiple perspectives with semantic deduplication.
 
@@ -1036,9 +1036,7 @@ Return ONLY valid JSON, no markdown."""
             return merged
 
         except Exception as e:
-            logger.warning(
-                f"Semantic precondition merge failed: {e}. Using simple deduplication."
-            )
+            logger.warning(f"Semantic precondition merge failed: {e}. Using simple deduplication.")
             # Fallback: simple string deduplication
             return list(dict.fromkeys(all_preconditions))
 
@@ -1079,9 +1077,9 @@ Return ONLY valid JSON, no markdown."""
             root_cause=root_cause,
             preconditions=preconditions,
             resolution_strategy=resolution_strategy,
-            environment_factors=list(episode.environment_info.keys())[:10]
-            if episode.environment_info
-            else [],
+            environment_factors=(
+                list(episode.environment_info.keys())[:10] if episode.environment_info else []
+            ),
             affected_components=episode.tool_chain[:5],
             generalization_score=0.3,
             confidence_score=0.4,  # Low confidence for heuristic
@@ -1099,8 +1097,6 @@ Return ONLY valid JSON, no markdown."""
                 "total_requests": self.total_requests,
                 "requests_by_model": dict(self.requests_by_model),
                 "average_cost_per_request": (
-                    self.total_cost_usd / self.total_requests
-                    if self.total_requests > 0
-                    else 0.0
+                    self.total_cost_usd / self.total_requests if self.total_requests > 0 else 0.0
                 ),
             }

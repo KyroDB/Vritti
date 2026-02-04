@@ -12,12 +12,19 @@ Namespace format: {customer_id}:failures (e.g., "acme-corp:failures")
 import asyncio
 import logging
 import math
-from datetime import UTC
+from collections.abc import Callable
+from datetime import UTC, datetime
+from types import TracebackType
 from typing import TYPE_CHECKING, Optional
 
 from src.config import KyroDBConfig
 from src.kyrodb.client import KyroDBClient
-from src.kyrodb.kyrodb_pb2 import ExactMatch, MetadataFilter, SearchResponse, SearchResult
+from src.kyrodb.kyrodb_pb2 import (
+    ExactMatch,
+    MetadataFilter,
+    SearchResponse,
+    SearchResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +172,12 @@ class KyroDBRouter:
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Context manager exit."""
         await self.close()
 
@@ -224,8 +236,7 @@ class KyroDBRouter:
                 )
         except Exception as e:
             logger.error(
-                f"Text insertion error for episode {episode_id} "
-                f"(customer: {customer_id}): {e}"
+                f"Text insertion error for episode {episode_id} " f"(customer: {customer_id}): {e}"
             )
             raise
 
@@ -332,9 +343,7 @@ class KyroDBRouter:
         normalized_query_embedding = self._l2_normalize_embedding(
             query_embedding, name="query_embedding"
         )
-        metadata_filter = MetadataFilter(
-            exact=ExactMatch(key="doc_type", value="cluster_template")
-        )
+        metadata_filter = MetadataFilter(exact=ExactMatch(key="doc_type", value="cluster_template"))
         return await self.text_client.search(
             query_embedding=normalized_query_embedding,
             k=k,
@@ -402,7 +411,7 @@ class KyroDBRouter:
         self,
         customer_id: str,
         cluster_id: int,
-        timestamp_factory,
+        timestamp_factory: Callable[[], datetime],
     ) -> bool:
         namespace = get_namespaced_collection(customer_id, "cluster_templates")
         existing = await self.text_client.query(
@@ -644,7 +653,9 @@ class KyroDBRouter:
 
         # Delete from text instance
         try:
-            response = await self.text_client.delete(doc_id=episode_id, namespace=namespaced_collection)
+            response = await self.text_client.delete(
+                doc_id=episode_id, namespace=namespaced_collection
+            )
             text_deleted = response.success
         except Exception as e:
             logger.error(f"Text deletion failed for episode {episode_id}: {e}")
@@ -671,37 +682,37 @@ class KyroDBRouter:
     ) -> list["Episode"]:
         """
         Batch retrieve multiple episodes by ID.
-        
+
         KyroDB does not expose a server-side bulk query API. This helper issues
         bounded concurrent point lookups via `KyroDBClient.bulk_query()` and
         reconstructs `Episode` objects from stored metadata.
-        
+
         Args:
             episode_ids: List of episode IDs to retrieve
             customer_id: Customer ID for namespace isolation
             collection: Base collection name ("failures")
-            
+
         Returns:
             list[Episode]: Successfully retrieved episodes (partial success)
-            
+
         Raises:
             ValueError: If customer_id is empty
             KyroDBError: On critical failure
         """
         from src.models.episode import Episode
-        
+
         if not episode_ids:
             return []
-        
+
         namespaced_collection = get_namespaced_collection(customer_id, collection)
-        
+
         try:
             response = await self.text_client.bulk_query(
                 doc_ids=episode_ids,
                 namespace=namespaced_collection,
                 include_embeddings=False,
             )
-            
+
             episodes = []
             for query_result in response.results:
                 if not query_result.found:
@@ -710,7 +721,7 @@ class KyroDBRouter:
                         f"(customer: {customer_id})"
                     )
                     continue
-                    
+
                 try:
                     episode = Episode.from_metadata_dict(
                         doc_id=query_result.doc_id,
@@ -718,19 +729,17 @@ class KyroDBRouter:
                     )
                     episodes.append(episode)
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to deserialize episode {query_result.doc_id}: {e}"
-                    )
+                    logger.warning(f"Failed to deserialize episode {query_result.doc_id}: {e}")
                     continue
-            
+
             logger.info(
                 f"Bulk fetched {len(episodes)}/{len(episode_ids)} episodes "
                 f"(customer: {customer_id}, requested: {response.total_requested}, "
                 f"found: {response.total_found})"
             )
-            
+
             return episodes
-            
+
         except Exception as e:
             logger.error(
                 f"Bulk fetch failed for {len(episode_ids)} episodes "
@@ -748,38 +757,38 @@ class KyroDBRouter:
     ) -> tuple[int, int]:
         """
         Batch delete multiple episodes by ID from text and optionally image instances.
-        
+
         KyroDB does not expose a server-side batch delete API. This helper issues
         bounded concurrent deletes and aggregates deletion counts.
-        
+
         Args:
             episode_ids: List of episode IDs to delete
             customer_id: Customer ID for namespace isolation
             collection: Base collection name ("failures")
             delete_images: Also delete from image instance (default: True)
-            
+
         Returns:
             tuple[int, int]: (text_deleted_count, image_deleted_count)
-            
+
         Raises:
             ValueError: If customer_id is empty
             KyroDBError: On critical failure
         """
         if not episode_ids:
             return (0, 0)
-        
+
         namespaced_collection = get_namespaced_collection(customer_id, collection)
-        
+
         text_deleted = 0
         image_deleted = 0
-        
+
         # Delete from text instance
         try:
             response = await self.text_client.batch_delete(
                 doc_ids=episode_ids,
                 namespace=namespaced_collection,
             )
-            
+
             if response.success:
                 text_deleted = int(response.deleted_count)
                 logger.info(
@@ -788,10 +797,9 @@ class KyroDBRouter:
                 )
             else:
                 logger.error(
-                    f"Batch delete failed for {len(episode_ids)} episodes: "
-                    f"{response.error}"
+                    f"Batch delete failed for {len(episode_ids)} episodes: " f"{response.error}"
                 )
-                
+
         except Exception as e:
             logger.error(
                 f"Text batch delete failed for {len(episode_ids)} episodes "
@@ -799,7 +807,7 @@ class KyroDBRouter:
                 exc_info=True,
             )
             raise
-        
+
         # Delete from image instance if requested
         if delete_images:
             try:
@@ -808,7 +816,7 @@ class KyroDBRouter:
                     doc_ids=episode_ids,
                     namespace=image_namespace,
                 )
-                
+
                 if image_response.success:
                     image_deleted = int(image_response.deleted_count)
                     logger.info(
@@ -820,13 +828,13 @@ class KyroDBRouter:
                         f"Image batch delete failed for {len(episode_ids)} episodes: "
                         f"{image_response.error}"
                     )
-                    
+
             except Exception as e:
                 logger.warning(
                     f"Image batch delete failed for {len(episode_ids)} episodes "
                     f"(customer: {customer_id}): {e} (continuing - text delete succeeded)"
                 )
-        
+
         logger.debug(
             f"Batch deleted {len(episode_ids)} episodes: "
             f"text={text_deleted}, images={image_deleted}"
@@ -945,9 +953,7 @@ class KyroDBRouter:
                     f"Cannot update reflection: episode {episode_id} not found "
                     f"(customer: {customer_id}, collection: {namespaced_collection})"
                 )
-                raise ValueError(
-                    f"Episode {episode_id} not found in {namespaced_collection}"
-                )
+                raise ValueError(f"Episode {episode_id} not found in {namespaced_collection}")
 
             # Security: Verify customer_id matches (prevent cross-customer updates)
             existing_customer = existing.metadata.get("customer_id")
@@ -956,9 +962,7 @@ class KyroDBRouter:
                     f"Customer ID mismatch: episode {episode_id} belongs to "
                     f"{existing_customer}, not {customer_id}"
                 )
-                raise ValueError(
-                    "Customer ID mismatch - potential security violation"
-                )
+                raise ValueError("Customer ID mismatch - potential security violation")
 
             # Step 2: Serialize reflection to metadata format
             reflection_metadata = self._serialize_reflection_to_metadata(reflection)
@@ -1001,9 +1005,7 @@ class KyroDBRouter:
                     # Reflection is already persisted via reflection_* metadata fields.
 
             # Step 4: Re-insert with updated metadata (KyroDB's update mechanism)
-            logger.debug(
-                f"Re-inserting episode {episode_id} with reflection metadata..."
-            )
+            logger.debug(f"Re-inserting episode {episode_id} with reflection metadata...")
 
             response = await self.text_client.insert(
                 doc_id=episode_id,
@@ -1065,8 +1067,7 @@ class KyroDBRouter:
                 return True
             else:
                 logger.error(
-                    f"Failed to persist reflection for episode {episode_id}: "
-                    f"{response.error}"
+                    f"Failed to persist reflection for episode {episode_id}: " f"{response.error}"
                 )
                 return False
 
@@ -1079,9 +1080,7 @@ class KyroDBRouter:
             # Don't raise - this is async background task, log and continue
             return False
 
-    def _serialize_reflection_to_metadata(
-        self, reflection: "Reflection"
-    ) -> dict[str, str]:
+    def _serialize_reflection_to_metadata(self, reflection: "Reflection") -> dict[str, str]:
         """
         Serialize reflection to KyroDB metadata format (string-string map).
 
@@ -1105,12 +1104,10 @@ class KyroDBRouter:
             "reflection_resolution": reflection.resolution_strategy,
             "reflection_confidence": f"{reflection.confidence_score:.4f}",
             "reflection_generalization": f"{reflection.generalization_score:.4f}",
-
             # Lists (JSON-encoded)
             "reflection_preconditions": json.dumps(reflection.preconditions),
             "reflection_env_factors": json.dumps(reflection.environment_factors),
             "reflection_components": json.dumps(reflection.affected_components),
-
             # Generation metadata
             "reflection_model": reflection.llm_model,
             "reflection_generated_at": reflection.generated_at.isoformat(),
@@ -1121,25 +1118,27 @@ class KyroDBRouter:
         # Consensus metadata (if multi-perspective)
         if reflection.consensus:
             consensus = reflection.consensus
-            metadata.update({
-                "reflection_consensus_method": consensus.consensus_method,
-                "reflection_consensus_confidence": f"{consensus.consensus_confidence:.4f}",
-                "reflection_disagreements": json.dumps(consensus.disagreement_points),
-
-                # Store number of perspectives
-                "reflection_perspectives_count": str(len(consensus.perspectives)),
-
-                # Store individual perspectives (for debugging/audit)
-                "reflection_perspectives_json": json.dumps([
-                    {
-                        "model": p.model_name,
-                        "root_cause": p.root_cause,
-                        "confidence": p.confidence_score,
-                        "reasoning": p.reasoning[:200],  # Truncate for storage
-                    }
-                    for p in consensus.perspectives
-                ]),
-            })
+            metadata.update(
+                {
+                    "reflection_consensus_method": consensus.consensus_method,
+                    "reflection_consensus_confidence": f"{consensus.consensus_confidence:.4f}",
+                    "reflection_disagreements": json.dumps(consensus.disagreement_points),
+                    # Store number of perspectives
+                    "reflection_perspectives_count": str(len(consensus.perspectives)),
+                    # Store individual perspectives (for debugging/audit)
+                    "reflection_perspectives_json": json.dumps(
+                        [
+                            {
+                                "model": p.model_name,
+                                "root_cause": p.root_cause,
+                                "confidence": p.confidence_score,
+                                "reasoning": p.reasoning[:200],  # Truncate for storage
+                            }
+                            for p in consensus.perspectives
+                        ]
+                    ),
+                }
+            )
 
         return metadata
 
@@ -1202,8 +1201,7 @@ class KyroDBRouter:
 
             if response.success:
                 logger.debug(
-                    f"Updated {len(metadata_updates)} metadata fields "
-                    f"for episode {episode_id}"
+                    f"Updated {len(metadata_updates)} metadata fields " f"for episode {episode_id}"
                 )
                 return True
             else:
@@ -1334,9 +1332,7 @@ class KyroDBRouter:
                     skill = Skill.from_metadata_dict(result.doc_id, dict(result.metadata))
                     skills.append((skill, result.score))
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to deserialize skill {result.doc_id}: {e}"
-                    )
+                    logger.warning(f"Failed to deserialize skill {result.doc_id}: {e}")
                     continue
 
             logger.debug(
@@ -1379,7 +1375,15 @@ class KyroDBRouter:
                             continue
                         # Stored vectors should already be normalized, but normalize defensively.
                         emb_vec = self._l2_normalize_embedding(emb, name="skill_embedding")
-                        score = sum(q * e for q, e in zip(query_vec, emb_vec))
+                        if len(query_vec) != len(emb_vec):
+                            msg = (
+                                "Skill embedding dimension mismatch during fallback search: "
+                                f"doc_id={item.doc_id}, query_dim={len(query_vec)}, "
+                                f"embedding_dim={len(emb_vec)}"
+                            )
+                            logger.error(msg)
+                            raise ValueError(msg)
+                        score = sum(q * e for q, e in zip(query_vec, emb_vec, strict=True))
                         if min_score > 0.0 and score < min_score:
                             continue
                         scored.append((int(item.doc_id), float(score), dict(item.metadata)))
@@ -1409,10 +1413,7 @@ class KyroDBRouter:
                 return []
 
         except Exception as e:
-            logger.error(
-                f"Skills search failed for customer {customer_id}: {e}",
-                exc_info=True
-            )
+            logger.error(f"Skills search failed for customer {customer_id}: {e}", exc_info=True)
             return []
 
     async def update_skill_stats(
@@ -1453,9 +1454,7 @@ class KyroDBRouter:
             )
 
             if not existing.found:
-                logger.error(
-                    f"Skill {skill_id} not found in {namespaced_collection}"
-                )
+                logger.error(f"Skill {skill_id} not found in {namespaced_collection}")
                 return None
 
             # Security: Verify customer ID
@@ -1496,10 +1495,7 @@ class KyroDBRouter:
                 return None
 
         except Exception as e:
-            logger.error(
-                f"Failed to update skill {skill_id} stats: {e}",
-                exc_info=True
-            )
+            logger.error(f"Failed to update skill {skill_id} stats: {e}", exc_info=True)
             return None
 
     async def health_check(self) -> dict[str, bool]:

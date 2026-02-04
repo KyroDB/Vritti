@@ -9,10 +9,9 @@ We intentionally keep this lightweight and dependency-free:
 """
 
 import logging
-from collections.abc import Callable
 
 from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ class ErrorTrackingMiddleware(BaseHTTPMiddleware):
     - <10μs overhead per request (only on error path)
     """
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """
         Track errors with classification.
 

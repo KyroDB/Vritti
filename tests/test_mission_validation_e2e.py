@@ -82,8 +82,10 @@ class TestMissionValidationE2E:
         # Mock search to return similar episodes
         router.text_client = MagicMock()
         router.text_client.search = MagicMock()
+
         async def mock_search_text(*args, **kwargs):
             return router.text_client.search.return_value
+
         router.search_text = AsyncMock(side_effect=mock_search_text)
         router.search_image = AsyncMock(return_value=MagicMock(results=[]))
 
@@ -96,8 +98,10 @@ class TestMissionValidationE2E:
 
         def mock_embed_text(text: str) -> list[float]:
             import hashlib
+
             hash_val = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
             import random
+
             random.seed(hash_val)
             return [random.random() for _ in range(384)]
 
@@ -207,8 +211,7 @@ class TestMissionValidationE2E:
         search_result.metadata = {"episode_json": "{}"}  # Simplified
 
         mock_kyrodb_router.text_client.search.return_value = MagicMock(
-            results=[search_result],
-            num_results=1
+            results=[search_result], num_results=1
         )
 
         # Step 2: Agent tries similar action → Vritti should BLOCK/HINT
@@ -472,7 +475,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     # ========================================================================
@@ -688,7 +695,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     # ========================================================================
@@ -760,7 +771,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     # ========================================================================
@@ -900,7 +915,11 @@ class TestMissionValidationE2E:
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         # MISSION VALIDATION
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     # ========================================================================
@@ -967,7 +986,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
@@ -1030,7 +1053,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
@@ -1092,7 +1119,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
@@ -1154,7 +1185,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
@@ -1216,7 +1251,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
@@ -1278,7 +1317,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
@@ -1340,7 +1383,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
@@ -1402,13 +1449,15 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     @pytest.mark.asyncio
-    async def test_scenario_deadlock(
-        self, ingestion_pipeline, gating_service, mock_kyrodb_router
-    ):
+    async def test_scenario_deadlock(self, ingestion_pipeline, gating_service, mock_kyrodb_router):
         """Scenario 19: Deadlock from incorrect lock ordering."""
         customer_id = "test-customer"
 
@@ -1526,7 +1575,11 @@ class TestMissionValidationE2E:
         )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
-        assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
+        assert response.recommendation in [
+            ActionRecommendation.BLOCK,
+            ActionRecommendation.REWRITE,
+            ActionRecommendation.HINT,
+        ]
         assert response.total_latency_ms < 100
 
     # ========================================================================

@@ -35,7 +35,7 @@ class PreconditionMatcher:
     Fast heuristic-based matching without LLM calls.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize precondition matcher."""
         pass
 
@@ -245,8 +245,6 @@ class PreconditionMatcher:
             return ver1 == ver2
 
 
-
-
 # Singleton instance
 _matcher: PreconditionMatcher | None = None
 
@@ -272,24 +270,24 @@ def get_precondition_matcher() -> PreconditionMatcher:
 class AdvancedPreconditionMatcher:
     """
     Enhanced precondition matching with LLM semantic validation via OpenRouter.
-    
+
     Two-stage approach:
     1. Fast heuristic matching (existing PreconditionMatcher)
     2. Slow LLM validation for high-similarity candidates (>0.85)
-    
+
     Security:
     - Customer ID validation
     - Input sanitization for LLM prompts
     - Query truncation to prevent abuse
     - Timeout protection (2s hard limit)
-    
+
     Performance:
     - Only validates high-similarity matches (>0.85)
     - 5-minute LRU cache for validation results
     - Graceful fallback on errors
     - Batch validation support
     """
-    
+
     # Configuration
     SIMILARITY_THRESHOLD_FOR_LLM = 0.85  # Only validate if similarity >= this
     LLM_CONFIDENCE_THRESHOLD = 0.7  # Require LLM confidence >= 0.7 to accept
@@ -298,15 +296,20 @@ class AdvancedPreconditionMatcher:
     VALIDATION_TIMEOUT_MS = 2000  # 2 seconds default
     CACHE_SIZE = 500  # LRU cache size
     MAX_QUERY_LENGTH = 500  # Security: prevent abuse
-    
+
     # OpenRouter configuration
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
     DEFAULT_MODEL = "x-ai/grok-4.1-fast:free"  # Fast free model for validation
-    
-    def __init__(self, openrouter_api_key: str | None = None, enable_llm: bool = True, model: str | None = None):
+
+    def __init__(
+        self,
+        openrouter_api_key: str | None = None,
+        enable_llm: bool = True,
+        model: str | None = None,
+    ):
         """
         Initialize advanced precondition matcher with OpenRouter.
-        
+
         Args:
             openrouter_api_key: OpenRouter API key for LLM access
             enable_llm: Feature flag to enable/disable LLM validation
@@ -316,7 +319,7 @@ class AdvancedPreconditionMatcher:
         self.openrouter_api_key = openrouter_api_key or ""
         self.model = model or self.DEFAULT_MODEL
         self.enable_llm = enable_llm and bool(self.openrouter_api_key)
-        
+
         # Statistics
         self.stats = {
             "llm_calls": 0,
@@ -326,7 +329,7 @@ class AdvancedPreconditionMatcher:
             "errors": 0,
             "total_cost_usd": 0.0,
         }
-        
+
         # Initialize OpenRouter client if available
         if self.enable_llm:
             logger.info(f"LLM precondition validation enabled (OpenRouter: {self.model})")
@@ -335,65 +338,65 @@ class AdvancedPreconditionMatcher:
                 logger.warning("LLM validation disabled: no OpenRouter API key provided")
             else:
                 logger.warning(f"LLM validation disabled: enable_llm={enable_llm}")
-    
+
     async def check_preconditions_with_llm(
         self,
         candidate_episode: Episode,
         current_query: str,
         current_state: dict[str, Any],
         threshold: float = 0.7,
-        similarity_score: float | None = None
+        similarity_score: float | None = None,
     ) -> PreconditionCheckResult:
         """
         Check preconditions with LLM semantic validation.
-        
+
         This catches negation, time-based differences, and other
         subtle semantic mismatches that embeddings miss.
-        
+
         Args:
             candidate_episode: Episode to check
             current_query: Current user query/goal
             current_state: Current execution context
             threshold: Minimum match score
             similarity_score: Vector similarity score (if known)
-            
+
         Returns:
             PreconditionCheckResult with LLM validation applied
         """
         # Step 1: Fast heuristic check
         heuristic_result = self.basic_matcher.check_preconditions(
-            episode=candidate_episode,
-            current_state=current_state,
-            threshold=threshold
+            episode=candidate_episode, current_state=current_state, threshold=threshold
         )
-        
+
         # Step 2: If heuristic matched AND similarity is high, validate with LLM
-        if (heuristic_result.matched and 
-            self.enable_llm and 
-            similarity_score and 
-            similarity_score >= self.SIMILARITY_THRESHOLD_FOR_LLM):
-            
+        if (
+            heuristic_result.matched
+            and self.enable_llm
+            and similarity_score
+            and similarity_score >= self.SIMILARITY_THRESHOLD_FOR_LLM
+        ):
+
             # Extract episode goal
             past_goal = candidate_episode.create_data.goal
             past_actions = candidate_episode.create_data.actions_taken[:3]  # First 3
-            
+
             # LLM validation
             is_compatible = await self._llm_validate_compatibility(
                 past_goal=past_goal,
                 current_query=current_query,
                 past_actions=past_actions,
-                current_state=current_state
+                current_state=current_state,
             )
-            
+
             if not is_compatible:
                 # LLM rejected - override heuristic result
                 logger.info(
                     f"LLM rejected high-similarity candidate (sim={similarity_score:.2f}): "
                     f"past='{past_goal[:50]}' vs current='{current_query[:50]}'"
                 )
-                
+
                 self.stats["llm_rejections"] += 1
-                
+
                 return PreconditionCheckResult(
                     matched=False,
                     match_score=0.0,
@@ -403,93 +406,93 @@ class AdvancedPreconditionMatcher:
                         f"Semantically incompatible despite high vector similarity "
                         f"(sim={similarity_score:.2f}). LLM validation detected "
                         f"negation, opposite meaning, or context mismatch."
-                    )
+                    ),
                 )
-        
+
         return heuristic_result
-    
+
     async def _llm_validate_compatibility(
         self,
         past_goal: str,
         current_query: str,
         past_actions: list[str],
-        current_state: dict[str, Any]
+        current_state: dict[str, Any],
     ) -> bool:
         """
         Use OpenRouter LLM to verify semantic compatibility.
-        
+
         Returns:
             True if compatible, False if incompatible
         """
         # Security: Truncate inputs
         past_goal = self._sanitize_input(past_goal)
         current_query = self._sanitize_input(current_query)
-        
+
         # Check cache first
         cache_key = self._get_cache_key(past_goal, current_query)
         cached_result = self._get_from_cache(cache_key)
-        
+
         if cached_result is not None:
             self.stats["cache_hits"] += 1
             return cached_result
-        
+
         if not self.enable_llm:
             # Fallback: accept if no LLM available
             return True
-        
+
         # Build prompt
         prompt = self._build_validation_prompt(
             past_goal, current_query, past_actions, current_state
         )
-        
+
         try:
             # Call LLM with timeout
             start_time = time.perf_counter()
-            
+
             result = await asyncio.wait_for(
                 self._call_openrouter(prompt),
-                timeout=self.VALIDATION_TIMEOUT_MS / 1000  # Convert to seconds
+                timeout=self.VALIDATION_TIMEOUT_MS / 1000,  # Convert to seconds
             )
-            
+
             latency_ms = (time.perf_counter() - start_time) * 1000
-            
+
             # Parse result
             compatible, confidence, reason = result
-            
+
             # Track stats
             self.stats["llm_calls"] += 1
             # Free tier: $0.0 per call
             self.stats["total_cost_usd"] += 0.0
-            
+
             # Only accept if high confidence
             is_compatible = compatible and confidence >= self.LLM_CONFIDENCE_THRESHOLD
-            
+
             # Cache result
             self._add_to_cache(cache_key, is_compatible)
-            
+
             logger.debug(
                 f"LLM validation: compatible={is_compatible} "
                 f"(confidence={confidence:.2f}, latency={latency_ms:.1f}ms, reason={reason})"
             )
-            
+
             return is_compatible
-            
+
         except asyncio.TimeoutError:
             self.stats["timeouts"] += 1
             logger.warning(f"LLM validation timeout after {self.VALIDATION_TIMEOUT_MS}ms")
             # Fallback: accept on timeout
             return True
-            
+
         except Exception as e:
             self.stats["errors"] += 1
             logger.warning(f"LLM validation error: {e}")
             # Fallback: accept on errors
             return True
-    
+
     async def _call_openrouter(self, prompt: str) -> tuple[bool, float, str]:
         """
         Call OpenRouter API for LLM validation.
-        
+
         Returns:
             (compatible, confidence, reason)
         """
@@ -499,14 +502,14 @@ class AdvancedPreconditionMatcher:
             "HTTP-Referer": "https://github.com/episodic-memory",
             "X-Title": "EpisodicMemory Precondition Validation",
         }
-        
+
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,  # Low temperature for consistency
             "max_tokens": 200,
         }
-        
+
         async with httpx.AsyncClient(timeout=self.VALIDATION_TIMEOUT_MS / 1000) as client:
             response = await client.post(
                 f"{self.OPENROUTER_BASE_URL}/chat/completions",
@@ -515,42 +518,42 @@ class AdvancedPreconditionMatcher:
             )
             response.raise_for_status()
             data = response.json()
-        
+
         content = data["choices"][0]["message"]["content"]
-        
+
         # Parse JSON
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
         elif "```" in content:
             content = content.split("```")[1].split("```")[0]
-        
+
         try:
             result = json.loads(content.strip())
-            
+
             compatible = result.get("compatible", True)
             confidence = result.get("confidence", 0.5)
             reason = result.get("reason", "Unknown")
-            
+
             return (compatible, confidence, reason)
-            
+
         except json.JSONDecodeError:
             logger.warning(f"Failed to parse LLM response: {content[:100]}")
             # Fallback: accept with low confidence
             return (True, 0.5, "Parse error")
-    
+
     def _build_validation_prompt(
         self,
         past_goal: str,
         current_query: str,
         past_actions: list[str],
-        current_state: dict[str, Any]
+        current_state: dict[str, Any],
     ) -> str:
         """Build prompt for LLM validation."""
-        
+
         # Extract environment if present
         environment = current_state.get("environment", {})
         env_str = json.dumps(environment, indent=2)[:200] if environment else "N/A"
-        
+
         return f"""Are these two goals semantically COMPATIBLE (not just similar)?
 
 Past failure goal: "{past_goal}"
@@ -578,37 +581,37 @@ IMPORTANT RULES:
 Be strict: only return compatible=true if the current query would benefit from the past failure's lesson.
 If the goals have opposite meanings or would require different solutions, return compatible=false.
 """
-    
+
     def _sanitize_input(self, text: str) -> str:
         """Sanitize input for LLM prompt."""
         if not text:
             return ""
-        
+
         # Truncate to max length
         if len(text) > self.MAX_QUERY_LENGTH:
-            text = text[:self.MAX_QUERY_LENGTH] + "..."
-        
+            text = text[: self.MAX_QUERY_LENGTH] + "..."
+
         # Basic sanitization (prevent prompt injection)
         text = text.replace("```", "").replace("</", "").replace("<", "")
-        
+
         # Remove code blocks if they look like injection
         if "import " in text or "system(" in text:
-             # Simple heuristic: if it looks like code, strip it
-             text = re.sub(r"import\s+\w+", "", text)
-             text = re.sub(r"system\(.*\)", "", text)
+            # Simple heuristic: if it looks like code, strip it
+            text = re.sub(r"import\s+\w+", "", text)
+            text = re.sub(r"system\(.*\)", "", text)
 
         return text.strip()
-    
+
     def _get_cache_key(self, past_goal: str, current_query: str) -> str:
         """Generate cache key from goals."""
         # Simple hash-based key
         combined = f"{past_goal[:100]}|{current_query[:100]}"
         return hashlib.md5(combined.encode()).hexdigest()
-    
+
     # Simple cache implementation (in-memory)
     _cache: dict[str, tuple[bool, float]] = {}  # key -> (result, timestamp)
     _cache_ttl = 300  # 5 minutes
-    
+
     def _get_from_cache(self, key: str) -> bool | None:
         """Get from cache if not expired."""
         if key in self._cache:
@@ -619,7 +622,7 @@ If the goals have opposite meanings or would require different solutions, return
                 # Expired
                 del self._cache[key]
         return None
-    
+
     def _add_to_cache(self, key: str, result: bool) -> None:
         """Add to cache with timestamp."""
         # Evict oldest if cache too large
@@ -627,27 +630,28 @@ If the goals have opposite meanings or would require different solutions, return
             # Remove oldest entry
             oldest_key = min(self._cache.items(), key=lambda x: x[1][1])[0]
             del self._cache[oldest_key]
-        
+
         self._cache[key] = (result, time.time())
-    
+
     @classmethod
     def clear_cache(cls) -> None:
         """
         Clear the validation cache.
-        
+
         Useful for testing to ensure cache isolation between tests.
         Thread-safe: clears entire cache atomically.
         """
         cls._cache.clear()
-    
+
     def get_stats(self) -> dict:
         """Get validation statistics."""
         return {
             **self.stats,
             "cache_size": len(self._cache),
             "cache_hit_rate": (
-                self.stats["cache_hits"] / max(1, self.stats["llm_calls"] + self.stats["cache_hits"])
-            )
+                self.stats["cache_hits"]
+                / max(1, self.stats["llm_calls"] + self.stats["cache_hits"])
+            ),
         }
 
 
@@ -656,39 +660,34 @@ _advanced_matcher: AdvancedPreconditionMatcher | None = None
 
 
 def get_advanced_precondition_matcher(
-    openrouter_api_key: str | None = None,
-    enable_llm: bool = True
+    openrouter_api_key: str | None = None, enable_llm: bool = True
 ) -> AdvancedPreconditionMatcher:
     """
     Get global advanced precondition matcher instance.
-    
+
     Args:
         openrouter_api_key: OpenRouter API key (optional, uses config if not provided)
         enable_llm: Feature flag to enable/disable LLM validation
-        
+
     Returns:
         AdvancedPreconditionMatcher: Singleton instance
     """
     global _advanced_matcher
-    
+
     if _advanced_matcher is None:
         # Get API key from config if not provided
         if openrouter_api_key is None:
             try:
                 from src.config import get_settings
+
                 settings = get_settings()
                 openrouter_api_key = settings.llm.openrouter_api_key
-                enable_llm = getattr(
-                    settings.search, 
-                    'enable_llm_validation', 
-                    enable_llm
-                )
+                enable_llm = getattr(settings.search, "enable_llm_validation", enable_llm)
             except Exception as e:
                 logger.warning(f"Could not load config for LLM validation: {e}")
-        
+
         _advanced_matcher = AdvancedPreconditionMatcher(
-            openrouter_api_key=openrouter_api_key,
-            enable_llm=enable_llm
+            openrouter_api_key=openrouter_api_key, enable_llm=enable_llm
         )
-    
+
     return _advanced_matcher

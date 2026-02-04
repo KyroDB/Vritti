@@ -9,7 +9,6 @@ Tests:
 - Operation context timing
 """
 
-
 import pytest
 
 from src.observability.logging import (

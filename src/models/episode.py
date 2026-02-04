@@ -11,9 +11,36 @@ Design Decision: This system stores ONLY failures in episodic memory.
 
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+
+def _normalize_preconditions_input(value: Any) -> list[str]:
+    """
+    Normalize preconditions payload into canonical `key=value` string list.
+
+    Accepted inputs:
+    - dict[str, str]: converted to `["key=value", ...]`
+    - list[str]: passed through (trimmed later by validators)
+    - None: converted to []
+    """
+    if value is None:
+        return []
+
+    if isinstance(value, dict):
+        normalized: list[str] = []
+        for raw_key, raw_val in value.items():
+            key = str(raw_key).strip()
+            val = str(raw_val).strip()
+            if key and val:
+                normalized.append(f"{key}={val}")
+        return normalized
+
+    if isinstance(value, list):
+        return cast(list[str], value)
+
+    raise TypeError("preconditions must be a list[str], dict[str, str], or null")
 
 
 class EpisodeType(str, Enum):
@@ -43,7 +70,7 @@ class ErrorClass(str, Enum):
 
 class ReflectionTier(str, Enum):
     """Reflection generation tier for cost/quality tradeoffs."""
-    
+
     CHEAP = "cheap"
     CACHED = "cached"
     PREMIUM = "premium"
@@ -59,67 +86,45 @@ class LLMPerspective(BaseModel):
 
     model_config = ConfigDict(protected_namespaces=())
 
-    model_name: str = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="LLM model identifier"
-    )
+    model_name: str = Field(..., min_length=1, max_length=100, description="LLM model identifier")
 
     # Core analysis
     root_cause: str = Field(
         ...,
         min_length=1,
         max_length=2000,
-        description="Fundamental reason for failure (not symptoms)"
+        description="Fundamental reason for failure (not symptoms)",
     )
 
     preconditions: list[str] = Field(
         default_factory=list,
         max_length=20,
-        description="Specific conditions required for relevance"
+        description="Specific conditions required for relevance",
     )
 
     resolution_strategy: str = Field(
-        ...,
-        min_length=1,
-        max_length=3000,
-        description="Step-by-step resolution approach"
+        ..., min_length=1, max_length=3000, description="Step-by-step resolution approach"
     )
 
     # Contextual analysis
     environment_factors: list[str] = Field(
-        default_factory=list,
-        max_length=15,
-        description="OS, versions, tools that matter"
+        default_factory=list, max_length=15, description="OS, versions, tools that matter"
     )
 
     affected_components: list[str] = Field(
-        default_factory=list,
-        max_length=15,
-        description="System components involved"
+        default_factory=list, max_length=15, description="System components involved"
     )
 
     # Scores (strictly bounded)
     generalization_score: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="0=very specific context, 1=universal pattern"
+        ..., ge=0.0, le=1.0, description="0=very specific context, 1=universal pattern"
     )
 
-    confidence_score: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Confidence in this analysis"
-    )
+    confidence_score: float = Field(..., ge=0.0, le=1.0, description="Confidence in this analysis")
 
     # Reasoning (for debugging/audit)
     reasoning: str = Field(
-        default="",
-        max_length=1000,
-        description="Why this model reached this conclusion"
+        default="", max_length=1000, description="Why this model reached this conclusion"
     )
 
     @field_validator("preconditions", "environment_factors", "affected_components")
@@ -129,6 +134,12 @@ class LLMPerspective(BaseModel):
         if any(not item.strip() for item in v):
             raise ValueError("List items cannot be empty or whitespace")
         return [item.strip() for item in v]
+
+    @field_validator("preconditions", mode="before")
+    @classmethod
+    def normalize_preconditions(cls, v: Any) -> Any:
+        """Accept dict preconditions and normalize to canonical list form."""
+        return _normalize_preconditions_input(v)
 
     @field_validator("preconditions", "environment_factors", "affected_components")
     @classmethod
@@ -161,55 +172,34 @@ class ReflectionConsensus(BaseModel):
     """
 
     perspectives: list[LLMPerspective] = Field(
-        ...,
-        min_length=1,
-        max_length=5,
-        description="All LLM model outputs"
+        ..., min_length=1, max_length=5, description="All LLM model outputs"
     )
 
-    consensus_method: str = Field(
-        ...,
-        description="How consensus was reached"
-    )
+    consensus_method: str = Field(..., description="How consensus was reached")
 
     # Consensus outputs
     agreed_root_cause: str = Field(
-        ...,
-        min_length=1,
-        max_length=2000,
-        description="Consensus root cause"
+        ..., min_length=1, max_length=2000, description="Consensus root cause"
     )
 
     agreed_preconditions: list[str] = Field(
-        default_factory=list,
-        max_length=20,
-        description="Union of all preconditions"
+        default_factory=list, max_length=20, description="Union of all preconditions"
     )
 
     agreed_resolution: str = Field(
-        ...,
-        min_length=1,
-        max_length=3000,
-        description="Best resolution strategy"
+        ..., min_length=1, max_length=3000, description="Best resolution strategy"
     )
 
     # Consensus quality
     consensus_confidence: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="How much agreement across models"
+        ..., ge=0.0, le=1.0, description="How much agreement across models"
     )
 
     disagreement_points: list[str] = Field(
-        default_factory=list,
-        max_length=10,
-        description="Where models differed"
+        default_factory=list, max_length=10, description="Where models differed"
     )
 
-    generated_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("consensus_method")
     @classmethod
@@ -221,7 +211,7 @@ class ReflectionConsensus(BaseModel):
             "majority_vote",
             "weighted_average",
             "fallback_heuristic",
-            # Semantic similarity methods 
+            # Semantic similarity methods
             "single_model",
             "semantic_unanimous",
             "weighted_semantic_vote",
@@ -258,42 +248,33 @@ class Reflection(BaseModel):
 
     # Multi-perspective consensus (if available)
     consensus: ReflectionConsensus | None = Field(
-        default=None,
-        description="Multi-LLM consensus (premium reflections only)"
+        default=None, description="Multi-LLM consensus (premium reflections only)"
     )
 
     # Core analysis (either from consensus or single LLM)
     root_cause: str = Field(
-        ...,
-        min_length=1,
-        max_length=2000,
-        description="Identified root cause of the issue"
+        ..., min_length=1, max_length=2000, description="Identified root cause of the issue"
     )
 
     preconditions: list[str] = Field(
         default_factory=list,
         max_length=20,
-        description="Required state/context for this episode to be relevant"
+        description="Required state/context for this episode to be relevant",
     )
 
     resolution_strategy: str = Field(
-        ...,
-        min_length=1,
-        max_length=3000,
-        description="How the issue was resolved"
+        ..., min_length=1, max_length=3000, description="How the issue was resolved"
     )
 
     # Contextual analysis
     environment_factors: list[str] = Field(
         default_factory=list,
         max_length=15,
-        description="Environment-specific factors (OS, versions, etc.)"
+        description="Environment-specific factors (OS, versions, etc.)",
     )
 
     affected_components: list[str] = Field(
-        default_factory=list,
-        max_length=15,
-        description="System components involved"
+        default_factory=list, max_length=15, description="System components involved"
     )
 
     # Reusability metadata
@@ -312,34 +293,22 @@ class Reflection(BaseModel):
     )
 
     # Generation metadata
-    generated_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    llm_model: str = Field(
-        default="unknown",
-        max_length=100,
-        description="LLM model(s) used"
-    )
+    llm_model: str = Field(default="unknown", max_length=100, description="LLM model(s) used")
 
     # Cost tracking (security: detect abuse)
     cost_usd: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=10.0,
-        description="Actual LLM API cost for this reflection"
+        default=0.0, ge=0.0, le=10.0, description="Actual LLM API cost for this reflection"
     )
 
     generation_latency_ms: float = Field(
-        default=0.0,
-        ge=0.0,
-        description="Time taken to generate reflection"
+        default=0.0, ge=0.0, description="Time taken to generate reflection"
     )
-    
+
     # Tier tracking (Phase 5)
     tier: ReflectionTier | None = Field(
-        default=None,
-        description="Reflection tier used (cheap/cached/premium)"
+        default=None, description="Reflection tier used (cheap/cached/premium)"
     )
 
     @field_validator("preconditions", "environment_factors", "affected_components")
@@ -354,18 +323,25 @@ class Reflection(BaseModel):
                 raise ValueError("List items cannot exceed 500 characters")
         return v
 
+    @field_validator("preconditions", mode="before")
+    @classmethod
+    def normalize_preconditions(cls, v: Any) -> Any:
+        """Accept dict preconditions and normalize to canonical list form."""
+        return _normalize_preconditions_input(v)
+
     @field_validator("root_cause", "resolution_strategy")
     @classmethod
     def sanitize_text(cls, v: str) -> str:
         """
         Security: Sanitize text fields while preserving structure.
-        
+
         Preserves newlines for code blocks and procedures while:
         - Removing null bytes (security)
         - Normalizing horizontal whitespace (spaces/tabs)
         - Limiting consecutive blank lines to 2
         """
         import re
+
         # Remove null bytes
         v = v.replace("\x00", "")
         # Normalize horizontal whitespace (tabs -> spaces, multiple spaces -> single)
@@ -384,6 +360,7 @@ class Reflection(BaseModel):
             # Single reflection should never cost more than $1
             # (even premium multi-perspective is ~$0.10)
             import logging
+
             logging.warning(f"Unusually high reflection cost: ${v:.2f}")
         return v
 
@@ -458,27 +435,19 @@ class UsageStats(BaseModel):
     """
 
     total_retrievals: int = Field(
-        default=0,
-        ge=0,
-        description="Total times this episode was retrieved"
+        default=0, ge=0, description="Total times this episode was retrieved"
     )
 
     fix_applied_count: int = Field(
-        default=0,
-        ge=0,
-        description="Times the suggested fix was actually applied"
+        default=0, ge=0, description="Times the suggested fix was actually applied"
     )
 
     fix_success_count: int = Field(
-        default=0,
-        ge=0,
-        description="Times the fix successfully resolved the issue"
+        default=0, ge=0, description="Times the fix successfully resolved the issue"
     )
 
     fix_failure_count: int = Field(
-        default=0,
-        ge=0,
-        description="Times the fix failed to resolve the issue"
+        default=0, ge=0, description="Times the fix failed to resolve the issue"
     )
 
     @property
@@ -498,7 +467,7 @@ class UsageStats(BaseModel):
 
     @field_validator("fix_success_count", "fix_failure_count")
     @classmethod
-    def validate_success_failure_count(cls, v: int, info) -> int:
+    def validate_success_failure_count(cls, v: int, info: ValidationInfo) -> int:
         """Ensure success/failure counts don't exceed applied count."""
         if info.data.get("fix_applied_count", 0) < v:
             raise ValueError(
@@ -520,9 +489,7 @@ class Episode(BaseModel):
 
     # Generated fields
     episode_id: int = Field(..., description="Unique episode ID (KyroDB doc_id)")
-    reflection: Reflection | None = Field(
-        default=None, description="LLM-generated reflection"
-    )
+    reflection: Reflection | None = Field(default=None, description="LLM-generated reflection")
 
     # Storage metadata
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -531,8 +498,7 @@ class Episode(BaseModel):
 
     # Usage tracking (Phase 2: Skills promotion)
     usage_stats: UsageStats = Field(
-        default_factory=UsageStats,
-        description="Track fix application success rate"
+        default_factory=UsageStats, description="Track fix application success rate"
     )
 
     # Embeddings metadata (stored separately in KyroDB)
@@ -572,7 +538,9 @@ class Episode(BaseModel):
             # Episode fields
             "episode_type": self.create_data.episode_type.value,
             "error_class": self.create_data.error_class.value,
-            "tool": self.create_data.tool_chain[0].strip().lower(),  # Primary tool (normalized for exact-match filtering)
+            "tool": self.create_data.tool_chain[0]
+            .strip()
+            .lower(),  # Primary tool (normalized for exact-match filtering)
             "severity": str(self.create_data.severity),
             "timestamp": str(int(self.created_at.timestamp())),
             "retrieval_count": str(self.retrieval_count),

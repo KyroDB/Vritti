@@ -10,16 +10,18 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import threading
 import time
-import os
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
-from PIL import Image
 from cachetools import TTLCache
+from PIL import Image
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -29,10 +31,17 @@ from src.config import EmbeddingConfig
 
 os.environ.setdefault("PYTORCH_NO_SHARED_MEMORY", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 logger = logging.getLogger(__name__)
 _TORCH_SHARING_CONFIGURED = False
 _TORCH_SHARING_LOCK = threading.Lock()
+
+
+def _is_truthy_env(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _configure_torch_sharing() -> None:
@@ -49,12 +58,11 @@ def _configure_torch_sharing() -> None:
             return
         try:
             import multiprocessing as py_mp
+
             import torch.multiprocessing as torch_mp
 
-            try:
+            with contextlib.suppress(RuntimeError):
                 py_mp.set_start_method("spawn", force=False)
-            except RuntimeError:
-                pass
 
             torch_mp.set_sharing_strategy("file_system")
             logger.info("Torch multiprocessing sharing strategy set to file_system")
@@ -77,9 +85,8 @@ class _AsyncTextEmbeddingBatcher:
         self._embed_batch_fn = embed_batch_fn
         self._max_batch_size = max(1, int(max_batch_size))
         self._max_wait_s = max(0.0, float(max_wait_ms) / 1000.0)
-        self._queue: asyncio.Queue[
-            tuple[str, asyncio.Future[list[float]]] | None
-        ] = asyncio.Queue()
+        self._idle_shutdown_s = 2.0
+        self._queue: asyncio.Queue[tuple[str, asyncio.Future[list[float]]] | None] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._start_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
@@ -107,7 +114,12 @@ class _AsyncTextEmbeddingBatcher:
 
     async def _run(self) -> None:
         while True:
-            item = await self._queue.get()
+            try:
+                item = await asyncio.wait_for(self._queue.get(), timeout=self._idle_shutdown_s)
+            except asyncio.TimeoutError:
+                if self._queue.empty() and not self._stop_event.is_set():
+                    break
+                continue
             if item is None:
                 break
             if self._stop_event.is_set():
@@ -118,6 +130,7 @@ class _AsyncTextEmbeddingBatcher:
             text, future = item
             batch = [(text, future)]
             start = time.monotonic()
+            shutdown_requested = False
 
             while len(batch) < self._max_batch_size:
                 timeout = self._max_wait_s - (time.monotonic() - start)
@@ -128,6 +141,7 @@ class _AsyncTextEmbeddingBatcher:
                 except asyncio.TimeoutError:
                     break
                 if next_item is None:
+                    shutdown_requested = True
                     break
                 batch.append(next_item)
 
@@ -136,18 +150,22 @@ class _AsyncTextEmbeddingBatcher:
                 embeddings = await asyncio.to_thread(self._embed_batch_fn, texts)
                 if len(embeddings) != len(batch):
                     raise ValueError(
-                        "Text embedding batch size mismatch: "
-                        f"{len(embeddings)} != {len(batch)}"
+                        "Text embedding batch size mismatch: " f"{len(embeddings)} != {len(batch)}"
                     )
             except Exception as exc:
                 for _, fut in batch:
                     if not fut.cancelled():
                         fut.set_exception(exc)
+                if shutdown_requested:
+                    break
                 continue
 
-            for embedding, (_, fut) in zip(embeddings, batch):
+            for embedding, (_, fut) in zip(embeddings, batch, strict=False):
                 if not fut.cancelled():
                     fut.set_result(embedding)
+
+            if shutdown_requested or self._stop_event.is_set():
+                break
 
         # Drain remaining queued items and cancel their futures.
         while not self._queue.empty():
@@ -176,6 +194,7 @@ class EmbeddingService:
         """
         _configure_torch_sharing()
         self.config = config
+        self._apply_hf_runtime_policy()
         self._text_model: SentenceTransformer | None = None
         self._clip_model: CLIPModel | None = None
         self._clip_processor: CLIPProcessor | None = None
@@ -194,6 +213,98 @@ class EmbeddingService:
             )
 
         logger.info(f"EmbeddingService initialized (device: {self._device})")
+
+    def _apply_hf_runtime_policy(self) -> None:
+        """
+        Apply Hugging Face runtime policy.
+
+        Offline mode is opt-in via `EMBEDDING_OFFLINE_MODE=true`. We do NOT force
+        offline mode by default because first-time model bootstrap requires network.
+        """
+        if self.config.offline_mode:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            logger.warning(
+                "Embedding offline mode enabled (EMBEDDING_OFFLINE_MODE=true). "
+                "Model downloads are disabled."
+            )
+
+    def _is_hf_offline_mode_active(self) -> bool:
+        return (
+            self.config.offline_mode
+            or _is_truthy_env(os.getenv("HF_HUB_OFFLINE"))
+            or _is_truthy_env(os.getenv("TRANSFORMERS_OFFLINE"))
+        )
+
+    @staticmethod
+    def _resolve_repo_candidates(model_name: str, namespace_hint: str) -> list[str]:
+        candidates: list[str] = [model_name]
+        if "/" not in model_name:
+            candidates.append(f"{namespace_hint}/{model_name}")
+        return candidates
+
+    def _verify_model_cached_for_offline(
+        self,
+        *,
+        model_name: str,
+        namespace_hint: str,
+    ) -> None:
+        local_path = Path(model_name).expanduser()
+        if local_path.exists():
+            return
+
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError as e:
+            raise RuntimeError(
+                "Offline preflight requires `huggingface_hub` to verify local model cache."
+            ) from e
+
+        for repo_id in self._resolve_repo_candidates(model_name, namespace_hint):
+            try:
+                snapshot_download(repo_id=repo_id, local_files_only=True)
+                return
+            except Exception:
+                continue
+
+        raise RuntimeError(f"Model cache missing for '{model_name}'")
+
+    def validate_offline_model_preflight(self) -> None:
+        """
+        Fail fast in offline mode if required models are not preloaded.
+
+        This is intended for startup preflight in air-gapped/enterprise deployments.
+        """
+        if not self._is_hf_offline_mode_active():
+            return
+
+        missing: list[str] = []
+        try:
+            self._verify_model_cached_for_offline(
+                model_name=self.config.text_model_name,
+                namespace_hint="sentence-transformers",
+            )
+        except RuntimeError:
+            missing.append(f"text model: {self.config.text_model_name}")
+
+        try:
+            self._verify_model_cached_for_offline(
+                model_name=self.config.image_model_name,
+                namespace_hint="openai",
+            )
+        except RuntimeError:
+            missing.append(f"image model: {self.config.image_model_name}")
+
+        if missing:
+            missing_lines = "\n".join(f"- {item}" for item in missing)
+            raise RuntimeError(
+                "Embedding offline mode is enabled, but required models are not present in local cache.\n"
+                f"{missing_lines}\n"
+                "Preload before startup, for example:\n"
+                f"  python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('{self.config.text_model_name}')\"\n"
+                f"  python -c \"from transformers import CLIPModel, CLIPProcessor; CLIPModel.from_pretrained('{self.config.image_model_name}'); CLIPProcessor.from_pretrained('{self.config.image_model_name}')\"\n"
+                "Or disable offline mode with EMBEDDING_OFFLINE_MODE=false."
+            )
 
     def _get_cached_text_embedding(self, text: str) -> list[float] | None:
         if not self._text_cache:
@@ -219,8 +330,12 @@ class EmbeddingService:
         return self._text_batcher
 
     async def shutdown(self) -> None:
-        if self._text_batcher is not None:
-            await self._text_batcher.shutdown()
+        batcher = None
+        with self._text_batcher_lock:
+            batcher = self._text_batcher
+            self._text_batcher = None
+        if batcher is not None:
+            await batcher.shutdown()
 
     def _embed_text_direct(self, text: str) -> list[float]:
         # SentenceTransformer encode is not guaranteed to be thread-safe across concurrent calls.
@@ -239,7 +354,7 @@ class EmbeddingService:
                 )
 
         # Convert to list
-        return embedding.cpu().tolist()
+        return [float(x) for x in embedding.cpu().tolist()]
 
     def _get_device(self) -> str:
         """
@@ -409,7 +524,7 @@ class EmbeddingService:
                     "Text embedding batch size mismatch: "
                     f"{len(new_embeddings)} != {len(missing_indices)}"
                 )
-            for idx, embedding in zip(missing_indices, new_embeddings):
+            for idx, embedding in zip(missing_indices, new_embeddings, strict=False):
                 cached_embeddings[idx] = embedding
                 self._set_cached_text_embedding(texts[idx], embedding)
         results: list[list[float]] = []
@@ -470,7 +585,7 @@ class EmbeddingService:
                 image_features = clip_model.get_image_features(**inputs)
                 image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
 
-            embedding = image_features[0].cpu().tolist()
+            embedding = [float(x) for x in image_features[0].cpu().tolist()]
 
         # Validate dimension
         if len(embedding) != self.config.image_dimension:
@@ -518,7 +633,7 @@ class EmbeddingService:
                 image_features = clip_model.get_image_features(**inputs)
                 image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
 
-            embedding = image_features[0].cpu().tolist()
+            embedding = [float(x) for x in image_features[0].cpu().tolist()]
 
         if len(embedding) != self.config.image_dimension:
             logger.error(
@@ -534,7 +649,8 @@ class EmbeddingService:
 
     async def embed_image_bytes_async(self, image_bytes: bytes) -> list[float]:
         """Async wrapper for image embeddings."""
-        return await asyncio.to_thread(self.embed_image_bytes, image_bytes)
+        embedding = await asyncio.to_thread(self.embed_image_bytes, image_bytes)
+        return embedding
 
     def embed_images_batch(self, image_paths: list[str | Path]) -> list[list[float]]:
         """
@@ -583,7 +699,7 @@ class EmbeddingService:
                     f"Expected: {self.config.image_dimension}, Got: {feature_dim}"
                 )
 
-            return image_features.cpu().tolist()
+            return [[float(v) for v in row] for row in image_features.cpu().tolist()]
 
     def warmup(self) -> None:
         """
@@ -595,7 +711,6 @@ class EmbeddingService:
 
         self.embed_text("warmup text")
         logger.info("Text model warmed up")
-
 
     def get_info(self) -> dict[str, Any]:
         """

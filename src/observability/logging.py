@@ -24,7 +24,9 @@ import logging
 import sys
 import time
 import uuid
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
+from types import TracebackType
+from typing import Any, cast
 
 import structlog
 from structlog.types import EventDict, Processor
@@ -196,7 +198,7 @@ def add_exception_info(
         exc_type, exc_value, exc_tb = exc_info
         event_dict["exception_type"] = exc_type.__name__ if exc_type else "Unknown"
         event_dict["exception_message"] = str(exc_value) if exc_value else ""
-            # Traceback is already formatted by structlog.processors.format_exc_info
+        # Traceback is already formatted by structlog.processors.format_exc_info
 
     return event_dict
 
@@ -315,7 +317,7 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
         logger = logger.bind(operation="ingestion", batch_size=100)
         logger.info("Processing batch")  # operation and batch_size included
     """
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
 
 
 # ============================================================================
@@ -346,7 +348,7 @@ class RequestContext:
         customer_id: str | None = None,
         trace_id: str | None = None,
         request_id: str | None = None,
-    ):
+    ) -> None:
         """
         Initialize request context.
 
@@ -360,11 +362,11 @@ class RequestContext:
         self.trace_id = trace_id or f"trace_{uuid.uuid4().hex[:16]}"
 
         # Tokens for context cleanup
-        self._request_id_token = None
-        self._customer_id_token = None
-        self._trace_id_token = None
+        self._request_id_token: Token[str | None] | None = None
+        self._customer_id_token: Token[str | None] | None = None
+        self._trace_id_token: Token[str | None] | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> "RequestContext":
         """Set context variables."""
         self._request_id_token = request_id_var.set(self.request_id)
         # Always set customer_id (even if None) so we can reliably reset it.
@@ -373,7 +375,12 @@ class RequestContext:
         self._trace_id_token = trace_id_var.set(self.trace_id)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Reset context variables."""
         if self._request_id_token is not None:
             request_id_var.reset(self._request_id_token)
@@ -399,7 +406,7 @@ class OperationContext:
         - <1μs overhead for context entry/exit
     """
 
-    def __init__(self, operation: str, **kwargs):
+    def __init__(self, operation: str, **kwargs: Any) -> None:
         """
         Initialize operation context.
 
@@ -410,16 +417,27 @@ class OperationContext:
         self.operation = operation
         self.context = kwargs
         self.logger = get_logger(f"operation.{operation}")
-        self.start_time = None
+        self.start_time: float | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> "OperationContext":
         """Log operation start and begin timing."""
         self.start_time = time.perf_counter()
         self.logger.debug(f"{self.operation} started", **self.context)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Log operation completion with latency."""
+        if self.start_time is None:
+            raise RuntimeError(
+                f"{self.__class__.__name__}.__exit__ called before "
+                f"{self.__class__.__name__}.__enter__"
+            )
+
         duration_ms = (time.perf_counter() - self.start_time) * 1000
 
         if exc_type is None:

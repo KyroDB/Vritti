@@ -152,16 +152,16 @@ class APIKey(BaseModel):
     """
     API key for customer authentication.
 
-    API keys are stored as SHA-256 digest (never plaintext).
+    API keys are stored as adaptive password hash (never plaintext).
     """
 
     key_id: str = Field(..., description="Unique key identifier (UUID)")
     customer_id: str = Field(..., description="Owner customer ID")
-    key_hash_sha256: str = Field(
+    key_hash: str = Field(
         ...,
-        min_length=64,
-        max_length=64,
-        description="SHA-256 digest of API key",
+        min_length=32,
+        max_length=512,
+        description="Adaptive hash of API key (scrypt encoded)",
     )
     key_prefix: str = Field(
         ..., min_length=8, max_length=8, description="First 8 chars for display"

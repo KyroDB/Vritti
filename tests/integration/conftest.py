@@ -79,9 +79,9 @@ async def customer_db():
 async def kyrodb_client():
     """
     Create a real KyroDB client connected to localhost:50051.
-    
+
     Uses try/finally to ensure proper resource cleanup even on test failure.
-    
+
     Usage:
         @pytest.mark.asyncio
         async def test_something(skip_if_no_kyrodb, kyrodb_client):
@@ -106,11 +106,11 @@ async def kyrodb_client():
 async def kyrodb_router():
     """
     Create a KyroDBRouter connected to localhost:50051.
-    
+
     Uses same port for both text and image (single-instance testing).
     Uses try/finally to ensure proper resource cleanup even on test failure.
     Skips test if KyroDB is not available.
-    
+
     Usage:
         @pytest.mark.asyncio
         async def test_episode_insert(kyrodb_router):
@@ -140,12 +140,13 @@ async def kyrodb_router():
 def test_customer_id() -> str:
     """
     Generate a test customer ID for namespace isolation.
-    
+
     Uses millisecond precision and includes random suffix to prevent collisions
     when tests run in rapid succession.
     """
     import random
     import time
+
     timestamp_ms = int(time.time() * 1000)
     random_suffix = random.randint(1000, 9999)
     return f"test-customer-{timestamp_ms}-{random_suffix}"
@@ -167,14 +168,16 @@ def embedding_384() -> list[float]:
 def embedding_factory():
     """
     Factory for generating test embeddings with slight variations.
-    
+
     Usage:
         def test_search(embedding_factory):
             embeddings = [embedding_factory(i) for i in range(5)]
             # embeddings[0] is most similar to embedding_factory(0)
     """
+
     def _make_embedding(index: int = 0, dim: int = 384) -> list[float]:
         return [0.1 + (index * 0.01)] * dim
+
     return _make_embedding
 
 
@@ -192,6 +195,7 @@ def doc_id_factory(customer_db):
     Usage:
         episode_id = await doc_id_factory()
     """
+
     async def _alloc() -> int:
         return await customer_db.allocate_doc_id()
 

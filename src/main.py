@@ -10,6 +10,7 @@ Designed for <50ms P99 latency.
 """
 
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from enum import Enum
@@ -88,7 +89,7 @@ def get_customer_id_for_rate_limit(request: Request) -> str:
     """
     if hasattr(request.state, "customer"):
         # Authenticated request - rate limit by customer_id
-        return request.state.customer.customer_id
+        return str(request.state.customer.customer_id)
     else:
         # Unauthenticated request - rate limit by IP
         return get_remote_address(request)
@@ -107,7 +108,7 @@ gating_service: GatingService | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     Application lifespan manager.
 
@@ -136,6 +137,10 @@ async def lifespan(app: FastAPI):
         embedding_service = EmbeddingService(config=settings.embedding)
         logger.info("[OK] Embedding service initialized")
 
+        # Fail fast in offline/air-gapped mode if required models are not preloaded.
+        embedding_service.validate_offline_model_preflight()
+        logger.info("[OK] Embedding model preflight validated")
+
         # Warm up embedding models (prevents cold start on first request)
         logger.info("Warming up embedding models...")
         embedding_service.warmup()
@@ -154,9 +159,13 @@ async def lifespan(app: FastAPI):
                 f"(providers: {settings.llm.enabled_providers})"
             )
         else:
+            msg = "No LLM API keys configured. " "Set LLM_OPENROUTER_API_KEY environment variable."
+            if settings.service.require_llm_reflection:
+                raise RuntimeError(
+                    f"{msg} SERVICE_REQUIRE_LLM_REFLECTION=true requires reflection service."
+                )
             logger.warning(
-                "No LLM API keys configured - reflection generation disabled\n"
-                "  Set LLM_OPENROUTER_API_KEY environment variable"
+                f"{msg} Reflection generation disabled (SERVICE_REQUIRE_LLM_REFLECTION=false)."
             )
             reflection_service = None
 
@@ -209,6 +218,60 @@ async def lifespan(app: FastAPI):
         logger.info("=== Shutdown complete ===")
 
 
+def _require_kyrodb_router() -> KyroDBRouter:
+    if kyrodb_router is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="KyroDB router not initialized",
+        )
+    return kyrodb_router
+
+
+def _require_embedding_service() -> EmbeddingService:
+    if embedding_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding service not initialized",
+        )
+    return embedding_service
+
+
+def _require_reflection_service() -> TieredReflectionService:
+    if reflection_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Reflection service not initialized",
+        )
+    return reflection_service
+
+
+def _require_ingestion_pipeline() -> IngestionPipeline:
+    if ingestion_pipeline is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingestion pipeline not initialized",
+        )
+    return ingestion_pipeline
+
+
+def _require_search_pipeline() -> SearchPipeline:
+    if search_pipeline is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search pipeline not initialized",
+        )
+    return search_pipeline
+
+
+def _require_gating_service() -> GatingService:
+    if gating_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gating service not initialized",
+        )
+    return gating_service
+
+
 # Create FastAPI app
 app = FastAPI(
     title="Episodic Memory API",
@@ -224,17 +287,17 @@ app.state.limiter = limiter
 
 
 # Custom rate limit exceeded handler with tier-aware logging
-async def custom_rate_limit_handler(request: Request, exc: RateLimitExceeded):
+async def custom_rate_limit_handler(request: Request, exc: Exception) -> Response:
     """Handle rate limit exceeded with tier-aware logging and metrics."""
     # Extract customer info for logging
     customer_id = "unknown"
     tier = None
-    
+
     if hasattr(request.state, "customer"):
         customer = request.state.customer
         customer_id = customer.customer_id
         tier = customer.subscription_tier
-        
+
         # Log and track metrics
         endpoint_type = _get_endpoint_type(request.url.path)
         log_rate_limit_exceeded(
@@ -243,12 +306,12 @@ async def custom_rate_limit_handler(request: Request, exc: RateLimitExceeded):
             endpoint_type=endpoint_type,
         )
     else:
-        logger.warning(
-            f"Rate limit exceeded for unauthenticated request: {request.url.path}"
-        )
-    
+        logger.warning(f"Rate limit exceeded for unauthenticated request: {request.url.path}")
+
     # Use default handler for response
-    return await _rate_limit_exceeded_handler(request, exc)
+    if not isinstance(exc, RateLimitExceeded):
+        raise exc
+    return _rate_limit_exceeded_handler(request, exc)
 
 
 def _get_endpoint_type(path: str) -> str:
@@ -329,7 +392,7 @@ app.include_router(customers_router)
 
 # Exception handler for KyroDB errors
 @app.exception_handler(KyroDBError)
-async def kyrodb_error_handler(request: Request, exc: KyroDBError):
+async def kyrodb_error_handler(request: Request, exc: KyroDBError) -> JSONResponse:
     """Handle KyroDB connection/operation errors."""
     logger.error(
         "KyroDB error occurred",
@@ -346,7 +409,7 @@ async def kyrodb_error_handler(request: Request, exc: KyroDBError):
 
 # Exception handler for validation errors
 @app.exception_handler(ValueError)
-async def validation_error_handler(request: Request, exc: ValueError):
+async def validation_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     """Handle validation errors."""
     logger.warning(f"Validation error on {request.url.path}: {exc}")
     return JSONResponse(
@@ -366,7 +429,7 @@ async def validation_error_handler(request: Request, exc: ValueError):
     summary="Liveness probe for Kubernetes",
     description="Minimal health check to verify service is alive. Always returns 200 unless service is dead.",
 )
-async def liveness_probe():
+async def liveness_probe() -> LivenessResponse:
     """
     Liveness probe for Kubernetes.
 
@@ -398,7 +461,7 @@ async def liveness_probe():
         503: {"description": "Service is not ready"},
     },
 )
-async def readiness_probe(response: Response):
+async def readiness_probe(response: Response) -> ReadinessResponse:
     """
     Readiness probe for Kubernetes.
 
@@ -451,7 +514,7 @@ async def readiness_probe(response: Response):
     summary="Comprehensive health check",
     description="Detailed health status of all components. Not for Kubernetes probes (too slow).",
 )
-async def comprehensive_health_check():
+async def comprehensive_health_check() -> HealthCheckResponse:
     """
     Comprehensive health check with all components.
 
@@ -507,7 +570,7 @@ class StatsResponse(BaseModel):
 
 
 @app.get("/stats", response_model=StatsResponse, tags=["System"])
-async def get_stats():
+async def get_stats() -> StatsResponse:
     """
     Get service statistics.
 
@@ -554,16 +617,13 @@ class SuccessValidationRequest(BaseModel):
     outcome: str = Field(
         ...,
         pattern="^(success|still_failed)$",
-        description="Whether fix worked: 'success' or 'still_failed'"
+        description="Whether fix worked: 'success' or 'still_failed'",
     )
     applied_suggestion: bool = Field(
-        ...,
-        description="Whether the agent actually applied the suggested fix"
+        ..., description="Whether the agent actually applied the suggested fix"
     )
     notes: str | None = Field(
-        default=None,
-        max_length=1000,
-        description="Optional notes about the fix application"
+        default=None, max_length=1000, description="Optional notes about the fix application"
     )
 
 
@@ -583,16 +643,17 @@ class SuccessValidationResponse(BaseModel):
     status_code=status.HTTP_201_CREATED,
     tags=["Ingestion"],
 )
-@limiter.limit(CAPTURE_RATE_LIMIT)  # Tier-based: FREE=10/min, STARTER=100/min, PRO=500/min, ENTERPRISE=2000/min
+@limiter.limit(
+    CAPTURE_RATE_LIMIT
+)  # Tier-based: FREE=10/min, STARTER=100/min, PRO=500/min, ENTERPRISE=2000/min
 async def capture_episode(
     request: Request,  # Required by slowapi
     episode_data: EpisodeCreate,
     customer: Customer = Depends(get_authenticated_customer),
     customer_id: str = Depends(get_customer_id_from_request),
     db: CustomerDatabase = Depends(get_customer_db),
-    generate_reflection: bool = True,
     tier: str | None = None,  # NEW: Optional tier override (cheap/cached/premium)
-):
+) -> CaptureResponse:
     """
     Capture and store an episode.
 
@@ -602,7 +663,7 @@ async def capture_episode(
     3. ID generation
     4. Multi-modal embedding
     5. KyroDB storage
-    6. Async reflection generation (optional)
+    6. Async reflection generation
     7. Usage tracking (credit deduction)
 
     Args:
@@ -610,7 +671,6 @@ async def capture_episode(
         customer: Authenticated customer (injected from API key)
         customer_id: Customer ID from validated API key (injected)
         db: Customer database (for usage tracking)
-        generate_reflection: Whether to generate LLM reflection (default: True)
         tier: Optional tier override (cheap/cached/premium), auto-selects if None
 
     Returns:
@@ -625,7 +685,7 @@ async def capture_episode(
     Security:
         - customer_id extracted from validated API key (cannot be spoofed)
         - User-provided customer_id in request body is IGNORED
-        - API key validated via SHA-256 digest lookup
+        - API key validated via key_id lookup + adaptive hash verification
         - Quota enforcement (soft limit with warning)
 
     Usage Tracking:
@@ -633,11 +693,9 @@ async def capture_episode(
         - With image: +0.2 credits
         - With reflection: +0.5 credits
     """
-    if not ingestion_pipeline:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Ingestion pipeline not initialized",
-        )
+    pipeline = _require_ingestion_pipeline()
+
+    enable_reflection = reflection_service is not None
 
     # SECURITY: Override user-provided customer_id with authenticated value
     # This prevents customer_id spoofing attacks
@@ -646,24 +704,30 @@ async def capture_episode(
     # NEW: Parse and validate tier override if provided
     tier_enum = None
     if tier:
+        if not enable_reflection:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tier override requires reflection service to be enabled",
+            )
         try:
             from src.models.episode import ReflectionTier
+
             tier_enum = ReflectionTier(tier.lower())
             logger.info(f"Tier override requested: {tier_enum.value}")
         except ValueError:
             logger.warning(f"Invalid tier requested: {tier}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid tier: {tier}. Must be one of: cheap, cached, premium"
+                detail=f"Invalid tier: {tier}. Must be one of: cheap, cached, premium",
             )
 
     start_time = time.perf_counter()
 
     try:
         # Capture episode with optional tier override
-        episode = await ingestion_pipeline.capture_episode(
+        episode = await pipeline.capture_episode(
             episode_data=episode_data,
-            generate_reflection=generate_reflection and reflection_service is not None,
+            generate_reflection=enable_reflection,
             tier_override=tier_enum,  # NEW: Pass tier override
         )
 
@@ -674,7 +738,7 @@ async def capture_episode(
         credits_used = 1.0  # Base cost
         if episode.image_embedding_id is not None:
             credits_used += 0.2  # Image embedding cost
-        if generate_reflection and reflection_service:
+        if enable_reflection:
             credits_used += 0.5  # LLM reflection cost
 
         # Track usage (async, non-blocking)
@@ -694,7 +758,7 @@ async def capture_episode(
             ingestion_latency_ms=latency_ms,
             text_stored=True,  # Always stored in text instance
             image_stored=episode.image_embedding_id is not None,
-            reflection_queued=generate_reflection and reflection_service is not None,
+            reflection_queued=enable_reflection,
         )
 
     except ValueError as e:
@@ -721,7 +785,7 @@ async def validate_fix(
     validation: SuccessValidationRequest,
     customer: Customer = Depends(get_authenticated_customer),
     customer_id: str = Depends(get_customer_id_from_request),
-):
+) -> SuccessValidationResponse:
     """
     Validate whether a suggested fix worked.
 
@@ -768,7 +832,8 @@ async def validate_fix(
 
     try:
         # Step 1: Fetch existing episode
-        existing = await kyrodb_router.text_client.query(
+        router = _require_kyrodb_router()
+        existing = await router.text_client.query(
             doc_id=validation.episode_id,
             namespace=namespaced_collection,
             include_embedding=True,
@@ -799,9 +864,7 @@ async def validate_fix(
         # Step 2: Deserialize episode and update stats
         from src.models.episode import Episode
 
-        episode = Episode.from_metadata_dict(
-            validation.episode_id, dict(existing.metadata)
-        )
+        episode = Episode.from_metadata_dict(validation.episode_id, dict(existing.metadata))
 
         # Update usage stats
         episode.usage_stats.total_retrievals += 1
@@ -817,7 +880,7 @@ async def validate_fix(
         # Step 3: Re-insert episode with updated stats
         updated_metadata = episode.to_metadata_dict()
 
-        response = await kyrodb_router.text_client.insert(
+        response = await router.text_client.insert(
             doc_id=validation.episode_id,
             embedding=list(existing.embedding),
             namespace=namespaced_collection,
@@ -836,7 +899,6 @@ async def validate_fix(
             f"success_rate={episode.usage_stats.fix_success_rate:.2f}, "
             f"applications={episode.usage_stats.fix_applied_count}"
         )
-
 
         # Step 4: Check if should promote to skill
         promoted = False
@@ -858,8 +920,8 @@ async def validate_fix(
                 start_time = time.perf_counter()
 
                 promotion_service = SkillPromotionService(
-                    kyrodb_router=kyrodb_router,
-                    embedding_service=embedding_service,
+                    kyrodb_router=router,
+                    embedding_service=_require_embedding_service(),
                 )
 
                 skill = await promotion_service.check_and_promote(
@@ -911,14 +973,16 @@ async def validate_fix(
     response_model=SearchResponse,
     tags=["Retrieval"],
 )
-@limiter.limit(SEARCH_RATE_LIMIT)  # Tier-based: FREE=20/min, STARTER=200/min, PRO=1000/min, ENTERPRISE=5000/min
+@limiter.limit(
+    SEARCH_RATE_LIMIT
+)  # Tier-based: FREE=20/min, STARTER=200/min, PRO=1000/min, ENTERPRISE=5000/min
 async def search_episodes(
     request: Request,  # Required by slowapi
     search_request: SearchRequest,  # Renamed to avoid conflict with Request parameter
     customer: Customer = Depends(get_authenticated_customer),
     customer_id: str = Depends(get_customer_id_from_request),
     db: CustomerDatabase = Depends(get_customer_db),
-):
+) -> SearchResponse:
     """
     Search for relevant episodes.
 
@@ -951,18 +1015,14 @@ async def search_episodes(
     Security:
         - customer_id extracted from validated API key (cannot be spoofed)
         - User-provided customer_id in request body is IGNORED
-        - API key validated via SHA-256 digest lookup
+        - API key validated via key_id lookup + adaptive hash verification
         - Namespace isolation (only searches customer's episodes)
 
     Usage Tracking:
         - Base cost: 0.1 credits per search
         - With image search: +0.2 credits
     """
-    if not search_pipeline:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Search pipeline not initialized",
-        )
+    pipeline = _require_search_pipeline()
 
     # SECURITY: Override user-provided customer_id with authenticated value
     # This prevents customer_id spoofing and cross-customer data access
@@ -970,7 +1030,7 @@ async def search_episodes(
 
     try:
         # Execute search
-        response = await search_pipeline.search(search_request)
+        response = await pipeline.search(search_request)
 
         # Log slow queries
         if response.search_latency_ms > 100:
@@ -1015,14 +1075,16 @@ async def search_episodes(
     response_model=ReflectResponse,
     tags=["Reflection"],
 )
-@limiter.limit(REFLECT_RATE_LIMIT)  # Tier-based: FREE=10/min, STARTER=100/min, PRO=500/min, ENTERPRISE=2000/min
+@limiter.limit(
+    REFLECT_RATE_LIMIT
+)  # Tier-based: FREE=10/min, STARTER=100/min, PRO=500/min, ENTERPRISE=2000/min
 async def reflect_before_action(
     request: Request,
     reflect_request: ReflectRequest,
     customer: Customer = Depends(get_authenticated_customer),
     customer_id: str = Depends(get_customer_id_from_request),
     db: CustomerDatabase = Depends(get_customer_db),
-):
+) -> ReflectResponse:
     """
     Reflect before executing action.
 
@@ -1038,14 +1100,10 @@ async def reflect_before_action(
     Usage tracking:
         - Base cost: 0.2 credits (2x search cost, since this prevents failures)
     """
-    if not gating_service:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Gating service not initialized",
-        )
+    service = _require_gating_service()
 
     try:
-        response = await gating_service.reflect_before_action(reflect_request, customer_id)
+        response = await service.reflect_before_action(reflect_request, customer_id)
 
         # Track usage (async, non-blocking)
         credits_used = 0.2
@@ -1086,12 +1144,10 @@ class SkillFeedbackRequest(BaseModel):
     outcome: str = Field(
         ...,
         pattern="^(success|failure)$",
-        description="Whether skill application worked: 'success' or 'failure'"
+        description="Whether skill application worked: 'success' or 'failure'",
     )
     notes: str | None = Field(
-        default=None,
-        max_length=1000,
-        description="Optional notes about the skill application"
+        default=None, max_length=1000, description="Optional notes about the skill application"
     )
 
 
@@ -1130,14 +1186,16 @@ class SkillsListResponse(BaseModel):
     response_model=SkillFeedbackResponse,
     tags=["Skills"],
 )
-@limiter.limit(SKILLS_RATE_LIMIT)  # Tier-based: FREE=10/min, STARTER=50/min, PRO=200/min, ENTERPRISE=1000/min
+@limiter.limit(
+    SKILLS_RATE_LIMIT
+)  # Tier-based: FREE=10/min, STARTER=50/min, PRO=200/min, ENTERPRISE=1000/min
 async def skill_feedback(
     request: Request,
     skill_id: int,
     feedback: SkillFeedbackRequest,
     customer: Customer = Depends(get_authenticated_customer),
     customer_id: str = Depends(get_customer_id_from_request),
-):
+) -> SkillFeedbackResponse:
     """
     Provide feedback on a skill application.
 
@@ -1178,7 +1236,8 @@ async def skill_feedback(
 
     try:
         # Update skill stats via router (returns updated skill to avoid race conditions)
-        skill = await kyrodb_router.update_skill_stats(
+        router = _require_kyrodb_router()
+        skill = await router.update_skill_stats(
             skill_id=skill_id,
             customer_id=customer_id,
             success=(feedback.outcome == "success"),
@@ -1229,7 +1288,7 @@ async def list_skills(
     customer_id: str = Depends(get_customer_id_from_request),
     limit: int = 50,
     min_success_rate: float = 0.0,
-):
+) -> SkillsListResponse:
     """
     List skills for the authenticated customer.
 
@@ -1255,9 +1314,11 @@ async def list_skills(
     try:
         # Use a neutral embedding to fetch all skills (search by customer namespace)
         # This is a workaround - ideally we'd have a list/scan endpoint
-        neutral_embedding = [0.0] * embedding_service.config.text_dimension
+        embed_service = _require_embedding_service()
+        router = _require_kyrodb_router()
+        neutral_embedding = [0.0] * embed_service.config.text_dimension
 
-        results = await kyrodb_router.search_skills(
+        results = await router.search_skills(
             query_embedding=neutral_embedding,
             customer_id=customer_id,
             k=limit,
@@ -1272,7 +1333,11 @@ async def list_skills(
                     SkillSummary(
                         skill_id=skill.skill_id,
                         name=skill.name,
-                        docstring=skill.docstring[:197] + "..." if len(skill.docstring) > 200 else skill.docstring,
+                        docstring=(
+                            skill.docstring[:197] + "..."
+                            if len(skill.docstring) > 200
+                            else skill.docstring
+                        ),
                         error_class=skill.error_class,
                         success_rate=skill.success_rate,
                         usage_count=skill.usage_count,
@@ -1312,7 +1377,7 @@ async def get_skill(
     skill_id: int,
     customer: Customer = Depends(get_authenticated_customer),
     customer_id: str = Depends(get_customer_id_from_request),
-):
+) -> dict[str, Any]:
     """
     Get a specific skill by ID.
 
@@ -1335,7 +1400,8 @@ async def get_skill(
 
     try:
         namespaced_collection = get_namespaced_collection(customer_id, "skills")
-        skill_data = await kyrodb_router.text_client.query(
+        router = _require_kyrodb_router()
+        skill_data = await router.text_client.query(
             doc_id=skill_id,
             namespace=namespaced_collection,
             include_embedding=False,
@@ -1377,31 +1443,32 @@ async def get_skill(
 
 # Admin endpoints
 
+
 def _enum_key_to_str(key: Any) -> str:
     """
     Convert dictionary key to string, handling Enum types properly.
-    
+
     Uses isinstance(key, Enum) instead of hasattr(key, 'value') for robust
     enum detection that won't match arbitrary objects with 'value' attribute.
-    
+
     Args:
         key: Dictionary key (may be Enum, string, or other type)
-        
+
     Returns:
         String representation of the key
     """
     if isinstance(key, Enum):
-        return key.value
+        return str(key.value)
     return str(key)
 
 
-def _convert_dict_enum_keys(d: dict) -> dict:
+def _convert_dict_enum_keys(d: dict[Any, Any]) -> dict[str, Any]:
     """
     Convert all enum keys in a dictionary to their string values.
-    
+
     Args:
         d: Dictionary with potentially enum keys
-        
+
     Returns:
         Dictionary with all keys converted to strings
     """
@@ -1430,7 +1497,7 @@ class BudgetResponse(BaseModel):
     summary="Check daily LLM budget status",
     description="Returns current daily cost, budget remaining, and tier blocking status. Requires X-Admin-API-Key header if ADMIN_API_KEY is configured.",
 )
-async def get_budget_status(_: None = Depends(require_admin_access)):
+async def get_budget_status(_: None = Depends(require_admin_access)) -> BudgetResponse:
     """
     Check daily LLM budget status.
 
@@ -1439,7 +1506,7 @@ async def get_budget_status(_: None = Depends(require_admin_access)):
 
     This endpoint is for monitoring and debugging LLM costs.
     Premium tier is automatically blocked when daily spend >= $50.
-    
+
     Security:
         - Requires X-Admin-API-Key header if ADMIN_API_KEY environment variable is set.
         - If ADMIN_API_KEY is not configured, endpoint is unprotected (warning logged).
@@ -1499,7 +1566,7 @@ class ReflectionStatsResponse(BaseModel):
     summary="Get reflection generation statistics",
     description="Returns detailed statistics about reflection generation including cost savings. Requires X-Admin-API-Key header if ADMIN_API_KEY is configured.",
 )
-async def get_reflection_stats(_: None = Depends(require_admin_access)):
+async def get_reflection_stats(_: None = Depends(require_admin_access)) -> ReflectionStatsResponse:
     """
     Get reflection generation statistics.
 
@@ -1508,7 +1575,7 @@ async def get_reflection_stats(_: None = Depends(require_admin_access)):
     - Cost breakdown by tier (cheap/cached/premium)
     - Cost savings vs all-premium baseline
     - Daily cost tracking
-    
+
     Security:
         - Requires X-Admin-API-Key header if ADMIN_API_KEY environment variable is set.
         - If ADMIN_API_KEY is not configured, endpoint is unprotected (warning logged).
@@ -1546,7 +1613,7 @@ async def get_reflection_stats(_: None = Depends(require_admin_access)):
 
 # Root endpoint
 @app.get("/", tags=["System"])
-async def root():
+async def root() -> dict[str, Any]:
     """
     Root endpoint with API information.
     """

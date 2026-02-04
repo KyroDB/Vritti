@@ -16,7 +16,7 @@ Security:
 import json
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 class Skill(BaseModel):
@@ -28,104 +28,72 @@ class Skill(BaseModel):
 
     skill_id: int = Field(..., description="Unique skill ID (KyroDB doc_id)")
     customer_id: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Customer namespace for multi-tenancy"
+        ..., min_length=1, max_length=255, description="Customer namespace for multi-tenancy"
     )
 
     # Descriptive metadata
     name: str = Field(
-        ...,
-        min_length=5,
-        max_length=200,
-        description="Auto-generated descriptive name"
+        ..., min_length=5, max_length=200, description="Auto-generated descriptive name"
     )
 
     docstring: str = Field(
         ...,
         min_length=20,
         max_length=2000,
-        description="Human-readable description of what this skill does"
+        description="Human-readable description of what this skill does",
     )
 
     # The actual fix (one of these must be present)
-    code: str | None = Field(
-        default=None,
-        max_length=10000,
-        description="Executable code snippet"
-    )
+    code: str | None = Field(default=None, max_length=10000, description="Executable code snippet")
 
     procedure: str | None = Field(
-        default=None,
-        max_length=5000,
-        description="Step-by-step procedure"
+        default=None, max_length=5000, description="Step-by-step procedure"
     )
 
     language: str | None = Field(
-        default=None,
-        max_length=50,
-        description="Programming language (python, bash, yaml, etc.)"
+        default=None, max_length=50, description="Programming language (python, bash, yaml, etc.)"
     )
 
     # Success tracking
     source_episodes: list[int] = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="Episode IDs this skill was promoted from"
+        ..., min_length=1, max_length=100, description="Episode IDs this skill was promoted from"
     )
 
-    usage_count: int = Field(
-        default=0,
-        ge=0,
-        description="How many times this skill was retrieved"
-    )
+    usage_count: int = Field(default=0, ge=0, description="How many times this skill was retrieved")
 
     success_count: int = Field(
-        default=0,
-        ge=0,
-        description="How many times applying this skill succeeded"
+        default=0, ge=0, description="How many times applying this skill succeeded"
     )
 
     failure_count: int = Field(
-        default=0,
-        ge=0,
-        description="How many times applying this skill failed"
+        default=0, ge=0, description="How many times applying this skill failed"
     )
 
     # Categorization
     tags: list[str] = Field(
         default_factory=list,
         max_length=20,
-        description="Searchable tags (deployment, kubernetes, etc.)"
+        description="Searchable tags (deployment, kubernetes, etc.)",
     )
 
     error_class: str = Field(
-        ...,
-        min_length=3,
-        max_length=100,
-        description="What type of error this skill fixes"
+        ..., min_length=3, max_length=100, description="What type of error this skill fixes"
     )
 
     tools: list[str] = Field(
         default_factory=list,
         max_length=15,
-        description="Tools this skill applies to (kubectl, docker, etc.)"
+        description="Tools this skill applies to (kubectl, docker, etc.)",
     )
 
     # Metadata
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     promoted_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        description="When this skill was promoted from episodes"
+        description="When this skill was promoted from episodes",
     )
 
     @property
@@ -138,7 +106,7 @@ class Skill(BaseModel):
 
     @field_validator("code", "procedure")
     @classmethod
-    def validate_at_least_one_fix(cls, v: str | None, info) -> str | None:
+    def validate_at_least_one_fix(cls, v: str | None, info: ValidationInfo) -> str | None:
         """Ensure at least one of code or procedure is provided."""
         if v is None:
             other_field = "code" if info.field_name == "procedure" else "procedure"
@@ -164,7 +132,7 @@ class Skill(BaseModel):
 
     @field_validator("success_count", "failure_count")
     @classmethod
-    def validate_usage_consistency(cls, v: int, info) -> int:
+    def validate_usage_consistency(cls, v: int, info: ValidationInfo) -> int:
         """Ensure success + failure doesn't exceed usage."""
         if "usage_count" in info.data:
             usage = info.data["usage_count"]

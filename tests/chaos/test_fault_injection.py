@@ -31,9 +31,9 @@ class TestKyroDBFailures:
 
         Expected: Episode ingestion fails gracefully with clear error
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: KyroDB Connection Failure")
-        print("="*80)
+        print("=" * 80)
 
         # Simulate KyroDB connection failure
         original_insert = ingestion_pipeline.kyrodb_router.insert_episode
@@ -70,7 +70,7 @@ class TestKyroDBFailures:
             # Restore
             ingestion_pipeline.kyrodb_router.insert_episode = original_insert
 
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
     @pytest.mark.skip(reason="Flaky test: mock not being called correctly")
     @pytest.mark.asyncio
@@ -80,9 +80,9 @@ class TestKyroDBFailures:
 
         Expected: Request times out with clear error
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: KyroDB Slow Response")
-        print("="*80)
+        print("=" * 80)
 
         original_search = search_pipeline.kyrodb_router.search_text
 
@@ -105,8 +105,7 @@ class TestKyroDBFailures:
 
         try:
             await asyncio.wait_for(
-                search_pipeline.search(request),
-                timeout=5.0  # Use shorter timeout for test
+                search_pipeline.search(request), timeout=5.0  # Use shorter timeout for test
             )
             raise AssertionError("Should have timed out")
         except asyncio.TimeoutError:
@@ -116,7 +115,7 @@ class TestKyroDBFailures:
         # Restore
         search_pipeline.kyrodb_router.search_text = original_search
 
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
     @pytest.mark.skip(reason="Flaky test: failure assertion unclear")
     @pytest.mark.asyncio
@@ -126,9 +125,9 @@ class TestKyroDBFailures:
 
         Expected: Episode stored in text instance only, no crash
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: KyroDB Partial Failure")
-        print("="*80)
+        print("=" * 80)
 
         original_insert = ingestion_pipeline.kyrodb_router.insert_episode
 
@@ -157,7 +156,7 @@ class TestKyroDBFailures:
             print("\n Episode stored despite image instance failure")
         finally:
             ingestion_pipeline.kyrodb_router.insert_episode = original_insert
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
 
 class TestLLMFailures:
@@ -170,9 +169,9 @@ class TestLLMFailures:
 
         Expected: Episode stored without reflection, no crash
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: LLM API Failure")
-        print("="*80)
+        print("=" * 80)
 
         # Simulate LLM API failure
         if ingestion_pipeline.reflection_service:
@@ -181,7 +180,9 @@ class TestLLMFailures:
             async def mock_llm_failure(*args, **kwargs):
                 raise Exception("OpenRouter API unavailable")
 
-            ingestion_pipeline.reflection_service.generate_reflection = AsyncMock(side_effect=mock_llm_failure)
+            ingestion_pipeline.reflection_service.generate_reflection = AsyncMock(
+                side_effect=mock_llm_failure
+            )
 
         try:
             episode = EpisodeCreate(
@@ -203,7 +204,7 @@ class TestLLMFailures:
         finally:
             if ingestion_pipeline.reflection_service:
                 ingestion_pipeline.reflection_service.generate_reflection = original_generate
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
     @pytest.mark.asyncio
     async def test_llm_timeout(self, ingestion_pipeline):
@@ -212,18 +213,21 @@ class TestLLMFailures:
 
         Expected: Episode stored without reflection after timeout
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: LLM Timeout")
-        print("="*80)
+        print("=" * 80)
 
         if ingestion_pipeline.reflection_service:
+
             async def mock_slow_llm(*args, **kwargs):
                 print("\n  Simulating 60s LLM delay...")
                 await asyncio.sleep(60)
                 return MagicMock()
 
             original_generate = ingestion_pipeline.reflection_service.generate_reflection
-            ingestion_pipeline.reflection_service.generate_reflection = AsyncMock(side_effect=mock_slow_llm)
+            ingestion_pipeline.reflection_service.generate_reflection = AsyncMock(
+                side_effect=mock_slow_llm
+            )
 
         try:
             episode = EpisodeCreate(
@@ -241,8 +245,7 @@ class TestLLMFailures:
             start = asyncio.get_event_loop().time()
 
             await asyncio.wait_for(
-                ingestion_pipeline.capture_episode(episode, generate_reflection=True),
-                timeout=10.0
+                ingestion_pipeline.capture_episode(episode, generate_reflection=True), timeout=10.0
             )
 
             elapsed = asyncio.get_event_loop().time() - start
@@ -250,7 +253,7 @@ class TestLLMFailures:
         finally:
             if ingestion_pipeline.reflection_service:
                 ingestion_pipeline.reflection_service.generate_reflection = original_generate
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
 
 class TestGatingFailures:
@@ -263,9 +266,9 @@ class TestGatingFailures:
 
         Expected: Returns PROCEED (fail-open, don't block user)
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: Gating with KyroDB Down")
-        print("="*80)
+        print("=" * 80)
 
         # Simulate KyroDB failure
         async def mock_search_failure(*args, **kwargs):
@@ -292,13 +295,15 @@ class TestGatingFailures:
             response = await gating_service.reflect_before_action(request, "test_customer")
 
             assert response.recommendation == ActionRecommendation.PROCEED
-            assert "error" in response.rationale.lower() or "unavailable" in response.rationale.lower()
+            assert (
+                "error" in response.rationale.lower() or "unavailable" in response.rationale.lower()
+            )
 
             print(f"\n Fail-open behavior: {response.recommendation.value}")
             print(f"   Rationale: {response.rationale[:80]}...")
         finally:
             gating_service.search_pipeline.search = original_search
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
     @pytest.mark.asyncio
     async def test_gating_with_llm_down(self, gating_service):
@@ -307,14 +312,15 @@ class TestGatingFailures:
 
         Expected: Falls back to heuristic matching, returns decision
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: Gating with LLM Validation Down")
-        print("="*80)
+        print("=" * 80)
 
         # Simulate LLM validation failure
         original_validate = None
-        if hasattr(gating_service.search_pipeline, 'llm_validator'):
+        if hasattr(gating_service.search_pipeline, "llm_validator"):
             original_validate = gating_service.search_pipeline.llm_validator.validate
+
             async def mock_llm_validation_failure(*args, **kwargs):
                 raise Exception("LLM validation unavailable")
 
@@ -339,7 +345,7 @@ class TestGatingFailures:
         finally:
             if original_validate:
                 gating_service.search_pipeline.llm_validator.validate = original_validate
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
 
 class TestRecovery:
@@ -352,9 +358,9 @@ class TestRecovery:
 
         Expected: System resumes normal operation
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("CHAOS TEST: KyroDB Recovery")
-        print("="*80)
+        print("=" * 80)
 
         original_insert = ingestion_pipeline.kyrodb_router.insert_episode
 
@@ -373,7 +379,9 @@ class TestRecovery:
                 )
             return await original_insert(*args, **kwargs)
 
-        ingestion_pipeline.kyrodb_router.insert_episode = AsyncMock(side_effect=mock_insert_then_recover)
+        ingestion_pipeline.kyrodb_router.insert_episode = AsyncMock(
+            side_effect=mock_insert_then_recover
+        )
 
         try:
             episode1 = EpisodeCreate(
@@ -412,7 +420,7 @@ class TestRecovery:
 
         print("  Second attempt succeeded")
         print("\n System recovered after KyroDB came back online")
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":

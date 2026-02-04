@@ -21,6 +21,7 @@ Tuning (optional):
 
 from __future__ import annotations
 
+import asyncio
 import os
 import random
 import statistics
@@ -28,7 +29,6 @@ import time
 from dataclasses import dataclass
 
 import pytest
-import asyncio
 
 from src.models.episode import EpisodeCreate, EpisodeType, ErrorClass
 from src.models.gating import ReflectRequest
@@ -74,10 +74,6 @@ def _summarize(op_type: str, metrics: LoadMetrics) -> None:
 @pytest.mark.load
 @pytest.mark.asyncio
 @pytest.mark.slow
-@pytest.mark.skipif(
-    not os.getenv("RUN_LOAD_TESTS"),
-    reason="Load test is disabled by default. Set RUN_LOAD_TESTS=1 to run.",
-)
 async def test_sustained_load_worker_pool(
     skip_if_no_kyrodb,
     ingestion_pipeline,
@@ -235,12 +231,12 @@ async def test_sustained_load_worker_pool(
 
     # Reliability floor: even in non-strict mode, we require the system to remain mostly healthy.
     min_success_rate = 99.0 if strict else 98.0
-    assert overall.success_rate >= min_success_rate, (
-        f"Success rate {overall.success_rate:.2f}% < {min_success_rate:.2f}%"
-    )
+    assert (
+        overall.success_rate >= min_success_rate
+    ), f"Success rate {overall.success_rate:.2f}% < {min_success_rate:.2f}%"
 
     if strict:
-        assert overall.throughput_rps >= target_rps, (
-            f"Throughput {overall.throughput_rps:.0f} RPS < {target_rps} RPS"
-        )
+        assert (
+            overall.throughput_rps >= target_rps
+        ), f"Throughput {overall.throughput_rps:.0f} RPS < {target_rps} RPS"
         assert overall.p99_ms < 200.0, f"P99 latency {overall.p99_ms:.1f}ms > 200ms"

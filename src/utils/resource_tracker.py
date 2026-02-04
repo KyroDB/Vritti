@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
+from contextlib import suppress
 
 logger = logging.getLogger(__name__)
 _SEMAPHORE_NAMES: set[str] = set()
@@ -13,7 +14,7 @@ _ORIGINAL_UNREGISTER = None
 
 def cleanup_tracked_semaphores() -> None:
     try:
-        import _multiprocessing
+        import _multiprocessing  # type: ignore[import-not-found]
     except Exception:
         return
 
@@ -22,15 +23,11 @@ def cleanup_tracked_semaphores() -> None:
         _SEMAPHORE_NAMES.clear()
 
     for name in names:
-        try:
+        with suppress(Exception):
             _multiprocessing.sem_unlink(name)
-        except Exception:
-            pass
-        try:
+        with suppress(Exception):
             if _ORIGINAL_UNREGISTER is not None:
                 _ORIGINAL_UNREGISTER(name, "semaphore")
-        except Exception:
-            pass
 
 
 def install_resource_tracker_cleanup() -> None:
@@ -70,5 +67,5 @@ def install_resource_tracker_cleanup() -> None:
 
         resource_tracker.register = _register  # type: ignore[assignment]
         resource_tracker.unregister = _unregister  # type: ignore[assignment]
-        resource_tracker._vritti_semaphore_patch = True
+        resource_tracker._vritti_semaphore_patch = True  # type: ignore[attr-defined]
         atexit.register(cleanup_tracked_semaphores)

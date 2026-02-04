@@ -53,19 +53,19 @@ def critical_episode():
         tool_chain=["psql"],
         actions_taken=["DELETE FROM users WHERE created_at < '2024-01-01'"],
         error_trace="Error: Deleted active users instead of old ones",
-        tags=["data_loss"]  # Critical tag to trigger premium
+        tags=["data_loss"],  # Critical tag to trigger premium
     )
 
 
 class TestReflectionTier:
     """Test ReflectionTier enum."""
-    
+
     def test_tier_values(self):
         """Test that all tier values are defined."""
         assert ReflectionTier.CHEAP.value == "cheap"
         assert ReflectionTier.CACHED.value == "cached"
         assert ReflectionTier.PREMIUM.value == "premium"
-    
+
     def test_tier_enum_members(self):
         """Test that all expected tiers exist."""
         tiers = list(ReflectionTier)
@@ -77,7 +77,7 @@ class TestReflectionTier:
 
 class TestTierSelection:
     """Test automatic tier selection logic."""
-    
+
     @pytest.mark.asyncio
     async def test_critical_error_uses_premium_via_tag(self, llm_config, critical_episode):
         """Critical errors tagged properly should trigger premium tier (via tags check)."""
@@ -86,17 +86,17 @@ class TestTierSelection:
         # Currently tags like "data_loss" don't trigger premium (not implemented)
         # So this should use CHEAP tier until tag logic is added
         assert tier == ReflectionTier.CHEAP  # Will be PREMIUM once tag logic implemented
-    
+
     @pytest.mark.asyncio
     async def test_normal_error_uses_cheap(self, llm_config, sample_episode):
         """Normal errors should use cheap tier by default."""
         service = TieredReflectionService(llm_config)
         tier = await service._select_tier(sample_episode)
         assert tier == ReflectionTier.CHEAP
-    
+
     @pytest.mark.asyncio
     async def test_security_breach_triggers_cheap_until_implemented(self, llm_config):
-        """Security breach tag doesn't trigger premium yet (tag-based selection not implemented)."""  
+        """Security breach tag doesn't trigger premium yet (tag-based selection not implemented)."""
         episode = EpisodeCreate(
             customer_id="test",
             goal="Test security breach handling",  # Must be >= 10 chars
@@ -104,19 +104,19 @@ class TestTierSelection:
             tool_chain=["test"],
             actions_taken=["test"],
             error_trace="test error",
-            tags=["security_breach"]  # Tag not implemented yet
+            tags=["security_breach"],  # Tag not implemented yet
         )
         service = TieredReflectionService(llm_config)
         tier = await service._select_tier(episode)
         # Tag-based selection not yet implemented, should use cheap
         assert tier == ReflectionTier.CHEAP
-    
+
     @pytest.mark.asyncio
     async def test_premium_tag_triggers_premium(self, llm_config, sample_episode):
         """Explicit premium_reflection tag should trigger premium."""
         episode = sample_episode
         episode.tags = ["premium_reflection", "important"]
-        
+
         service = TieredReflectionService(llm_config)
         tier = await service._select_tier(episode)
         assert tier == ReflectionTier.PREMIUM
@@ -124,12 +124,12 @@ class TestTierSelection:
 
 class TestQualityValidation:
     """Test cheap reflection quality validation."""
-    
+
     @pytest.fixture
     def test_llm_config(self):
         """Create test LLM config for this test class."""
         return LLMConfig(openrouter_api_key="test_key")
-    
+
     def test_high_confidence_passes(self, test_llm_config):
         """Reflections with confidence >= 0.6 should pass."""
         reflection = Reflection(
@@ -138,12 +138,12 @@ class TestQualityValidation:
             resolution_strategy="Increase memory limits in docker-compose.yml",
             confidence_score=0.7,
             generalization_score=0.5,
-            llm_model="openrouter-cheap-model"
+            llm_model="openrouter-cheap-model",
         )
-        
+
         service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is True
-    
+
     def test_low_confidence_fails(self, test_llm_config):
         """Reflections with confidence < 0.6 should fail."""
         reflection = Reflection(
@@ -152,12 +152,12 @@ class TestQualityValidation:
             resolution_strategy="Try something",
             confidence_score=0.5,  # Too low
             generalization_score=0.5,
-            llm_model="openrouter-cheap-model"
+            llm_model="openrouter-cheap-model",
         )
-        
+
         service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
-    
+
     def test_empty_preconditions_fails(self, test_llm_config):
         """Reflections with no preconditions should fail."""
         reflection = Reflection(
@@ -166,12 +166,12 @@ class TestQualityValidation:
             resolution_strategy="Detailed resolution",
             confidence_score=0.8,
             generalization_score=0.5,
-            llm_model="openrouter-cheap-model"
+            llm_model="openrouter-cheap-model",
         )
-        
+
         service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
-    
+
     def test_generic_root_cause_fails(self, test_llm_config):
         """Generic root causes should fail."""
         reflection = Reflection(
@@ -180,12 +180,12 @@ class TestQualityValidation:
             resolution_strategy="Detailed resolution",
             confidence_score=0.8,
             generalization_score=0.5,
-            llm_model="openrouter-cheap-model"
+            llm_model="openrouter-cheap-model",
         )
-        
+
         service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
-    
+
     def test_generic_resolution_fails(self, test_llm_config):
         """Generic resolutions should fail validation."""
         reflection = Reflection(
@@ -194,21 +194,21 @@ class TestQualityValidation:
             resolution_strategy="Manual investigation required",  # Generic
             confidence_score=0.8,
             generalization_score=0.5,
-            llm_model="openrouter-cheap-model"
+            llm_model="openrouter-cheap-model",
         )
-        
+
         service = TieredReflectionService(test_llm_config)
         assert service._validate_cheap_quality(reflection) is False
 
 
 class TestCostTracking:
     """Test cost tracking and statistics."""
-    
+
     @pytest.mark.asyncio
     async def test_cost_accumulation(self, llm_config, sample_episode):
         """Test that costs accumulate correctly."""
         service = TieredReflectionService(llm_config)
-        
+
         # Mock services to avoid actual LLM calls
         mock_reflection = Reflection(
             root_cause="Test cause",
@@ -218,32 +218,32 @@ class TestCostTracking:
             generalization_score=0.5,
             llm_model="openrouter-cheap-model",
             cost_usd=0.0003,
-            tier=ReflectionTier.CHEAP.value
+            tier=ReflectionTier.CHEAP.value,
         )
-        
+
         service.cheap_service.generate_reflection = AsyncMock(return_value=mock_reflection)
-        
+
         # Generate reflection
         await service.generate_reflection(sample_episode, episode_id=1, tier=ReflectionTier.CHEAP)
-        
+
         # Check cost tracked
         assert service.total_cost == 0.0003
         assert service.cost_by_tier[ReflectionTier.CHEAP] == 0.0003
         assert service.count_by_tier[ReflectionTier.CHEAP] == 1
-    
+
     def test_get_stats(self, llm_config):
         """Test statistics generation."""
         service = TieredReflectionService(llm_config)
-        
+
         # Manually set some stats
         service.total_cost = 10.0
         service.cost_by_tier[ReflectionTier.CHEAP] = 1.0
         service.cost_by_tier[ReflectionTier.PREMIUM] = 9.0
         service.count_by_tier[ReflectionTier.CHEAP] = 900
         service.count_by_tier[ReflectionTier.PREMIUM] = 100
-        
+
         stats = service.get_stats()
-        
+
         # Verify structure
         assert "total_cost_usd" in stats
         assert "total_reflections" in stats
@@ -253,16 +253,16 @@ class TestCostTracking:
         assert "percentage_by_tier" in stats
         assert "cost_savings_usd" in stats
         assert "cost_savings_percentage" in stats
-        
+
         # Verify calculations
         assert stats["total_cost_usd"] == 10.0
         assert stats["total_reflections"] == 1000
         assert stats["average_cost_per_reflection"] == 0.01
-        
+
         # 90% cheap, 10% premium
         assert stats["percentage_by_tier"][ReflectionTier.CHEAP] == 90.0
         assert stats["percentage_by_tier"][ReflectionTier.PREMIUM] == 10.0
-        
+
         # Savings: all-premium would cost 1000 * 0.096 = 96, actual = 10, savings = 86
         assert stats["cost_savings_usd"] == 86.0
         assert abs(stats["cost_savings_percentage"] - 89.58) < 0.1  # ~90% savings
@@ -270,15 +270,16 @@ class TestCostTracking:
 
 class TestIntegration:
     """Integration tests for tiered reflection system."""
-    
+
     @pytest.mark.asyncio
     async def test_cheap_reflection_generation(self, llm_config, sample_episode):
         """Test generating cheap reflection (mocked OpenRouter)."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": '''```json
+            "choices": [
+                {
+                    "message": {
+                        "content": """```json
             {
                 "root_cause": "Insufficient memory in container",
                 "preconditions": ["Using Docker", "Memory limit set"],
@@ -289,35 +290,36 @@ class TestIntegration:
                 "confidence_score": 0.7,
                 "reasoning": "OOMKilled indicates memory exhaustion"
             }
-            ```'''
+            ```"""
+                    }
                 }
-            }]
+            ]
         }
         mock_response.raise_for_status = MagicMock()
-        
-        with patch('httpx.AsyncClient') as mock_client:
+
+        with patch("httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
             mock_client.return_value.post = AsyncMock(return_value=mock_response)
-            
+
             # Create service
             cheap_service = CheapReflectionService(llm_config)
-            
+
             # Generate reflection
             reflection = await cheap_service.generate_reflection(sample_episode)
-            
+
             # Verify
             assert reflection.root_cause == "Insufficient memory in container"
             assert len(reflection.preconditions) >= 1
             assert reflection.confidence_score == 0.7
             assert reflection.tier == ReflectionTier.CHEAP.value
             assert reflection.cost_usd == 0.0  # Free tier
-    
+
     def test_singleton_service(self, llm_config):
         """Test that get_tiered_reflection_service returns singleton."""
         service1 = get_tiered_reflection_service(llm_config)
         service2 = get_tiered_reflection_service(llm_config)
-        
+
         # Should be same instance
         assert service1 is service2
 
@@ -326,7 +328,7 @@ class TestIntegration:
 async def test_quality_fallback_to_premium(llm_config, sample_episode):
     """Test that low-quality cheap reflections upgrade to premium."""
     service = TieredReflectionService(llm_config)
-    
+
     # Mock cheap service to return low-quality reflection
     low_quality_reflection = Reflection(
         root_cause="Unknown",  # Generic
@@ -336,9 +338,9 @@ async def test_quality_fallback_to_premium(llm_config, sample_episode):
         generalization_score=0.3,
         llm_model="openrouter-cheap-model",
         cost_usd=0.0003,
-        tier=ReflectionTier.CHEAP.value
+        tier=ReflectionTier.CHEAP.value,
     )
-    
+
     # Mock premium service to return high-quality reflection
     premium_reflection = Reflection(
         root_cause="Memory exhaustion in container",
@@ -348,19 +350,23 @@ async def test_quality_fallback_to_premium(llm_config, sample_episode):
         generalization_score=0.7,
         llm_model="multi-perspective",
         cost_usd=0.096,
-        tier=ReflectionTier.PREMIUM.value
+        tier=ReflectionTier.PREMIUM.value,
     )
-    
+
     service.cheap_service.generate_reflection = AsyncMock(return_value=low_quality_reflection)
-    service.premium_service.generate_multi_perspective_reflection = AsyncMock(return_value=premium_reflection)
-    
+    service.premium_service.generate_multi_perspective_reflection = AsyncMock(
+        return_value=premium_reflection
+    )
+
     # Generate with CHEAP tier
-    reflection = await service.generate_reflection(sample_episode, episode_id=1, tier=ReflectionTier.CHEAP)
-    
+    reflection = await service.generate_reflection(
+        sample_episode, episode_id=1, tier=ReflectionTier.CHEAP
+    )
+
     # Should have upgraded to premium
     assert reflection.tier == ReflectionTier.PREMIUM.value
     assert reflection.confidence_score >= 0.7
-    
+
     # Should track as premium for cost metrics
     assert service.count_by_tier[ReflectionTier.PREMIUM] == 1
     assert service.count_by_tier[ReflectionTier.CHEAP] == 0

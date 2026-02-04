@@ -17,7 +17,6 @@ Performance Tests:
 - Timeout enforcement
 """
 
-
 import pytest
 from pydantic import ValidationError
 
@@ -379,20 +378,14 @@ class TestReflectionModels:
 class TestConsensusReconciliation:
     """Test consensus reconciliation logic with semantic similarity."""
 
-    def test_reconcile_unanimous_agreement(
-        self, mock_perspective_1, mock_perspective_2
-    ):
+    def test_reconcile_unanimous_agreement(self, mock_perspective_1, mock_perspective_2):
         """Test semantic unanimous consensus when root causes are identical."""
         # Both perspectives have same root cause (semantic similarity = 1.0)
         mock_perspective_1.root_cause = "Same root cause"
         mock_perspective_2.root_cause = "Same root cause"
 
-        service = MultiPerspectiveReflectionService(
-            config=LLMConfig(openrouter_api_key="test")
-        )
-        consensus = service._reconcile_perspectives(
-            [mock_perspective_1, mock_perspective_2]
-        )
+        service = MultiPerspectiveReflectionService(config=LLMConfig(openrouter_api_key="test"))
+        consensus = service._reconcile_perspectives([mock_perspective_1, mock_perspective_2])
 
         # Semantic similarity should be 1.0 for identical text -> semantic_unanimous
         assert consensus.consensus_method == "semantic_unanimous"
@@ -404,11 +397,11 @@ class TestConsensusReconciliation:
         self, mock_perspective_1, mock_perspective_2, mock_perspective_3
     ):
         """Test semantic majority when 2/3 models have similar root causes.
-        
+
         Setup:
         - Perspectives 1 & 2: semantically similar (both about image tag issues)
         - Perspective 3: different (network/DNS issue)
-        
+
         Expected behavior:
         - Consensus should select from the majority cluster (image tag related)
         - Consensus confidence should be moderate (not unanimous)
@@ -417,9 +410,7 @@ class TestConsensusReconciliation:
         mock_perspective_2.root_cause = "Container image tag missing from registry"
         mock_perspective_3.root_cause = "Network timeout during DNS resolution"
 
-        service = MultiPerspectiveReflectionService(
-            config=LLMConfig(openrouter_api_key="test")
-        )
+        service = MultiPerspectiveReflectionService(config=LLMConfig(openrouter_api_key="test"))
         consensus = service._reconcile_perspectives(
             [mock_perspective_1, mock_perspective_2, mock_perspective_3]
         )
@@ -427,12 +418,14 @@ class TestConsensusReconciliation:
         # With 2/3 similar perspectives, should achieve semantic majority
         # The reconciliation should pick from the majority cluster
         agreed_lower = consensus.agreed_root_cause.lower()
-        
+
         # Primary assertion: root cause should relate to the image tag cluster
-        is_image_related = "image" in agreed_lower or "tag" in agreed_lower or "registry" in agreed_lower
+        is_image_related = (
+            "image" in agreed_lower or "tag" in agreed_lower or "registry" in agreed_lower
+        )
         # Fallback: if low confidence, algorithm may have struggled with semantic matching
         has_low_confidence = consensus.consensus_confidence < 0.5
-        
+
         assert is_image_related or has_low_confidence, (
             f"Expected image/tag related root cause or low confidence fallback. "
             f"Got: '{consensus.agreed_root_cause}' with confidence {consensus.consensus_confidence}"
@@ -442,12 +435,12 @@ class TestConsensusReconciliation:
         self, mock_perspective_1, mock_perspective_2, mock_perspective_3
     ):
         """Test fallback when all models have semantically different root causes.
-        
+
         Setup: All perspectives have completely different root causes
         - Perspective 1: Authentication (highest confidence 0.9)
         - Perspective 2: Database (confidence 0.7)
         - Perspective 3: Memory (lowest confidence 0.6)
-        
+
         Expected: Should fallback to highest confidence model's root cause
         """
         # All completely different root causes
@@ -460,41 +453,41 @@ class TestConsensusReconciliation:
         mock_perspective_2.confidence_score = 0.7
         mock_perspective_3.confidence_score = 0.6
 
-        service = MultiPerspectiveReflectionService(
-            config=LLMConfig(openrouter_api_key="test")
-        )
+        service = MultiPerspectiveReflectionService(config=LLMConfig(openrouter_api_key="test"))
         consensus = service._reconcile_perspectives(
             [mock_perspective_1, mock_perspective_2, mock_perspective_3]
         )
 
         # When no semantic similarity found, should use highest confidence fallback
         agreed_lower = consensus.agreed_root_cause.lower()
-        
+
         # Primary assertion: should use highest confidence model's root cause (authentication)
         is_from_highest_confidence = "authentication" in agreed_lower or "token" in agreed_lower
         # Fallback: if algorithm couldn't determine, confidence will be low
         has_low_confidence = consensus.consensus_confidence <= 0.5
-        
+
         assert is_from_highest_confidence or has_low_confidence, (
             f"Expected authentication-related root cause (highest confidence) or low confidence fallback. "
             f"Got: '{consensus.agreed_root_cause}' with confidence {consensus.consensus_confidence}"
         )
 
-    def test_reconcile_merges_preconditions(
-        self, mock_perspective_1, mock_perspective_2
-    ):
+    def test_reconcile_merges_preconditions(self, mock_perspective_1, mock_perspective_2):
         """Test that preconditions are merged with semantic deduplication."""
         mock_perspective_1.root_cause = "Same root cause"
         mock_perspective_2.root_cause = "Same root cause"
-        mock_perspective_1.preconditions = ["Using Docker containers", "Running on Kubernetes", "Image in registry"]
-        mock_perspective_2.preconditions = ["Docker container deployment", "Kubernetes cluster", "New precondition"]
+        mock_perspective_1.preconditions = [
+            "Using Docker containers",
+            "Running on Kubernetes",
+            "Image in registry",
+        ]
+        mock_perspective_2.preconditions = [
+            "Docker container deployment",
+            "Kubernetes cluster",
+            "New precondition",
+        ]
 
-        service = MultiPerspectiveReflectionService(
-            config=LLMConfig(openrouter_api_key="test")
-        )
-        consensus = service._reconcile_perspectives(
-            [mock_perspective_1, mock_perspective_2]
-        )
+        service = MultiPerspectiveReflectionService(config=LLMConfig(openrouter_api_key="test"))
+        consensus = service._reconcile_perspectives([mock_perspective_1, mock_perspective_2])
 
         # Semantic deduplication may merge similar preconditions
         # At minimum, we should have some preconditions
@@ -502,9 +495,7 @@ class TestConsensusReconciliation:
         # "New precondition" should definitely be included
         assert any("new" in p.lower() for p in consensus.agreed_preconditions)
 
-    def test_reconcile_selects_best_resolution(
-        self, mock_perspective_1, mock_perspective_2
-    ):
+    def test_reconcile_selects_best_resolution(self, mock_perspective_1, mock_perspective_2):
         """Test that resolution from highest-confidence model is selected."""
         mock_perspective_1.root_cause = "Same root cause"
         mock_perspective_2.root_cause = "Same root cause"
@@ -514,12 +505,8 @@ class TestConsensusReconciliation:
         mock_perspective_2.confidence_score = 0.7
         mock_perspective_2.resolution_strategy = "Claude resolution"
 
-        service = MultiPerspectiveReflectionService(
-            config=LLMConfig(openrouter_api_key="test")
-        )
-        consensus = service._reconcile_perspectives(
-            [mock_perspective_1, mock_perspective_2]
-        )
+        service = MultiPerspectiveReflectionService(config=LLMConfig(openrouter_api_key="test"))
+        consensus = service._reconcile_perspectives([mock_perspective_1, mock_perspective_2])
 
         # Should use GPT-4's resolution (higher confidence)
         assert consensus.agreed_resolution == "GPT-4 resolution"

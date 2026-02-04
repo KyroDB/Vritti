@@ -21,8 +21,5 @@ Example:
 """
 
 from src.config import get_settings
-from src.utils.resource_tracker import install_resource_tracker_cleanup
-
-install_resource_tracker_cleanup()
 
 __all__ = ["get_settings"]

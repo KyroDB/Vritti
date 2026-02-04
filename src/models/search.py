@@ -11,7 +11,7 @@ from mistakes.
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from src.models.episode import Episode
 
@@ -26,7 +26,7 @@ class RankingWeights(BaseModel):
 
     @field_validator("*")
     @classmethod
-    def validate_weights_sum(cls, v: float, info) -> float:
+    def validate_weights_sum(cls, v: float, info: ValidationInfo) -> float:
         """Weights should sum to ~1.0 for interpretability."""
         # This is just a warning - we'll normalize in the ranker
         return v
@@ -63,6 +63,10 @@ class SearchRequest(BaseModel):
     )
     max_timestamp: int | None = Field(default=None, ge=0)
     tags: list[str] = Field(default_factory=list, description="Required tags")
+    include_archived: bool = Field(
+        default=False,
+        description="Include archived episodes in results (default: false)",
+    )
 
     # Search parameters
     k: int = Field(default=5, ge=1, le=1000, description="Number of results to return")
@@ -87,7 +91,7 @@ class SearchRequest(BaseModel):
 
     @field_validator("max_timestamp")
     @classmethod
-    def validate_timestamp_range(cls, v: int | None, info) -> int | None:
+    def validate_timestamp_range(cls, v: int | None, info: ValidationInfo) -> int | None:
         if v is not None:
             min_ts = info.data.get("min_timestamp")
             if min_ts is not None and v < min_ts:
@@ -138,18 +142,14 @@ class SearchResponse(BaseModel):
     # Search metadata
     collection: str
     query_embedding_dimension: int
-    searched_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
+    searched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def avg_combined_score(self) -> float:
         """Average combined score of returned results."""
         if not self.results:
             return 0.0
-        return sum(r.scores.get("combined", 0.0) for r in self.results) / len(
-            self.results
-        )
+        return sum(r.scores.get("combined", 0.0) for r in self.results) / len(self.results)
 
 
 class PreconditionCheckResult(BaseModel):

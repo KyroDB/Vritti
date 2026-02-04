@@ -14,7 +14,6 @@ Prerequisites:
     ./target/release/kyrodb_server --port 50051 --data-dir ./data
 """
 
-import time
 from datetime import UTC
 
 import pytest
@@ -26,6 +25,7 @@ from src.kyrodb.router import KyroDBRouter
 def is_kyrodb_running(host: str = "localhost", port: int = 50051) -> bool:
     """Check if KyroDB is running on host:port."""
     import socket
+
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
@@ -64,7 +64,7 @@ async def kyrodb_client():
 async def kyrodb_router():
     """Create a real KyroDB router (text+image instances)."""
     from src.config import KyroDBConfig
-    
+
     config = KyroDBConfig(
         text_host="localhost",
         text_port=50051,
@@ -85,16 +85,19 @@ class TestKyroDBConnection:
     async def test_health_check(self, skip_if_no_kyrodb, kyrodb_client: KyroDBClient):
         """Test health check against real KyroDB."""
         response = await kyrodb_client.health_check()
-        
+
         print("\n--- KyroDB Health Check ---")
         print(f"Status: {response.status}")
         print(f"Version: {response.version}")
         print(f"Uptime: {response.uptime_seconds}s")
         for key, value in response.components.items():
             print(f"  {key}: {value}")
-        
+
         # Status 1 = HEALTHY, Status 2 = DEGRADED (acceptable for empty database)
-        assert response.status in [1, 2], f"Expected HEALTHY (1) or DEGRADED (2), got {response.status}"
+        assert response.status in [
+            1,
+            2,
+        ], f"Expected HEALTHY (1) or DEGRADED (2), got {response.status}"
         assert response.version, "Version should be set"
         assert response.uptime_seconds >= 0, "Uptime should be non-negative"
 
@@ -107,7 +110,7 @@ class TestKyroDBConnection:
     ):
         """Test insert and query operations."""
         doc_id = unique_doc_id
-        
+
         # Create a test embedding (384 dimensions for all-MiniLM-L6-v2)
         embedding = [0.1] * 384
         namespace = "test:integration"
@@ -116,12 +119,12 @@ class TestKyroDBConnection:
             "customer_id": "test-customer",
             "test_run": "real_integration",
         }
-        
+
         print("\n--- Insert Test ---")
         print(f"Doc ID: {doc_id}")
         print(f"Namespace: {namespace}")
         print(f"Embedding dims: {len(embedding)}")
-        
+
         try:
             # Insert
             insert_response = await kyrodb_client.insert(
@@ -130,21 +133,21 @@ class TestKyroDBConnection:
                 namespace=namespace,
                 metadata=metadata,
             )
-            
+
             print(f"Insert success: {insert_response.success}")
             assert insert_response.success, f"Insert failed: {insert_response.error}"
-            
+
             # Query back
             query_response = await kyrodb_client.query(
                 doc_id=doc_id,
                 namespace=namespace,
                 include_embedding=True,
             )
-            
+
             print("\n--- Query Test ---")
             print(f"Found: {query_response.found}")
             print(f"Metadata keys: {list(query_response.metadata.keys())}")
-            
+
             assert query_response.found, "Document not found after insert"
             assert query_response.doc_id == doc_id
             assert len(query_response.embedding) == 384
@@ -166,42 +169,42 @@ class TestKyroDBConnection:
         # Insert some test vectors first
         namespace = "test:search"
         doc_ids = []
-        
+
         print("\n--- Inserting test vectors ---")
         for i in range(5):
             doc_id = await doc_id_factory()
             doc_ids.append(doc_id)
-            
+
             # Create slightly different embeddings
             embedding = [0.1 + (i * 0.01)] * 384
-            
+
             await kyrodb_client.insert(
                 doc_id=doc_id,
                 embedding=embedding,
                 namespace=namespace,
                 metadata={"index": str(i)},
             )
-        
+
         print(f"Inserted {len(doc_ids)} vectors")
-        
+
         try:
             # Search for similar vectors
             query_embedding = [0.1] * 384  # Should be most similar to first vector
-            
+
             search_response = await kyrodb_client.search(
                 query_embedding=query_embedding,
                 k=5,
                 namespace=namespace,
                 min_score=-1.0,
             )
-            
+
             print("\n--- Search Results ---")
             print(f"Results found: {len(search_response.results)}")
             print(f"Search latency: {search_response.search_latency_ms:.2f}ms")
-            
+
             for result in search_response.results:
                 print(f"  Doc {result.doc_id}: score={result.score:.4f}")
-            
+
             assert len(search_response.results) > 0, "No search results"
         finally:
             # Cleanup - always runs even if assertions fail
@@ -218,11 +221,11 @@ class TestKyroDBRouterReal:
     async def test_router_health(self, skip_if_no_kyrodb, kyrodb_router: KyroDBRouter):
         """Test router health check."""
         health = await kyrodb_router.health_check()
-        
+
         print("\n--- Router Health ---")
         print(f"Text instance: {health.get('text', 'N/A')}")
         print(f"Image instance: {health.get('image', 'N/A')}")
-        
+
         assert health.get("text") is True, "Text instance not healthy"
 
     @pytest.mark.asyncio
@@ -236,10 +239,10 @@ class TestKyroDBRouterReal:
         episode_id = unique_doc_id
         customer_id = "test-customer"
         collection = "test_failures"  # Use test-specific namespace
-        
+
         # Create embedding
         embedding = [0.1] * 384
-        
+
         metadata = {
             "episode_type": "failure",
             "goal": "Test integration",
@@ -247,12 +250,12 @@ class TestKyroDBRouterReal:
             "test_run": "real_integration",
             "customer_id": customer_id,  # Include customer_id in metadata
         }
-        
+
         print("\n--- Insert Episode via Router ---")
         print(f"Episode ID: {episode_id}")
         print(f"Customer: {customer_id}")
         print(f"Collection: {collection}")
-        
+
         try:
             text_success, image_success = await kyrodb_router.insert_episode(
                 episode_id=episode_id,
@@ -262,22 +265,22 @@ class TestKyroDBRouterReal:
                 image_embedding=None,
                 metadata=metadata,
             )
-            
+
             print(f"Text insert: {text_success}")
             print(f"Image insert: {image_success}")
-            
+
             assert text_success, "Text embedding insert failed"
-            
+
             # Query back with customer_id for namespace isolation
             result = await kyrodb_router.get_episode(
                 episode_id=episode_id,
                 customer_id=customer_id,
                 collection=collection,
             )
-            
+
             print("\n--- Query Episode ---")
             print(f"Found: {result is not None}")
-            
+
             assert result is not None, "Episode not found after insert"
             assert result.get("doc_id") == episode_id
         finally:
@@ -300,14 +303,14 @@ class TestKyroDBRouterReal:
         customer_id = "test-customer"
         collection = "test_failures"  # Use test-specific namespace
         episode_ids = []
-        
+
         print("\n--- Inserting test episodes ---")
-        
+
         # Insert test episodes
         for i in range(3):
             episode_id = await doc_id_factory()
             episode_ids.append(episode_id)
-            
+
             embedding = [0.1 + (i * 0.02)] * 384
             metadata = {
                 "episode_type": "failure",
@@ -315,7 +318,7 @@ class TestKyroDBRouterReal:
                 "index": str(i),
                 "customer_id": customer_id,
             }
-            
+
             await kyrodb_router.insert_episode(
                 episode_id=episode_id,
                 customer_id=customer_id,
@@ -323,13 +326,13 @@ class TestKyroDBRouterReal:
                 text_embedding=embedding,
                 metadata=metadata,
             )
-        
+
         print(f"Inserted {len(episode_ids)} episodes")
-        
+
         try:
             # Search - now uses customer_id for namespace isolation
             query_embedding = [0.1] * 384
-            
+
             response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
                 customer_id=customer_id,
@@ -337,14 +340,16 @@ class TestKyroDBRouterReal:
                 k=10,
                 min_score=-1.0,  # Allow all scores for testing
             )
-            
+
             print("\n--- Search Results ---")
             print(f"Found: {len(response.results)} episodes")
-            
+
             for result in response.results:
                 print(f"  Episode {result.doc_id}: score={result.score:.4f}")
-            
-            assert len(response.results) >= 3, f"Expected at least 3 results, got {len(response.results)}"
+
+            assert (
+                len(response.results) >= 3
+            ), f"Expected at least 3 results, got {len(response.results)}"
         finally:
             # Cleanup - always runs even if assertions fail
             print("\n--- Cleanup ---")
@@ -371,11 +376,11 @@ class TestReflectionPersistence:
         from datetime import datetime
 
         from src.models.episode import Reflection, ReflectionTier
-        
+
         episode_id = unique_doc_id
         customer_id = "test-reflection"
         collection = "test_failures"
-        
+
         try:
             # Insert episode first - include customer_id in metadata for ownership check
             embedding = [0.1] * 384
@@ -384,7 +389,7 @@ class TestReflectionPersistence:
                 "goal": "Test reflection persistence",
                 "customer_id": customer_id,  # Required for update_episode_reflection ownership check
             }
-            
+
             print("\n--- Insert Episode ---")
             await kyrodb_router.insert_episode(
                 episode_id=episode_id,
@@ -394,7 +399,7 @@ class TestReflectionPersistence:
                 metadata=initial_metadata,
             )
             print(f"Episode {episode_id} inserted")
-            
+
             # Create reflection
             reflection = Reflection(
                 consensus=None,
@@ -411,7 +416,7 @@ class TestReflectionPersistence:
                 generation_latency_ms=1500.0,
                 tier=ReflectionTier.PREMIUM.value,
             )
-            
+
             # Update with reflection
             print("\n--- Update with Reflection ---")
             success = await kyrodb_router.update_episode_reflection(
@@ -420,25 +425,25 @@ class TestReflectionPersistence:
                 collection=collection,
                 reflection=reflection,
             )
-            
+
             print(f"Update success: {success}")
             assert success, "Reflection update failed"
-            
+
             # Query and verify reflection metadata with customer_id
             result = await kyrodb_router.get_episode(
                 episode_id=episode_id,
                 customer_id=customer_id,
                 collection=collection,
             )
-            
+
             print("\n--- Verify Reflection ---")
             print(f"Metadata keys: {list(result.get('metadata', {}).keys())}")
-            
+
             metadata = result.get("metadata", {})
             assert "reflection_root_cause" in metadata, "Missing reflection_root_cause"
             assert metadata.get("reflection_root_cause") == reflection.root_cause
             assert "reflection_confidence" in metadata
-            
+
             print(f"Root cause: {metadata.get('reflection_root_cause')}")
             print(f"Confidence: {metadata.get('reflection_confidence')}")
             print(f"Model: {metadata.get('reflection_model')}")
@@ -466,10 +471,10 @@ class TestSkillsIntegration:
         from datetime import datetime
 
         from src.models.skill import Skill
-        
+
         skill_id = unique_doc_id
         customer_id = "test-skills"
-        
+
         try:
             # Create skill matching the actual Skill model
             skill = Skill(
@@ -486,37 +491,37 @@ class TestSkillsIntegration:
                 failure_count=1,
                 created_at=datetime.now(UTC),
             )
-            
+
             # Create embedding
             embedding = [0.15] * 384
-            
+
             print("\n--- Insert Skill ---")
             print(f"Skill ID: {skill_id}")
             print(f"Name: {skill.name}")
-            
+
             success = await kyrodb_router.insert_skill(
                 skill=skill,
                 embedding=embedding,
             )
-            
+
             print(f"Insert success: {success}")
             assert success, "Skill insert failed"
-            
+
             # Search for skill
             query_embedding = [0.15] * 384
-            
+
             results = await kyrodb_router.search_skills(
                 query_embedding=query_embedding,
                 customer_id=customer_id,
                 k=5,
             )
-            
+
             print("\n--- Search Skills ---")
             print(f"Found: {len(results)} skills")
-            
+
             for skill_result, score in results:
                 print(f"  Skill: {skill_result.name[:40]}... (score={score:.4f})")
-            
+
             # Should find our skill
             found = any(s.skill_id == skill_id for s, _ in results)
             assert found, f"Skill {skill_id} not found in search results"

@@ -2,22 +2,25 @@
 Customer and API key storage using SQLite .
 
 Security features:
-- API keys are never stored in plaintext (only SHA-256 digest is stored)
+- API keys are never stored in plaintext (adaptive scrypt hash is stored)
 - Prepared statements (SQL injection protection)
 - Row-level security ready (when migrating to Postgres)
 - Audit logging for all mutations
 
 Performance features:
 - Async operations with aiosqlite (non-blocking)
-- O(1) API key validation via SHA-256 indexed lookup
-- Indexes on customer_id, key_hash_sha256, email
+- O(1) API key validation via key_id lookup + hash verify
+- Indexes on customer_id, key_id, email
 - Connection pooling ready
 - Efficient queries with covering indexes
 """
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import logging
+import re
 import secrets
 import sqlite3
 import threading
@@ -41,6 +44,63 @@ from src.models.customer import (
 
 logger = logging.getLogger(__name__)
 
+_API_KEY_PATTERN = re.compile(r"^em_live_([0-9a-f]{32})_([0-9a-f]{64})$")
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 32
+_SCRYPT_SALT_BYTES = 16
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(encoded: str) -> bytes:
+    padding = "=" * ((4 - (len(encoded) % 4)) % 4)
+    return base64.urlsafe_b64decode(encoded + padding)
+
+
+def _hash_api_key_for_storage(plaintext_key: str) -> str:
+    """Hash API key with scrypt + per-key random salt."""
+    salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
+    derived = hashlib.scrypt(
+        plaintext_key.encode("utf-8"),
+        salt=salt,
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        dklen=_SCRYPT_DKLEN,
+    )
+    return (
+        f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}"
+        f"${_b64url_encode(salt)}${_b64url_encode(derived)}"
+    )
+
+
+def _verify_api_key_hash(plaintext_key: str, encoded_hash: str) -> bool:
+    """Verify plaintext API key against stored scrypt hash using constant-time compare."""
+    try:
+        algo, n_str, r_str, p_str, salt_b64, digest_b64 = encoded_hash.split("$", maxsplit=5)
+        if algo != "scrypt":
+            return False
+        n = int(n_str)
+        r = int(r_str)
+        p = int(p_str)
+        salt = _b64url_decode(salt_b64)
+        expected = _b64url_decode(digest_b64)
+        derived = hashlib.scrypt(
+            plaintext_key.encode("utf-8"),
+            salt=salt,
+            n=n,
+            r=r,
+            p=p,
+            dklen=len(expected),
+        )
+        return hmac.compare_digest(derived, expected)
+    except Exception:
+        return False
+
 
 class CustomerDatabase:
     """
@@ -50,7 +110,7 @@ class CustomerDatabase:
     Migration path to PostgreSQL documented for production scale.
 
     Security:
-    - API keys stored as SHA-256 digest (keys are 256-bit random; digest is not reversible)
+    - API keys stored as adaptive scrypt hashes with per-key random salts
     - Customer data isolated by customer_id
     - Prepared statements prevent SQL injection
     - Audit log for compliance
@@ -58,7 +118,7 @@ class CustomerDatabase:
     Performance:
     - Async operations with aiosqlite (non-blocking)
     - Indexes on all foreign keys and lookup columns
-    - O(1) API key validation via indexed digest lookup
+    - O(1) API key validation via indexed key_id lookup + hash verification
     """
 
     def __init__(self, db_path: str = "./data/customers.db", *, doc_id_block_size: int = 256):
@@ -128,7 +188,7 @@ class CustomerDatabase:
                     CREATE TABLE IF NOT EXISTS api_keys (
                         key_id TEXT PRIMARY KEY,
                         customer_id TEXT NOT NULL,
-                        key_hash_sha256 TEXT NOT NULL UNIQUE,
+                        key_hash TEXT NOT NULL,
                         key_prefix TEXT NOT NULL,
                         name TEXT,
                         created_at TEXT NOT NULL,
@@ -138,9 +198,7 @@ class CustomerDatabase:
 
                         FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
                             ON DELETE CASCADE,
-                        CHECK (is_active IN (0, 1)),
-                        CHECK (length(key_hash_sha256) = 64),
-                        CHECK (key_hash_sha256 NOT GLOB '*[^0-9a-f]*')
+                        CHECK (is_active IN (0, 1))
                     )
                 """
                 )
@@ -150,14 +208,14 @@ class CustomerDatabase:
                 cursor = await conn.execute("PRAGMA table_info(api_keys)")
                 api_key_columns = {row["name"] for row in await cursor.fetchall()}
                 await cursor.close()
-                if "key_hash_sha256" not in api_key_columns:
+                if "key_hash" not in api_key_columns:
                     raise RuntimeError(
-                        "Unsupported api_keys schema detected (missing 'key_hash_sha256'). "
+                        "Unsupported api_keys schema detected (missing 'key_hash'). "
                         "Delete the customer DB file and re-create API keys."
                     )
-                if "key_hash" in api_key_columns:
+                if "key_hash_sha256" in api_key_columns:
                     raise RuntimeError(
-                        "Legacy api_keys schema detected (column 'key_hash'). "
+                        "Legacy api_keys schema detected (column 'key_hash_sha256'). "
                         "Delete the customer DB file and re-create API keys."
                     )
 
@@ -323,7 +381,7 @@ class CustomerDatabase:
                     "CREATE INDEX IF NOT EXISTS idx_api_keys_customer ON api_keys(customer_id)"
                 )
                 await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_api_keys_hash_sha256 ON api_keys(key_hash_sha256)"
+                    "CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)"
                 )
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active)"
@@ -497,8 +555,8 @@ class CustomerDatabase:
             Updated customer or None if not found
         """
         # Build dynamic UPDATE query for only provided fields
-        updates = []
-        params = []
+        updates: list[str] = []
+        params: list[object] = []
 
         if update.organization_name is not None:
             updates.append("organization_name = ?")
@@ -644,6 +702,7 @@ class CustomerDatabase:
                     if attempt >= max_attempts - 1:
                         raise
                     await asyncio.sleep(0.05 * (2**attempt))
+            raise RuntimeError(f"Failed to allocate doc_id block for scope '{scope}' after retries")
 
     async def index_episode(
         self,
@@ -978,24 +1037,20 @@ class CustomerDatabase:
 
         Security:
         - Generates cryptographically secure random key (32 bytes = 256 bits)
-        - Stores only SHA-256 digest (never plaintext)
+        - Stores only adaptive scrypt hash (never plaintext)
         - Returns plaintext only once at creation
         """
         import uuid
 
-        # Generate secure random API key
-        # Format: em_live_<64 hex chars> (32 bytes)
-        random_bytes = secrets.token_bytes(32)
-        key_suffix = random_bytes.hex()
-        plaintext_key = f"em_live_{key_suffix}"
-
-        key_hash_sha256 = hashlib.sha256(plaintext_key.encode()).hexdigest()
+        # Generate secure random API key:
+        #   em_live_<32-hex key_id>_<64-hex secret>
+        key_id = uuid.uuid4().hex
+        key_secret = secrets.token_hex(32)
+        plaintext_key = f"em_live_{key_id}_{key_secret}"
+        key_hash = _hash_api_key_for_storage(plaintext_key)
 
         # Extract prefix for display (first 8 chars after em_live_)
-        key_prefix = key_suffix[:8]
-
-        # Generate key ID
-        key_id = str(uuid.uuid4())
+        key_prefix = key_secret[:8]
 
         # Calculate expiration
         now = datetime.now(UTC)
@@ -1006,7 +1061,7 @@ class CustomerDatabase:
         api_key = APIKey(
             key_id=key_id,
             customer_id=api_key_create.customer_id,
-            key_hash_sha256=key_hash_sha256,
+            key_hash=key_hash,
             key_prefix=key_prefix,
             name=api_key_create.name,
             created_at=now,
@@ -1018,14 +1073,14 @@ class CustomerDatabase:
             cursor = await conn.execute(
                 """
                 INSERT INTO api_keys (
-                    key_id, customer_id, key_hash_sha256, key_prefix, name,
+                    key_id, customer_id, key_hash, key_prefix, name,
                     created_at, expires_at, is_active
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     api_key.key_id,
                     api_key.customer_id,
-                    key_hash_sha256,
+                    key_hash,
                     api_key.key_prefix,
                     api_key.name,
                     now.isoformat(),
@@ -1062,34 +1117,40 @@ class CustomerDatabase:
         Security:
         - Checks expiration
         - Checks is_active flag
+        - Verifies adaptive scrypt hash in constant time
         - Updates last_used_at timestamp
 
         Performance:
-        - SHA-256 indexed lookup (O(1))
+        - key_id indexed lookup + hash verify (O(1))
         """
-        if not plaintext_key.startswith("em_live_"):
-            return None
         # Defensive: prevent unusually large headers from wasting CPU/memory.
-        # Valid keys are ~72 chars (em_live_ + 64 hex chars).
+        # Valid keys are ~105 chars (em_live_ + 32-hex key_id + "_" + 64-hex secret).
         if len(plaintext_key) > 256:
             return None
 
+        match = _API_KEY_PATTERN.fullmatch(plaintext_key)
+        if match is None:
+            return None
+        key_id = match.group(1)
+
         async with self._connect() as conn:
-            # SHA-256 indexed lookup narrows to a single row.
-            key_hash_sha256 = hashlib.sha256(plaintext_key.encode()).hexdigest()
             cursor = await conn.execute(
                 """
                 SELECT k.*, c.*
                 FROM api_keys k
                 JOIN customers c ON k.customer_id = c.customer_id
-                WHERE k.is_active = 1 AND k.key_hash_sha256 = ?
+                WHERE k.is_active = 1 AND k.key_id = ?
                 """,
-                (key_hash_sha256,),
+                (key_id,),
             )
             row = await cursor.fetchone()
             await cursor.close()
 
             if not row:
+                return None
+
+            if not _verify_api_key_hash(plaintext_key, row["key_hash"]):
+                logger.warning("API key hash verification failed for key_id=%s", row["key_id"])
                 return None
 
             # Found matching key - check expiration

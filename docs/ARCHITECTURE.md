@@ -22,7 +22,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 ### Design Principles
 
 1. **Failure-focused learning**: Store only failures to maximize learning value
-2. **Performance first**: <50ms P99 search latency, <100ms ingestion
+2. **Performance first**: optimize for sustained high-concurrency operation
 3. **Security by default**: Multi-tenancy isolation, API key auth, PII redaction
 4. **Observable**: Comprehensive metrics, structured logs, health checks
 
@@ -59,7 +59,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 │  │  Port: 50051         │      │ Port: 50052          │        │
 │  └──────────────────────┘      └──────────────────────┘        │
 │                                                                  │
-│  3-tier caching: 73.5% hit rate, <1ms P99 vector search        │
+│  KyroDB ANN + cache layers (performance depends on workload)    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,7 +68,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 **API Server (FastAPI)**:
 - Ingestion pipeline: PII redaction → embedding → KyroDB storage
 - Retrieval pipeline: Precondition matching → vector search → ranking
-- Authentication: API key-based with bcrypt hashing
+- Authentication: API key-based with adaptive scrypt hash verification + TTL cache
 - Rate limiting: Per-endpoint limits (50-500 req/min)
 - Observability: structured logging and health checks
 
@@ -80,7 +80,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 **KyroDB (Vector Database)**:
 - Dual-instance: text/code (384-dim) + images (512-dim CLIP)
 - 3-tier caching: Learned cache → Hot tier → Cold tier
-- <1ms P99 vector search at 10M vectors
+- Raw vector index latency can reach sub-millisecond P99 in isolated KyroDB microbenchmarks
 - 73.5% cache hit rate (validated)
 
 **Observability**:
@@ -130,8 +130,15 @@ All customer data is isolated using namespace prefixes:
 
 ```
 Collection: {customer_id}:failures
-Document ID: {customer_id}:{episode_id}
+Document ID: tenant-safe identifier strategy (UUIDv4 or tenant-scoped sequence)
 ```
+
+**Recommended identifier strategy**:
+- Use UUIDv4 (or equivalent cryptographically-random IDs) for externally visible identifiers.
+- If dense integer `doc_id` is required by the vector engine, derive it from a tenant-scoped allocator
+  (e.g., `{customer_id}:{local_sequence}` mapping), not a single global shared counter.
+- Collection namespace isolation alone is not sufficient for multi-tenancy; IDs must avoid sequential
+  leakage and single-writer bottlenecks across tenants.
 
 **Security guarantees**:
 - Customer A cannot access Customer B's data
@@ -160,15 +167,23 @@ ENTERPRISE: Unlimited
 
 ### Authentication
 
-**API Key Format**: `em_live_` + 32 random bytes (base64)
+**API Key Format**: `em_live_{key_id}_{secret}` (random key id + random secret)
 
-**Storage**: bcrypt hashed (cost factor 12) with 5-minute TTL cache
+**Storage**:
+- Store only adaptive password hashes (scrypt) with per-key random salt.
+- Never store plaintext API keys.
+- Keep a 5-minute TTL cache for validated keys to minimize repeated DB verification.
 
 **Validation**:
 1. Extract key from `X-API-Key` header
 2. Check cache (5-minute TTL)
-3. If miss: Hash and compare with database
+3. If miss: lookup by key_id and verify scrypt hash (constant-time compare)
 4. Load customer and check status (active/suspended)
+
+**Key-hash migration policy**:
+- Legacy SHA-256-only key storage is not accepted in this clean-slate release.
+- On upgrade, rotate/re-issue API keys and recreate the `api_keys` table with adaptive hashes.
+- This is an explicit force-rotation migration to remove weak credential storage.
 
 ### Data Protection
 
@@ -185,22 +200,26 @@ ENTERPRISE: Unlimited
 
 ## Performance Characteristics
 
-### Latency Targets
+### Performance Targets
 
-| Operation | Target | Current |
-|-----------|--------|---------|
-| Episode ingestion (P99) | <100ms | ~85ms |
-| Search (P99) | <50ms | ~42ms |
-| Health check (liveness) | <5ms | <2ms |
-| Health check (readiness) | <100ms | ~60ms |
+The system tracks two different latency classes:
 
-### Throughput
+- **KyroDB raw vector latency target (aspirational)**: `<1ms P99` for isolated ANN query execution.
+- **End-to-end API latency target (aspirational)**: `<400ms P99` under sustained mixed load, including:
+  auth, request parsing, embedding/ranking, serialization, and network overhead.
 
-| Metric | Target | Current |
-|--------|--------|---------|
-| Concurrent requests | 500 req/s | 600 req/s |
-| KyroDB cache hit rate | >70% | 73.5% |
-| API availability | 99.9% | 99.95% |
+Because end-to-end requests include significantly more work than raw ANN search, API P99 will be
+higher than isolated DB query P99.
+
+### Benchmark Snapshot
+
+Recent KyroDB-backed load runs (`30s`, `200` concurrent workers) produced:
+- Overall throughput: ~`899 RPS`
+- Overall P99 latency: ~`357ms`
+- Search/Gating/Ingestion P99: ~`351-362ms`
+
+Reproduce end-to-end measurements with:
+- `tests/load/test_load.py`
+- `tests/load/test_load_1000_rps.py`
 
 ---
-

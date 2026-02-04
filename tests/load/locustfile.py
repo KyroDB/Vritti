@@ -101,14 +101,16 @@ def generate_episode_payload() -> dict:
             "Attempted restart",
         ],
         "tool_chain": random.choice(SAMPLE_TOOLS),
-        "error_class": random.choice([
-            "configuration_error",
-            "dependency_error",
-            "network_error",
-            "resource_error",
-            "timeout_error",
-            "validation_error",
-        ]),
+        "error_class": random.choice(
+            [
+                "configuration_error",
+                "dependency_error",
+                "network_error",
+                "resource_error",
+                "timeout_error",
+                "validation_error",
+            ]
+        ),
         "environment_info": {
             "os": "linux",
             "python_version": "3.11",
@@ -144,16 +146,16 @@ def generate_reflect_payload() -> dict:
 class VrittiUser(HttpUser):
     """
     Simulates a typical AI agent using Vritti for episodic memory.
-    
+
     Behavior pattern:
     - 60% search requests (checking for past failures)
     - 25% capture requests (storing new episodes)
     - 10% reflect requests (pre-action gating)
     - 5% health checks
     """
-    
+
     wait_time = between(0.1, 0.5)  # 100-500ms between requests
-    
+
     def on_start(self):
         """Initialize user session."""
         self.headers = {
@@ -161,13 +163,13 @@ class VrittiUser(HttpUser):
             "Content-Type": "application/json",
         }
         self.captured_episode_ids = []
-    
+
     @task(60)
     @tag("search")
     def search_episodes(self):
         """Search for similar episodes (most common operation)."""
         payload = generate_search_payload()
-        
+
         with self.client.post(
             "/api/v1/search",
             json=payload,
@@ -187,13 +189,13 @@ class VrittiUser(HttpUser):
                 response.failure("Rate limited")
             else:
                 response.failure(f"Unexpected status: {response.status_code}")
-    
+
     @task(25)
     @tag("capture")
     def capture_episode(self):
         """Capture a new episode."""
         payload = generate_episode_payload()
-        
+
         with self.client.post(
             "/api/v1/capture",
             json=payload,
@@ -214,13 +216,13 @@ class VrittiUser(HttpUser):
                 response.failure("Rate limited")
             else:
                 response.failure(f"Unexpected status: {response.status_code}")
-    
+
     @task(10)
     @tag("reflect")
     def reflect_before_action(self):
         """Pre-action gating check."""
         payload = generate_reflect_payload()
-        
+
         with self.client.post(
             "/api/v1/reflect",
             json=payload,
@@ -240,7 +242,7 @@ class VrittiUser(HttpUser):
                 response.failure("Rate limited")
             else:
                 response.failure(f"Unexpected status: {response.status_code}")
-    
+
     @task(5)
     @tag("health")
     def check_health(self):
@@ -259,19 +261,19 @@ class VrittiUser(HttpUser):
 class HighThroughputUser(HttpUser):
     """
     High-throughput user for stress testing.
-    
+
     Simulates burst traffic with minimal wait time.
     Use for capacity testing.
     """
-    
+
     wait_time = between(0.01, 0.05)  # 10-50ms between requests
-    
+
     def on_start(self):
         self.headers = {
             "X-API-Key": API_KEY,
             "Content-Type": "application/json",
         }
-    
+
     @task(80)
     @tag("stress", "search")
     def rapid_search(self):
@@ -283,7 +285,7 @@ class HighThroughputUser(HttpUser):
             headers=self.headers,
             name="/api/v1/search [stress]",
         )
-    
+
     @task(20)
     @tag("stress", "capture")
     def rapid_capture(self):
@@ -300,24 +302,24 @@ class HighThroughputUser(HttpUser):
 class ReflectionLoadUser(HttpUser):
     """
     User focused on reflection generation load testing.
-    
+
     Tests LLM integration under load.
     """
-    
+
     wait_time = between(0.5, 2.0)  # Slower due to LLM calls
-    
+
     def on_start(self):
         self.headers = {
             "X-API-Key": API_KEY,
             "Content-Type": "application/json",
         }
-    
+
     @task(50)
     @tag("reflection")
     def capture_with_reflection(self):
         """Capture with reflection enabled."""
         payload = generate_episode_payload()
-        
+
         with self.client.post(
             "/api/v1/capture?generate_reflection=true",
             json=payload,
@@ -333,7 +335,7 @@ class ReflectionLoadUser(HttpUser):
                     response.failure("Reflection not queued")
             else:
                 response.failure(f"Status: {response.status_code}")
-    
+
     @task(30)
     @tag("reflection")
     def capture_premium_tier(self):
@@ -346,13 +348,13 @@ class ReflectionLoadUser(HttpUser):
             headers=self.headers,
             name="/api/v1/capture [premium tier]",
         )
-    
+
     @task(20)
     @tag("reflection")
     def capture_cheap_tier(self):
         """Capture with cheap tier reflection."""
         payload = generate_episode_payload()
-        
+
         self.client.post(
             "/api/v1/capture?generate_reflection=true&tier=cheap",
             json=payload,
@@ -378,15 +380,19 @@ def on_test_stop(environment, **kwargs):
     """Called when test stops."""
     print(f"\n{'='*60}")
     print("Load Test Complete")
-    
+
     if environment.stats.total.num_requests > 0:
         print(f"Total Requests: {environment.stats.total.num_requests}")
         print(f"Failure Rate: {environment.stats.total.fail_ratio * 100:.2f}%")
         print(f"Avg Response Time: {environment.stats.total.avg_response_time:.2f}ms")
-        print(f"P95 Response Time: {environment.stats.total.get_response_time_percentile(0.95):.2f}ms")
-        print(f"P99 Response Time: {environment.stats.total.get_response_time_percentile(0.99):.2f}ms")
+        print(
+            f"P95 Response Time: {environment.stats.total.get_response_time_percentile(0.95):.2f}ms"
+        )
+        print(
+            f"P99 Response Time: {environment.stats.total.get_response_time_percentile(0.99):.2f}ms"
+        )
         print(f"RPS: {environment.stats.total.current_rps:.2f}")
-    
+
     print(f"{'='*60}\n")
 
 
@@ -398,6 +404,6 @@ def on_request(request_type, name, response_time, response_length, exception, **
         slo_threshold = 5000
     else:
         slo_threshold = 50
-    
+
     if response_time > slo_threshold and exception is None:
         print(f"[SLO VIOLATION] {name}: {response_time:.2f}ms > {slo_threshold}ms")

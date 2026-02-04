@@ -14,100 +14,68 @@ from pydantic import BaseModel, Field
 class ClusterInfo(BaseModel):
     """
     Metadata about an episode cluster.
-    
+
     Contains aggregate statistics and episode membership.
     """
-    
+
     cluster_id: int = Field(
         ...,
         ge=1,
-        description="Unique cluster identifier used as KyroDB doc_id for the cluster template (>=1)."
+        description="Unique cluster identifier used as KyroDB doc_id for the cluster template (>=1).",
     )
-    
+
     customer_id: str = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="Customer who owns this cluster"
+        ..., min_length=1, max_length=100, description="Customer who owns this cluster"
     )
-    
+
     episode_ids: list[int] = Field(
-        ...,
-        min_length=1,
-        description="Episodes belonging to this cluster"
+        ..., min_length=1, description="Episodes belonging to this cluster"
     )
-    
+
     centroid_embedding: list[float] = Field(
-        ...,
-        min_length=1,
-        description="Cluster centroid for similarity matching"
+        ..., min_length=1, description="Cluster centroid for similarity matching"
     )
-    
+
     avg_intra_cluster_similarity: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Average similarity between episodes in cluster"
+        ..., ge=0.0, le=1.0, description="Average similarity between episodes in cluster"
     )
-    
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
-    
-    last_updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    last_updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ClusterTemplate(BaseModel):
     """
     Template reflection for an episode cluster.
-    
+
     Generated from the best episode in the cluster and reused
     for all new episodes matching this cluster.
-    
+
     Security:
     - customer_id validated for multi-tenancy
     - template_reflection fully validated
     - usage tracking prevents abuse
     """
-    
+
     cluster_id: int = Field(
-        ...,
-        gt=0,
-        description="Cluster identifier (KyroDB doc_id for this template)"
+        ..., gt=0, description="Cluster identifier (KyroDB doc_id for this template)"
     )
-    
+
     customer_id: str = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="Customer who owns this template"
+        ..., min_length=1, max_length=100, description="Customer who owns this template"
     )
-    
+
     # Import will be done at runtime to avoid circular dependency
     # template_reflection: Reflection
-    template_reflection: dict = Field(
-        ...,
-        description="The canonical reflection for this cluster"
-    )
-    
-    source_episode_id: int = Field(
-        ...,
-        description="Episode that generated this template"
-    )
-    
-    episode_count: int = Field(
-        ...,
-        ge=1,
-        description="Number of episodes in this cluster"
-    )
-    
+    template_reflection: dict = Field(..., description="The canonical reflection for this cluster")
+
+    source_episode_id: int = Field(..., description="Episode that generated this template")
+
+    episode_count: int = Field(..., ge=1, description="Number of episodes in this cluster")
+
     avg_similarity: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Average intra-cluster similarity"
+        ..., ge=0.0, le=1.0, description="Average intra-cluster similarity"
     )
 
     match_similarity: float | None = Field(
@@ -116,25 +84,17 @@ class ClusterTemplate(BaseModel):
         le=1.0,
         description="Similarity between query and this template (set at retrieval time)",
     )
-    
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
-    
-    last_used_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
-    )
-    
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    last_used_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
     usage_count: int = Field(
-        default=0,
-        ge=0,
-        description="How many times this template has been reused"
+        default=0, ge=0, description="How many times this template has been reused"
     )
-    
+
     template_version: int = Field(
-        default=1,
-        ge=1,
-        description="Template version for future updates"
+        default=1, ge=1, description="Template version for future updates"
     )
 
     def to_metadata_dict(self) -> dict[str, str]:
@@ -215,10 +175,10 @@ class ClusterTemplate(BaseModel):
 class ClusteringStats(BaseModel):
     """
     Statistics from a clustering run.
-    
+
     Used for monitoring and optimization.
     """
-    
+
     customer_id: str
     total_episodes: int = Field(ge=0)
     total_clusters: int = Field(ge=0)
@@ -229,7 +189,7 @@ class ClusteringStats(BaseModel):
     max_cluster_size: int = Field(ge=0)
     clustering_duration_seconds: float = Field(ge=0.0)
     templates_generated: int = Field(ge=0)
-    
+
     @property
     def clustered_percentage(self) -> float:
         """Percentage of episodes successfully clustered."""

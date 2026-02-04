@@ -61,21 +61,21 @@ def admin_headers():
 def mock_admin_key():
     """
     Fixture to patch admin key for testing.
-    
+
     Uses patch on the config module before importing the app to ensure
     the admin_api_key is available.
     """
     from src.config import get_settings
-    
+
     # Capture original admin_api_key
     settings = get_settings()
     original_key = settings.admin_api_key
-    
+
     # Temporarily set admin key
     settings.admin_api_key = TEST_ADMIN_KEY
-    
+
     yield
-    
+
     # Restore original
     settings.admin_api_key = original_key
 
@@ -84,16 +84,16 @@ def mock_admin_key():
 def mock_no_admin_key():
     """Fixture to ensure no admin key is set."""
     from src.config import get_settings
-    
+
     # Capture original admin_api_key
     settings = get_settings()
     original_key = settings.admin_api_key
-    
+
     # Temporarily unset admin key
     settings.admin_api_key = None
-    
+
     yield
-    
+
     # Restore original
     settings.admin_api_key = original_key
 
@@ -107,13 +107,14 @@ class TestBudgetEndpoint:
         """Test that budget endpoint returns current cost stats."""
         with patch("src.main.reflection_service", mock_reflection_service):
             from src.main import app
+
             client = TestClient(app)
-            
+
             response = client.get("/admin/budget", headers=admin_headers)
-            
+
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["date"] == "2025-11-27"
             assert data["daily_cost_usd"] == 2.35
             assert data["warning_threshold_usd"] == 10.0
@@ -130,16 +131,17 @@ class TestBudgetEndpoint:
         mock_reflection_service.get_stats.return_value["daily_cost"]["daily_cost_usd"] = 12.50
         mock_reflection_service.get_stats.return_value["daily_cost"]["warning_triggered"] = True
         mock_reflection_service.get_stats.return_value["daily_cost"]["budget_remaining_usd"] = 37.50
-        
+
         with patch("src.main.reflection_service", mock_reflection_service):
             from src.main import app
+
             client = TestClient(app)
-            
+
             response = client.get("/admin/budget", headers=admin_headers)
-            
+
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["warning_triggered"] is True
             assert data["limit_exceeded"] is False
 
@@ -151,33 +153,33 @@ class TestBudgetEndpoint:
         mock_reflection_service.get_stats.return_value["daily_cost"]["warning_triggered"] = True
         mock_reflection_service.get_stats.return_value["daily_cost"]["limit_exceeded"] = True
         mock_reflection_service.get_stats.return_value["daily_cost"]["budget_remaining_usd"] = 0.0
-        
+
         with patch("src.main.reflection_service", mock_reflection_service):
             from src.main import app
+
             client = TestClient(app)
-            
+
             response = client.get("/admin/budget", headers=admin_headers)
-            
+
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["limit_exceeded"] is True
             assert data["premium_tier_blocked"] is True
             assert data["budget_remaining_usd"] == 0.0
 
-    def test_budget_endpoint_when_service_unavailable(
-        self, admin_headers, mock_admin_key
-    ):
+    def test_budget_endpoint_when_service_unavailable(self, admin_headers, mock_admin_key):
         """Test budget endpoint when reflection service is not initialized."""
         with patch("src.main.reflection_service", None):
             from src.main import app
+
             client = TestClient(app)
-            
+
             response = client.get("/admin/budget", headers=admin_headers)
-            
+
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["daily_cost_usd"] == 0.0
             assert data["budget_remaining_usd"] == 50.0
             assert data["premium_tier_blocked"] is False
@@ -192,13 +194,14 @@ class TestReflectionStatsEndpoint:
         """Test that stats endpoint returns reflection statistics."""
         with patch("src.main.reflection_service", mock_reflection_service):
             from src.main import app
+
             client = TestClient(app)
-            
+
             response = client.get("/admin/reflection/stats", headers=admin_headers)
-            
+
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["total_cost_usd"] == 5.50
             assert data["total_reflections"] == 100
             assert data["average_cost_per_reflection"] == 0.055
@@ -209,19 +212,18 @@ class TestReflectionStatsEndpoint:
             assert "count_by_tier" in data
             assert "percentage_by_tier" in data
 
-    def test_stats_endpoint_when_service_unavailable(
-        self, admin_headers, mock_admin_key
-    ):
+    def test_stats_endpoint_when_service_unavailable(self, admin_headers, mock_admin_key):
         """Test stats endpoint when reflection service is not initialized."""
         with patch("src.main.reflection_service", None):
             from src.main import app
+
             client = TestClient(app)
-            
+
             response = client.get("/admin/reflection/stats", headers=admin_headers)
-            
+
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["total_cost_usd"] == 0.0
             assert data["total_reflections"] == 0
             assert data["cost_savings_usd"] == 0.0
@@ -233,21 +235,20 @@ class TestAdminAccessControl:
     def test_admin_endpoint_without_key_returns_401(self, mock_no_admin_key):
         """Test that admin endpoints require API key."""
         from src.main import app
+
         client = TestClient(app)
-        
+
         response = client.get("/admin/budget")
-        
+
         # Should fail because ADMIN_API_KEY not set and no header
         assert response.status_code == 401
 
     def test_admin_endpoint_with_wrong_key_returns_401(self, mock_admin_key):
         """Test that wrong API key returns 401."""
         from src.main import app
+
         client = TestClient(app)
-        
-        response = client.get(
-            "/admin/budget", 
-            headers={"X-Admin-API-Key": "wrong-key-not-valid"}
-        )
-        
+
+        response = client.get("/admin/budget", headers={"X-Admin-API-Key": "wrong-key-not-valid"})
+
         assert response.status_code == 401

@@ -38,27 +38,30 @@ from src.models.episode import (
 from src.retrieval.search import SearchPipeline
 
 
-def pytest_sessionfinish(session, exitstatus):
-    """
-    Cleanup hook called after all tests complete.
+def pytest_addoption(parser) -> None:
+    parser.addoption(
+        "--run-load",
+        action="store_true",
+        default=False,
+        help="Run load tests (tests marked with @pytest.mark.load).",
+    )
 
-    Force exits pytest to work around asyncio event loop cleanup hang.
-    This is a known issue with pytest-asyncio on Python 3.9.
 
-    See: https://github.com/pytest-dev/pytest-asyncio/issues/371
-    """
+def pytest_collection_modifyitems(config, items) -> None:
     import os
-    import sys
 
-    # Flush output to ensure all test results are printed
-    sys.stdout.flush()
-    sys.stderr.flush()
+    env_value = os.getenv("RUN_LOAD_TESTS", "")
+    env_bool = env_value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    run_load = bool(config.getoption("--run-load")) or env_bool
+    if run_load:
+        return
 
-    # Force exit with the test exit code
-    # This bypasses the hanging asyncio cleanup in threading module
-    # Only force exit on success to allow error reports to be printed
-    if exitstatus == 0:
-        os._exit(exitstatus)
+    skip_load = pytest.mark.skip(
+        reason="Load tests are opt-in. Pass --run-load or set RUN_LOAD_TESTS=1.",
+    )
+    for item in items:
+        if "load" in item.keywords:
+            item.add_marker(skip_load)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -350,8 +353,10 @@ def app_client(
     # Ensure tests never touch a developer's local customer DB.
     monkeypatch.setenv("STORAGE_CUSTOMER_DB_PATH", str(tmp_path / "customers.db"))
     import src.config as config_module
+
     config_module._settings = None
     import src.storage.database as customer_db_module
+
     customer_db_module._db = None
 
     # Patch global instances

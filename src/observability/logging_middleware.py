@@ -15,10 +15,9 @@ Performance:
 
 import time
 import uuid
-from collections.abc import Callable
 
 from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
 
 from src.observability.logging import (
@@ -62,7 +61,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
         }
     """
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """
         Process request with structured logging context.
 
@@ -176,7 +175,7 @@ class SlowRequestLogger(BaseHTTPMiddleware):
         self.warning_threshold_ms = warning_threshold_ms
         self.error_threshold_ms = error_threshold_ms
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """
         Track request latency and log slow requests.
 

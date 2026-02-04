@@ -47,9 +47,9 @@ LLM analyzes each failure and generates:
 ```python
 root_cause: str                 # Why it failed
 resolution_strategy: str        # How to fix it
-preconditions: dict            # When this applies
-prevention_guidance: str       # How to avoid it
-similar_patterns: list[str]   # Related issues
+preconditions: dict[str, str]   # When this applies (structured key/value context)
+environment_factors: list[str]  # Runtime/env constraints
+affected_components: list[str]  # Components touched by the failure
 confidence_score: float        # Reliability (0-1)
 ```
 
@@ -59,9 +59,14 @@ confidence_score: float        # Reliability (0-1)
   "root_cause": "Image tag 'latest' doesn't exist in registry",
   "resolution_strategy": "Use specific version tag like v1.2.3",
   "preconditions": {"tool": "kubectl", "image_tag": "latest"},
+  "environment_factors": ["kubernetes", "private-registry"],
   "confidence_score": 0.95
 }
 ```
+
+Compatibility note:
+- Readers/writers should accept both structured dict form and legacy `["key=value"]` lists.
+- Normalize internally to a canonical representation before matching/ranking.
 
 ## Storage Backend: KyroDB
 
@@ -94,6 +99,8 @@ When checking if action is safe:
 4. **Rank results** - Combine vector + precondition scores
 5. **Return top matches** - With reflections
 
+Archived episodes are excluded from search by default (`include_archived=false`).
+
 **Example Search**:
 ```
 Query: "kubectl apply failed"
@@ -114,10 +121,10 @@ Query: "kubectl apply failed"
 - Storage: ~1KB per episode
 - 10,000 episodes ≈ 10MB
 
-##Performance Targets
-- Search latency: <50ms P99
-- Insert latency: <100ms P99
-- Vector similarity: Cosine distance
+## Performance Notes
+- Sustained mixed-load benchmark (30s, 200 concurrency): ~899 RPS, ~357ms overall P99.
+- Ingestion-only load (1000 requests, 100 concurrency): ~1121 RPS, ~132ms P99.
+- Vector similarity: cosine distance (L2-normalized embeddings).
 
 ## Data Retention
 
@@ -127,3 +134,16 @@ Episodes stored indefinitely unless:
 - Archive old episodes to cold storage
 
 See `BEST_PRACTICES.md` for optimization tips.
+
+## Verification Checklist
+
+When changing precondition schema, verify all serializer/parser call sites:
+
+```bash
+rg "preconditions" src/models src/ingestion src/retrieval
+```
+
+Required checks:
+- Episode/Reflection serializers accept and emit structured preconditions.
+- Retrieval precondition matcher can read normalized dict semantics.
+- Any migration/compat logic is covered by tests.

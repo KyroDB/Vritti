@@ -2,7 +2,7 @@
 FastAPI dependencies for authentication and authorization.
 
 Security:
-- API key validation via SHA-256 indexed lookup (never store plaintext keys)
+- API key validation via key_id lookup + adaptive hash verification
 - customer_id injection from validated key (prevents spoofing)
 - Rate limiting per customer
 - Request tracking for usage tracking
@@ -60,6 +60,15 @@ def set_api_key_in_cache(key: str, value: Customer) -> None:
         cache[key] = value
 
 
+def _cache_fingerprint(api_key: str) -> str:
+    """
+    Create non-reversible cache fingerprint for plaintext API key.
+
+    This fingerprint is used only for in-memory cache keying (not credential storage).
+    """
+    return hashlib.blake2b(api_key.encode("utf-8"), digest_size=16).hexdigest()
+
+
 async def get_authenticated_customer(
     request: Request,
     authorization: str | None = Header(None, alias="Authorization"),
@@ -86,7 +95,7 @@ async def get_authenticated_customer(
         HTTPException 403: Customer inactive or quota exceeded
 
     Security:
-        - API key validated via SHA-256 indexed lookup (constant-time compare not needed)
+        - API key validated via key_id lookup + adaptive hash verify (constant-time compare)
         - customer_id extracted from validated key (cannot be spoofed)
         - Cache prevents DB hot-spot under high QPS
         - Inactive/suspended customers rejected
@@ -130,11 +139,11 @@ async def get_authenticated_customer(
             detail="Invalid API key format.",
         )
 
-    # Cache key: digest (avoid keeping plaintext keys in memory)
-    api_key_sha256 = hashlib.sha256(api_key.encode()).hexdigest()
+    # Cache key: fingerprint (avoid keeping plaintext keys in memory)
+    api_key_cache_key = _cache_fingerprint(api_key)
 
     # Check cache first (performance optimization)
-    cached_customer = get_api_key_from_cache(api_key_sha256)
+    cached_customer = get_api_key_from_cache(api_key_cache_key)
     if cached_customer:
         logger.debug(f"API key cache hit for customer: {cached_customer.customer_id}")
 
@@ -162,7 +171,6 @@ async def get_authenticated_customer(
     validation_time_seconds = time.perf_counter() - start_time
     validation_time_ms = validation_time_seconds * 1000
 
-
     if customer is None:
         logger.warning(f"API key validation failed (validation time: {validation_time_ms:.2f}ms)")
         raise HTTPException(
@@ -183,7 +191,7 @@ async def get_authenticated_customer(
         )
 
     # Cache validated key (5 minute TTL)
-    set_api_key_in_cache(api_key_sha256, customer)
+    set_api_key_in_cache(api_key_cache_key, customer)
 
     # Attach customer to request state
     request.state.customer = customer
@@ -193,7 +201,7 @@ async def get_authenticated_customer(
 
 
 async def require_active_customer(
-    customer: Customer = None,
+    customer: Customer | None = None,
 ) -> Customer:
     """
     Verify customer is active and within quota.
@@ -277,7 +285,13 @@ def get_customer_id_from_request(request: Request) -> str:
             detail="Authentication required",
         )
 
-    return request.state.customer.customer_id
+    customer = getattr(request.state, "customer", None)
+    if customer is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+    return str(customer.customer_id)
 
 
 async def require_admin_access(
@@ -285,21 +299,21 @@ async def require_admin_access(
 ) -> None:
     """
     Validate admin API key for admin-only endpoints.
-    
+
     Security:
         - Requires X-Admin-API-Key header with valid admin key
         - If ADMIN_API_KEY is not configured, endpoint is blocked (fail closed)
         - Use constant-time comparison to prevent timing attacks
-        
+
     Args:
         x_admin_api_key: Admin API key from header
-        
+
     Returns:
         None (validation passes)
-        
+
     Raises:
         HTTPException 401: Missing or invalid admin API key
-        
+
     Usage:
         @app.get("/admin/budget")
         async def get_budget(_: None = Depends(require_admin_access)):
@@ -309,10 +323,10 @@ async def require_admin_access(
     import secrets
 
     from src.config import get_settings
-    
+
     settings = get_settings()
     configured_key = settings.admin_api_key
-    
+
     # If no admin key is configured, block access (fail closed)
     # This ensures admin endpoints are always protected
     if configured_key is None:
@@ -324,19 +338,19 @@ async def require_admin_access(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Admin API key not configured on server",
         )
-    
+
     if x_admin_api_key is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing X-Admin-API-Key header",
             headers={"WWW-Authenticate": "X-Admin-API-Key"},
         )
-    
+
     # Use constant-time comparison to prevent timing attacks
     if not secrets.compare_digest(x_admin_api_key, configured_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin API key",
         )
-    
+
     logger.debug("Admin access validated successfully")

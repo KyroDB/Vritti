@@ -53,7 +53,7 @@ class EpisodeRanker:
     ):
         """
         Initialize episode ranker.
-        
+
         Args:
             decay_lambda: Power-law decay rate (Phase 6). Defaults to POWER_LAW_LAMBDA.
             decay_beta: Power exponent. Defaults to POWER_LAW_BETA.
@@ -61,7 +61,9 @@ class EpisodeRanker:
         """
         self.decay_lambda = decay_lambda if decay_lambda is not None else self.POWER_LAW_LAMBDA
         self.decay_beta = decay_beta if decay_beta is not None else self.POWER_LAW_BETA
-        self.min_temporal_weight = min_weight if min_weight is not None else self.MIN_TEMPORAL_WEIGHT
+        self.min_temporal_weight = (
+            min_weight if min_weight is not None else self.MIN_TEMPORAL_WEIGHT
+        )
 
     def rank_episodes(
         self,
@@ -172,19 +174,19 @@ class EpisodeRanker:
     def _compute_recency_score(self, created_at: datetime, current_time: datetime) -> float:
         """
         Compute recency score using power-law temporal decay (Phase 6).
-        
+
         Uses Ebbinghaus forgetting curve: weight = 1 / (1 + λ × t)^β
-        
+
         Power-law decay better models human memory than exponential decay.
         Recent episodes are heavily weighted, with gradual decay over time.
-        
+
         Args:
             created_at: Episode creation timestamp
             current_time: Current timestamp
-        
+
         Returns:
             float: Recency score (min_temporal_weight to 1.0)
-        
+
         Example (default λ=0.02, β=0.8):
             Episode created 1 day ago: score ≈ 0.98
             Episode created 7 days ago: score ≈ 0.90
@@ -197,25 +199,25 @@ class EpisodeRanker:
             created_at = created_at.replace(tzinfo=UTC)
         if current_time.tzinfo is None:
             current_time = current_time.replace(tzinfo=UTC)
-        
+
         # Calculate age in days
         age_seconds = (current_time - created_at).total_seconds()
         age_days = age_seconds / 86400.0  # 86400 seconds per day
-        
+
         # Handle future timestamps (clock skew)
         if age_days < 0:
             logger.warning(f"Episode created in future: {created_at} vs {current_time}")
             return 1.0  # Treat as very recent
-        
+
         # Power-law decay: weight = 1 / (1 + λ × t)^β
         # More biologically plausible than exponential (models human memory)
         weight = 1.0 / ((1.0 + self.decay_lambda * age_days) ** self.decay_beta)
-        
+
         # Apply minimum weight (prevents total forgetting)
         weight = max(self.min_temporal_weight, weight)
-        
+
         # Clamp to [min_weight, 1.0]
-        return max(self.min_temporal_weight, min(1.0, weight))
+        return float(max(self.min_temporal_weight, min(1.0, float(weight))))
 
     def _compute_usage_score(self, retrieval_count: int) -> float:
         """
@@ -308,24 +310,22 @@ _ranker: EpisodeRanker | None = None
 def get_ranker(
     decay_lambda: float | None = None,
     decay_beta: float | None = None,
-    min_weight: float | None = None
+    min_weight: float | None = None,
 ) -> EpisodeRanker:
     """
     Get global ranker instance with Phase 6 power-law temporal weighting.
-    
+
     Args:
         decay_lambda: Power-law decay rate (from ClusteringConfig). Defaults to class constant.
         decay_beta: Power exponent (from ClusteringConfig). Defaults to class constant.
         min_weight: Minimum temporal weight (from ClusteringConfig). Defaults to class constant.
-    
+
     Returns:
         EpisodeRanker: Singleton instance
     """
     global _ranker
     if _ranker is None:
         _ranker = EpisodeRanker(
-            decay_lambda=decay_lambda,
-            decay_beta=decay_beta,
-            min_weight=min_weight
+            decay_lambda=decay_lambda, decay_beta=decay_beta, min_weight=min_weight
         )
     return _ranker

@@ -272,9 +272,7 @@ class TestCachedTierIntegration:
 
             episode = self._make_episode(customer_id="test_customer")
             with patch.object(tiered_service, "_select_tier", return_value=tier):
-                reflection = await tiered_service.generate_reflection(
-                    episode, episode_id=1000 + i
-                )
+                reflection = await tiered_service.generate_reflection(episode, episode_id=1000 + i)
             costs.append(reflection.cost_usd)
 
         total_cost = sum(costs)

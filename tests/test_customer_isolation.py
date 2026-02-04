@@ -56,16 +56,11 @@ class TestIngestionIsolation:
     @pytest.mark.asyncio
     async def test_insert_with_customer_namespace(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
     ):
         """Test that episodes are inserted with customer-namespaced collection."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         # Create episode for customer-a
         episode_data = EpisodeCreate(
             customer_id="customer-a",
@@ -76,7 +71,7 @@ class TestIngestionIsolation:
             error_class="unknown",
         )
 
-        episode = await pipeline.capture_episode(
+        episode = await ingestion_pipeline.capture_episode(
             episode_data=episode_data,
             generate_reflection=False,
         )
@@ -92,16 +87,11 @@ class TestIngestionIsolation:
     @pytest.mark.asyncio
     async def test_insert_fails_without_customer_id(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
     ):
         """Test that ingestion fails if customer_id is missing (security enforcement)."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         # Create episode WITHOUT customer_id
         episode_data = EpisodeCreate(
             customer_id=None,  # Missing customer_id
@@ -114,7 +104,7 @@ class TestIngestionIsolation:
 
         # Should raise ValueError due to multi-tenancy violation
         with pytest.raises(ValueError, match="customer_id is required"):
-            await pipeline.capture_episode(
+            await ingestion_pipeline.capture_episode(
                 episode_data=episode_data,
                 generate_reflection=False,
             )
@@ -122,16 +112,11 @@ class TestIngestionIsolation:
     @pytest.mark.asyncio
     async def test_multiple_customers_different_namespaces(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
     ):
         """Test that different customers use different namespaces."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         # Customer A episode
         episode_a = EpisodeCreate(
             customer_id="customer-a",
@@ -153,8 +138,8 @@ class TestIngestionIsolation:
         )
 
         # Ingest both
-        await pipeline.capture_episode(episode_data=episode_a, generate_reflection=False)
-        await pipeline.capture_episode(episode_data=episode_b, generate_reflection=False)
+        await ingestion_pipeline.capture_episode(episode_data=episode_a, generate_reflection=False)
+        await ingestion_pipeline.capture_episode(episode_data=episode_b, generate_reflection=False)
 
         # Verify both called insert_episode but with different customer_ids
         assert mock_kyrodb_router.insert_episode.call_count == 2
@@ -428,16 +413,11 @@ class TestMetadataIsolation:
     @pytest.mark.asyncio
     async def test_episode_metadata_includes_customer_id(
         self,
+        ingestion_pipeline: IngestionPipeline,
         mock_kyrodb_router: KyroDBRouter,
         mock_embedding_service: EmbeddingService,
     ):
         """Test that episode metadata includes customer_id."""
-        pipeline = IngestionPipeline(
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service,
-            reflection_service=None,
-        )
-
         episode_data = EpisodeCreate(
             customer_id="acme-corp",
             goal="Deploy application to production environment",
@@ -447,7 +427,7 @@ class TestMetadataIsolation:
             error_class="unknown",
         )
 
-        episode = await pipeline.capture_episode(
+        episode = await ingestion_pipeline.capture_episode(
             episode_data=episode_data,
             generate_reflection=False,
         )

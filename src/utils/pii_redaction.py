@@ -9,6 +9,7 @@ import logging
 import re
 import threading
 from re import Match, Pattern
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -239,12 +240,12 @@ def redact_home_paths(text: str, replacement: str = "[USER]") -> str:
 class AdvancedPIIRedactor:
     """
     NER-based PII redaction using Microsoft Presidio.
-    
+
     Provides context-aware redaction for names, locations, and other entities
     that regex struggles with.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         try:
             from presidio_analyzer import AnalyzerEngine
             from presidio_anonymizer import AnonymizerEngine
@@ -255,11 +256,11 @@ class AdvancedPIIRedactor:
             ) from e
 
         self._operator_config = OperatorConfig
-        
+
         # Initialize engines (loads NLP model, so do this once)
         self.analyzer = AnalyzerEngine()
         self.anonymizer = AnonymizerEngine()
-        
+
         # Default entities to redact via NER
         # NOTE: Presidio's built-in recognizers are US-centric. For comprehensive
         # international PII detection, consider adding custom recognizers for:
@@ -282,23 +283,23 @@ class AdvancedPIIRedactor:
             "US_BANK_NUMBER",
             "US_PASSPORT",
             # International (where available in Presidio)
-            "IBAN_CODE",              # European banking
-            "UK_NHS",                 # UK National Health Service number
-            "AU_ABN",                 # Australian Business Number
-            "AU_ACN",                 # Australian Company Number
-            "AU_TFN",                 # Australian Tax File Number
-            "AU_MEDICARE",            # Australian Medicare number
-            "IN_PAN",                 # Indian Permanent Account Number
-            "IN_AADHAAR",             # Indian Aadhaar number (national ID)
-            "IN_VEHICLE_REGISTRATION", # Indian vehicle registration
-            "IN_PASSPORT",            # Indian passport
-            "SG_NRIC_FIN",            # Singapore National Registration ID
-            "ES_NIF",                 # Spanish Tax ID
-            "IT_FISCAL_CODE",         # Italian Fiscal Code
-            "IT_DRIVER_LICENSE",      # Italian Driver's License
-            "IT_VAT_CODE",            # Italian VAT
-            "IT_PASSPORT",            # Italian Passport
-            "IT_IDENTITY_CARD",       # Italian Identity Card
+            "IBAN_CODE",  # European banking
+            "UK_NHS",  # UK National Health Service number
+            "AU_ABN",  # Australian Business Number
+            "AU_ACN",  # Australian Company Number
+            "AU_TFN",  # Australian Tax File Number
+            "AU_MEDICARE",  # Australian Medicare number
+            "IN_PAN",  # Indian Permanent Account Number
+            "IN_AADHAAR",  # Indian Aadhaar number (national ID)
+            "IN_VEHICLE_REGISTRATION",  # Indian vehicle registration
+            "IN_PASSPORT",  # Indian passport
+            "SG_NRIC_FIN",  # Singapore National Registration ID
+            "ES_NIF",  # Spanish Tax ID
+            "IT_FISCAL_CODE",  # Italian Fiscal Code
+            "IT_DRIVER_LICENSE",  # Italian Driver's License
+            "IT_VAT_CODE",  # Italian VAT
+            "IT_PASSPORT",  # Italian Passport
+            "IT_IDENTITY_CARD",  # Italian Identity Card
         ]
 
     def redact(
@@ -322,7 +323,7 @@ class AdvancedPIIRedactor:
 
         Returns:
             Redacted text
-            
+
         Raises:
             ValueError: If invalid entity types are provided
         """
@@ -364,11 +365,11 @@ class AdvancedPIIRedactor:
         # Anonymize
         anonymized_result = self.anonymizer.anonymize(
             text=text,
-            analyzer_results=results,
+            analyzer_results=cast(list[Any], results),
             operators=operators,
         )
 
-        return anonymized_result.text
+        return str(anonymized_result.text)
 
 
 # Global instance (lazy loaded)
@@ -427,7 +428,7 @@ def redact_all(
     2. Apply NER for context-heavy PII (Names, Locations) if use_ner is True
     """
     # 1. Regex-based redaction (Fast, deterministic, handles specific formats)
-    
+
     # Always redact API keys/secrets first (highest risk)
     if redact_keys:
         text = redact_api_keys(text)
@@ -452,9 +453,9 @@ def redact_all(
             # We skip entities already handled well by regex if we want,
             # but Presidio is often better at avoiding false positives for things like phones.
             # For consistency and better coverage, let Presidio handle complex entities too.
-            
+
             ner_entities = ["PERSON", "LOCATION", "US_DRIVER_LICENSE", "IBAN_CODE"]
-            
+
             # If regex flags are on, let NER handle them too for better coverage
             if redact_emails:
                 ner_entities.append("EMAIL_ADDRESS")
@@ -468,7 +469,7 @@ def redact_all(
                 ner_entities.append("PHONE_NUMBER")
 
             text = redactor.redact(text, entities=ner_entities)
-            
+
             # Return early if NER handled the common types
             # But we still might want to run regex for things NER missed or specific formats
             # For now, we'll assume NER + specific Regex (Keys/Paths) is sufficient

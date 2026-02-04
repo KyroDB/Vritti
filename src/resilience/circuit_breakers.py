@@ -16,6 +16,8 @@ Configuration:
 
 import functools
 import logging
+from collections.abc import Awaitable, Callable
+from typing import Any, ParamSpec, TypeVar
 
 from pybreaker import CircuitBreaker, CircuitBreakerError, CircuitBreakerListener
 from tenacity import (
@@ -26,6 +28,8 @@ from tenacity import (
 )
 
 logger = logging.getLogger(__name__)
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class KyroDBCircuitBreakerError(Exception):
@@ -37,11 +41,11 @@ class KyroDBCircuitBreakerError(Exception):
 class LoggingCircuitBreakerListener(CircuitBreakerListener):
     """
     Circuit breaker listener that logs state changes.
-    
+
     Implements the proper CircuitBreakerListener interface from pybreaker.
     """
-    
-    def state_change(self, cb: CircuitBreaker, old_state, new_state) -> None:
+
+    def state_change(self, cb: CircuitBreaker, old_state: Any, new_state: Any) -> None:
         """Called when circuit breaker state changes."""
         if new_state.name == "open":
             logger.error(
@@ -112,7 +116,9 @@ def reset_all_breakers() -> None:
     logger.info("All circuit breakers reset to CLOSED state")
 
 
-def with_kyrodb_circuit_breaker(func):
+def with_kyrodb_circuit_breaker(
+    func: Callable[P, Awaitable[R]],
+) -> Callable[P, Awaitable[R]]:
     """
     Decorator to wrap KyroDB operations with circuit breaker.
 
@@ -132,7 +138,7 @@ def with_kyrodb_circuit_breaker(func):
     """
 
     @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         # Check if circuit is open before calling
         state = kyrodb_breaker.current_state
         if state == "open":
@@ -186,7 +192,7 @@ def with_retry(
     min_wait: int = 1,
     max_wait: int = 10,
     exceptions: tuple[type[Exception], ...] = (Exception,),
-):
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """
     Retry decorator with exponential backoff.
 

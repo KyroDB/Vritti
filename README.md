@@ -48,6 +48,8 @@ cp .env.production.example .env
 Edit `.env` and set:
 - `KYRODB_TEXT_HOST` - Your KyroDB instance for vector storage
 - `LLM_OPENROUTER_API_KEY` - LLM API key for reflection generation
+- `EMBEDDING_OFFLINE_MODE=false` - Keep online bootstrap enabled by default
+- `SERVICE_REQUIRE_LLM_REFLECTION` - Set `true` in production to fail fast when LLM config is missing/placeholder
 
 ### Run
 
@@ -80,7 +82,7 @@ curl -X POST http://localhost:8000/api/v1/capture \
   }'
 ```
 
-Vritti stores this failure and generates analysis.
+Vritti stores this failure and queues reflection generation.
 
 ### 2. Check Before Acting
 
@@ -191,11 +193,11 @@ mypy src/
 
 ## Performance Targets
 
-- Search latency: <50ms P99
-- Gating decision: <100ms P99
-- LLM cache hit rate: >80%
+Recent local benchmark snapshots (KyroDB-backed):
+- Ingestion load (1000 req, 100 concurrency): ~1121 RPS, ~132ms P99
+- Sustained mixed load (30s, 200 concurrency): ~899 RPS, ~357ms overall P99
 
-Current performance validated with 280+ tests.
+Run `tests/load/test_load.py` and `tests/load/test_load_1000_rps.py` for your environment.
 
 ---
 
@@ -208,14 +210,20 @@ Key settings in `.env`:
 KYRODB_TEXT_HOST=localhost
 KYRODB_TEXT_PORT=50051
 LLM_OPENROUTER_API_KEY=sk-or-v1-...
+SERVICE_REQUIRE_LLM_REFLECTION=false
 
 # Optional
 LOG_LEVEL=INFO
 SEARCH_LLM_VALIDATION_ENABLED=true
 SEARCH_LLM_SIMILARITY_THRESHOLD=0.92
+EMBEDDING_OFFLINE_MODE=false
 ```
 
 Full configuration options in `src/config.py`.
+
+Air-gapped deployment:
+- Set `EMBEDDING_OFFLINE_MODE=true` only after preloading model caches.
+- If offline mode is enabled and cached models are missing, startup fails fast with actionable instructions.
 
 ---
 

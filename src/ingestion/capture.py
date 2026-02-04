@@ -23,7 +23,7 @@ import base64
 import binascii
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from src.models.episode import Reflection
@@ -42,6 +42,18 @@ from src.utils.identifiers import (
 from src.utils.pii_redaction import redact_all
 
 logger = logging.getLogger(__name__)
+
+
+class EpisodeIndexer(Protocol):
+    async def index_episode(
+        self,
+        *,
+        episode_id: int,
+        customer_id: str,
+        collection: str,
+        created_at: datetime,
+        has_image: bool,
+    ) -> None: ...
 
 
 class IngestionPipeline:
@@ -81,7 +93,7 @@ class IngestionPipeline:
         self.settings = get_settings()
         self.total_ingested = 0
         self.total_failures = 0
-        
+
         # Track pending background tasks (reflection + indexing) for graceful shutdown
         self._pending_tasks: set[asyncio.Task] = set()
         self._index_semaphore = asyncio.Semaphore(
@@ -99,51 +111,48 @@ class IngestionPipeline:
     async def shutdown(self, timeout: float = 30.0) -> None:
         """
         Gracefully shutdown the ingestion pipeline.
-        
+
         Waits for all pending background reflection/index tasks to complete
         before returning. This ensures no reflections are lost and index
         updates flush during application shutdown.
-        
+
         Args:
             timeout: Maximum seconds to wait for pending tasks.
                      After timeout, remaining tasks are cancelled.
         """
-        pending_count = len(self._pending_tasks)
-        if pending_count == 0:
-            logger.info("No pending background tasks to complete")
-            return
-            
-        logger.info(f"Waiting for {pending_count} pending background tasks...")
-        
-        try:
-            # Wait for all pending tasks with timeout
-            done, pending = await asyncio.wait(
-                self._pending_tasks,
-                timeout=timeout,
-                return_when=asyncio.ALL_COMPLETED
-            )
-            
-            if pending:
-                logger.warning(
-                    f"Timeout reached, cancelling {len(pending)} pending tasks"
-                )
-                for task in pending:
-                    task.cancel()
-                # Wait briefly for cancellations to complete
-                await asyncio.gather(*pending, return_exceptions=True)
-            
-            logger.info(
-                f"Background task shutdown complete: "
-                f"{len(done)} completed, {len(pending)} cancelled"
-            )
+        pending = {t for t in self._pending_tasks if not t.done()}
+        pending_count = len(pending)
+        if pending_count:
+            logger.info(f"Waiting for {pending_count} pending background tasks...")
             try:
-                from src.utils.resource_tracker import cleanup_tracked_semaphores
+                done, still_pending = await asyncio.wait(
+                    pending,
+                    timeout=timeout,
+                    return_when=asyncio.ALL_COMPLETED,
+                )
 
-                cleanup_tracked_semaphores()
-            except Exception:
-                pass
+                if still_pending:
+                    logger.warning(
+                        f"Timeout reached, cancelling {len(still_pending)} pending tasks"
+                    )
+                    for task in still_pending:
+                        task.cancel()
+                    await asyncio.gather(*still_pending, return_exceptions=True)
+
+                logger.info(
+                    "Background task shutdown complete: "
+                    f"{len(done)} completed, {len(still_pending)} cancelled"
+                )
+            except Exception as e:
+                logger.error(f"Error during background task shutdown: {e}", exc_info=True)
+        else:
+            logger.info("No pending background tasks to complete")
+
+        # Always shutdown the embedding batcher to avoid leaking background tasks.
+        try:
+            await self.embedding_service.shutdown()
         except Exception as e:
-            logger.error(f"Error during pipeline shutdown: {e}", exc_info=True)
+            logger.warning(f"EmbeddingService shutdown failed: {e}", exc_info=True)
 
     async def capture_episode(
         self,
@@ -195,6 +204,7 @@ class IngestionPipeline:
 
             # Step 4: Generate embeddings (~10-40ms total)
             text_embedding, image_embedding = await self._generate_embeddings(episode_data)
+            customer_id = self._require_customer_id(episode_data.customer_id)
 
             # Step 5: Create Episode object
             episode = Episode(
@@ -221,7 +231,7 @@ class IngestionPipeline:
                 self._index_episode_background(
                     db=db,
                     episode_id=episode.episode_id,
-                    customer_id=episode.create_data.customer_id,
+                    customer_id=customer_id,
                     collection="failures",
                     created_at=episode.created_at,
                     has_image=episode.image_embedding_id is not None,
@@ -233,11 +243,7 @@ class IngestionPipeline:
             # Step 7: Queue async reflection generation (non-blocking)
             if generate_reflection and self.reflection_service:
                 task = asyncio.create_task(
-                    self._generate_and_update_reflection(
-                        episode_id, 
-                        episode_data, 
-                        tier_override
-                    )
+                    self._generate_and_update_reflection(episode_id, episode_data, tier_override)
                 )
                 # Track task for graceful shutdown
                 self._pending_tasks.add(task)
@@ -309,14 +315,10 @@ class IngestionPipeline:
 
         # Redact tags
         if episode_data.tags:
-            episode_data.tags = [
-                redact_all(tag, redact_phones=False) for tag in episode_data.tags
-            ]
+            episode_data.tags = [redact_all(tag, redact_phones=False) for tag in episode_data.tags]
 
         # Redact environment info (recursive)
-        episode_data.environment_info = self._redact_environment_info(
-            episode_data.environment_info
-        )
+        episode_data.environment_info = self._redact_environment_info(episode_data.environment_info)
 
         return episode_data
 
@@ -326,16 +328,25 @@ class IngestionPipeline:
 
         Redacts both keys and string values while preserving structure.
         """
+
         def _redact(value: Any) -> Any:
             if isinstance(value, str):
                 return redact_all(value, redact_phones=False)
             if isinstance(value, dict):
-                return {redact_all(str(k), redact_phones=False): _redact(v) for k, v in value.items()}
+                return {
+                    redact_all(str(k), redact_phones=False): _redact(v) for k, v in value.items()
+                }
             if isinstance(value, list):
                 return [_redact(v) for v in value]
             return value
 
-        return _redact(data)
+        return cast(dict[str, Any], _redact(data))
+
+    @staticmethod
+    def _require_customer_id(customer_id: str | None) -> str:
+        if not customer_id:
+            raise ValueError("customer_id is required for ingestion")
+        return customer_id
 
     def _redact_reflection_pii(self, reflection: Reflection) -> Reflection:
         """
@@ -400,8 +411,7 @@ class IngestionPipeline:
             max_size = self.settings.service.max_file_upload_size
             if len(image_bytes) > max_size:
                 raise ValueError(
-                    f"Screenshot too large: {len(image_bytes)} bytes "
-                    f"(max {max_size} bytes)"
+                    f"Screenshot too large: {len(image_bytes)} bytes " f"(max {max_size} bytes)"
                 )
 
             # Embed screenshot (must be a valid image for CLIP processor)
@@ -474,7 +484,7 @@ class IngestionPipeline:
     async def _index_episode_background(
         self,
         *,
-        db: object,
+        db: EpisodeIndexer,
         episode_id: int,
         customer_id: str,
         collection: str,
@@ -497,7 +507,10 @@ class IngestionPipeline:
                 )
 
     async def _generate_and_update_reflection(
-        self, episode_id: int, episode_data: EpisodeCreate, tier_override: ReflectionTier | None = None
+        self,
+        episode_id: int,
+        episode_data: EpisodeCreate,
+        tier_override: ReflectionTier | None = None,
     ) -> None:
         """
         Generate tiered reflection and persist to KyroDB with retry logic.
@@ -534,12 +547,15 @@ class IngestionPipeline:
                 f"(tier: {tier_name})..."
             )
             start_time = time.perf_counter()
+            customer_id = self._require_customer_id(episode_data.customer_id)
+            reflection_service = self.reflection_service
+            if reflection_service is None:
+                logger.warning("Reflection generation skipped: reflection service not configured")
+                return
 
             # Generate reflection using tiered service with optional override
-            reflection = await self.reflection_service.generate_reflection(
-                episode_data,
-                episode_id=episode_id,
-                tier=tier_override  # Auto-selects if None
+            reflection = await reflection_service.generate_reflection(
+                episode_data, episode_id=episode_id, tier=tier_override  # Auto-selects if None
             )
 
             generation_time = time.perf_counter() - start_time
@@ -557,7 +573,7 @@ class IngestionPipeline:
                     )
                     await self._log_to_dead_letter_queue(
                         episode_id=episode_id,
-                        customer_id=episode_data.customer_id,
+                        customer_id=customer_id,
                         reflection=None,
                         failure_reason="reflection_redaction_failed",
                     )
@@ -569,7 +585,7 @@ class IngestionPipeline:
                 # Persist reflection with retry logic
                 success = await self._persist_reflection_with_retry(
                     episode_id=episode_id,
-                    customer_id=episode_data.customer_id,
+                    customer_id=customer_id,
                     reflection=reflection,
                     max_retries=3,
                 )
@@ -597,7 +613,7 @@ class IngestionPipeline:
                     # Log to dead-letter queue for manual recovery
                     await self._log_to_dead_letter_queue(
                         episode_id=episode_id,
-                        customer_id=episode_data.customer_id,
+                        customer_id=customer_id,
                         reflection=reflection,
                         failure_reason="persistence_failed_after_retries",
                     )
@@ -696,17 +712,14 @@ class IngestionPipeline:
 
             # Calculate backoff delay (exponential: 1s, 2s, 4s)
             if attempt < max_retries - 1:
-                delay = base_delay_seconds * (2 ** attempt)
-                logger.debug(
-                    f"Waiting {delay:.1f}s before retry for episode {episode_id}"
-                )
+                delay = base_delay_seconds * (2**attempt)
+                logger.debug(f"Waiting {delay:.1f}s before retry for episode {episode_id}")
                 await asyncio.sleep(delay)
 
         # All retries exhausted
         logger.error(
             f"Reflection persistence exhausted all {max_retries} retries "
-            f"for episode {episode_id}"
-            + (f": {last_exception}" if last_exception else "")
+            f"for episode {episode_id}" + (f": {last_exception}" if last_exception else "")
         )
 
         return False
@@ -723,7 +736,7 @@ class IngestionPipeline:
 
         Dead-letter queue file path is configurable via ServiceConfig.
         Format: JSON lines with timestamp, episode_id, customer_id, failure_reason, reflection
-        
+
         Includes automatic file rotation when size exceeds configured limit.
 
         This enables manual recovery of reflections that failed persistence.
@@ -743,7 +756,7 @@ class IngestionPipeline:
         try:
             # Ensure data directory exists
             dead_letter_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Check file size and rotate if needed
             max_size_bytes = self.settings.service.dead_letter_queue_max_size_mb * 1024 * 1024
             if dead_letter_path.exists() and dead_letter_path.stat().st_size >= max_size_bytes:
@@ -823,21 +836,13 @@ class IngestionPipeline:
             },
         )
 
-    def _track_reflection_success(
-        self, reflection: Reflection, generation_time: float
-    ) -> None:
+    def _track_reflection_success(self, reflection: Reflection, generation_time: float) -> None:
         """Track successful reflection generation via structured logs."""
         consensus_method = (
-            reflection.consensus.consensus_method
-            if reflection.consensus
-            else "fallback_heuristic"
+            reflection.consensus.consensus_method if reflection.consensus else "fallback_heuristic"
         )
 
-        num_models = (
-            len(reflection.consensus.perspectives)
-            if reflection.consensus
-            else 0
-        )
+        num_models = len(reflection.consensus.perspectives) if reflection.consensus else 0
 
         logger.info(
             "Reflection generated",
@@ -888,7 +893,7 @@ class IngestionPipeline:
 
         return results
 
-    def get_stats(self) -> dict[str, int]:
+    def get_stats(self) -> dict[str, float | int]:
         """
         Get ingestion statistics.
 
