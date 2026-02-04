@@ -26,7 +26,6 @@ import time
 from contextvars import ContextVar
 from datetime import UTC, datetime
 
-import anyio
 import httpx
 
 from src.config import LLMConfig
@@ -592,8 +591,8 @@ class TieredReflectionService:
             try:
                 # Get episode embedding
                 text_content = f"{episode.goal}\n\n{episode.error_trace}"
-                episode_embedding = await anyio.to_thread.run_sync(
-                    self.embedding_service.embed_text, text_content
+                episode_embedding = await self.embedding_service.embed_text_async(
+                    text_content
                 )
                 
                 #Check for cluster match

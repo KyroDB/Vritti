@@ -73,6 +73,10 @@ class KyroDBRouter:
             port=config.text_port,
             timeout_seconds=config.request_timeout_seconds,
             max_retries=3,
+            insert_max_in_flight=config.insert_max_in_flight,
+            bulk_insert_enabled=config.bulk_insert_enabled,
+            bulk_insert_batch_size=config.bulk_insert_batch_size,
+            bulk_insert_max_wait_ms=config.bulk_insert_max_wait_ms,
             enable_tls=config.enable_tls,
             tls_ca_cert_path=config.tls_ca_cert_path,
             tls_client_cert_path=config.tls_client_cert_path,
@@ -85,6 +89,10 @@ class KyroDBRouter:
             port=config.image_port,
             timeout_seconds=config.request_timeout_seconds,
             max_retries=3,
+            insert_max_in_flight=config.insert_max_in_flight,
+            bulk_insert_enabled=config.bulk_insert_enabled,
+            bulk_insert_batch_size=config.bulk_insert_batch_size,
+            bulk_insert_max_wait_ms=config.bulk_insert_max_wait_ms,
             enable_tls=config.enable_tls,
             tls_ca_cert_path=config.tls_ca_cert_path,
             tls_client_cert_path=config.tls_client_cert_path,
@@ -216,7 +224,8 @@ class KyroDBRouter:
                 )
         except Exception as e:
             logger.error(
-                f"Text insertion error for episode {episode_id} " f"(customer: {customer_id}): {e}"
+                f"Text insertion error for episode {episode_id} "
+                f"(customer: {customer_id}): {e}"
             )
             raise
 

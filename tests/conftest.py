@@ -292,6 +292,16 @@ def mock_embedding_service() -> EmbeddingService:
 
     service.embed_text = Mock(side_effect=mock_embed_text)
 
+    async def mock_embed_text_async(text: str) -> list[float]:
+        return mock_embed_text(text)
+
+    service.embed_text_async = AsyncMock(side_effect=mock_embed_text_async)
+
+    def mock_embed_texts_batch(texts: list[str]) -> list[list[float]]:
+        return [mock_embed_text(text) for text in texts]
+
+    service.embed_texts_batch = Mock(side_effect=mock_embed_texts_batch)
+
     # Mock image embedding (512-dim)
     def mock_embed_image(image_path: Path) -> list[float]:
         import random
@@ -309,6 +319,11 @@ def mock_embedding_service() -> EmbeddingService:
         return [random.random() for _ in range(512)]
 
     service.embed_image_bytes = Mock(side_effect=mock_embed_image_bytes)
+
+    async def mock_embed_image_bytes_async(image_bytes: bytes) -> list[float]:
+        return mock_embed_image_bytes(image_bytes)
+
+    service.embed_image_bytes_async = AsyncMock(side_effect=mock_embed_image_bytes_async)
 
     service.get_info = Mock(
         return_value={

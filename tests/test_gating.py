@@ -13,6 +13,7 @@ def mock_search_pipeline():
     pipeline = MagicMock()
     pipeline.embedding_service = MagicMock()
     pipeline.embedding_service.embed_text.return_value = [0.1] * 384
+    pipeline.embedding_service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
     return pipeline
 
 @pytest.fixture
@@ -54,7 +55,7 @@ async def test_reflect_block_high_confidence(gating_service, mock_search_pipelin
         rank=1
     )
     
-    mock_search_pipeline.search = AsyncMock(return_value=SearchResponse(
+    mock_search_pipeline.search_with_embedding = AsyncMock(return_value=SearchResponse(
         results=[search_result],
         total_candidates=1,
         total_filtered=1,
@@ -105,7 +106,7 @@ async def test_reflect_hint_medium_confidence(gating_service, mock_search_pipeli
         rank=1
     )
     
-    mock_search_pipeline.search = AsyncMock(return_value=SearchResponse(
+    mock_search_pipeline.search_with_embedding = AsyncMock(return_value=SearchResponse(
         results=[search_result],
         total_candidates=1,
         total_filtered=1,
@@ -129,7 +130,7 @@ async def test_reflect_hint_medium_confidence(gating_service, mock_search_pipeli
 
 @pytest.mark.asyncio
 async def test_reflect_proceed_low_confidence(gating_service, mock_search_pipeline):
-    mock_search_pipeline.search = AsyncMock(return_value=SearchResponse(
+    mock_search_pipeline.search_with_embedding = AsyncMock(return_value=SearchResponse(
         results=[],
         total_candidates=0,
         total_filtered=0,

@@ -410,6 +410,9 @@ class TestSkillsInGating:
             # Mock embedding service
             mock_embedding_service = MagicMock()
             mock_embedding_service.embed_text.return_value = skill_embedding
+            async def mock_embed_text_async(text: str) -> list[float]:
+                return skill_embedding
+            mock_embedding_service.embed_text_async = mock_embed_text_async
 
             # Create search pipeline and gating service
             search_pipeline = SearchPipeline(

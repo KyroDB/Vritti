@@ -52,6 +52,7 @@ class TestSearchFetchKValidation:
         
         mock_embedding = MagicMock()
         mock_embedding.embed_text.return_value = [0.1] * 384
+        mock_embedding.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         
         return SearchPipeline(
             kyrodb_router=mock_router,

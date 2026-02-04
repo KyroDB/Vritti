@@ -4,11 +4,11 @@ Gating Service for Pre-Action Validation.
 Analyzes proposed actions against historical episodes to prevent repeat failures.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any, NamedTuple
 
-import anyio
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
@@ -91,21 +91,29 @@ class GatingService:
             )
 
             search_start = time.perf_counter()
-            search_response = await self.search_pipeline.search(search_req)
-            
-            # 2. Search for relevant skills (if any)
-            # We need to embed the query first - using search pipeline's embedding service
-            # This assumes search_pipeline has access to embedding service
-            query_embedding = await anyio.to_thread.run_sync(
-                self.search_pipeline.embedding_service.embed_text, search_query
+            embed_start = time.perf_counter()
+            query_embedding = await self.search_pipeline.embedding_service.embed_text_async(
+                search_query
             )
-            
-            matched_skills = await self.kyrodb_router.search_skills(
-                query_embedding=query_embedding,
-                customer_id=customer_id,
-                k=3,
-                min_score=0.7
+            embedding_ms = (time.perf_counter() - embed_start) * 1000
+
+            search_task = asyncio.create_task(
+                self.search_pipeline.search_with_embedding(
+                    search_req,
+                    query_embedding,
+                    embedding_ms=embedding_ms,
+                )
             )
+            skills_task = asyncio.create_task(
+                self.kyrodb_router.search_skills(
+                    query_embedding=query_embedding,
+                    customer_id=customer_id,
+                    k=3,
+                    min_score=0.7,
+                )
+            )
+
+            search_response, matched_skills = await asyncio.gather(search_task, skills_task)
             
             search_latency_ms = (time.perf_counter() - search_start) * 1000
 

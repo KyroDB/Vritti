@@ -45,7 +45,9 @@ def mock_kyrodb_router():
 def mock_embedding_service():
     service = AsyncMock()
     service.embed_text.return_value = [0.1] * 1536
+    service.embed_text_async.return_value = [0.1] * 1536
     service.embed_image.return_value = [0.1] * 1536
+    service.embed_image_bytes_async.return_value = [0.1] * 1536
     return service
 
 @pytest.fixture

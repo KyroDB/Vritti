@@ -231,6 +231,8 @@ def mock_embedding_service() -> MagicMock:
 
     service.embed_text = Mock(side_effect=mock_embed_text)
     service.embed_image = Mock(return_value=[0.1] * 512)
+    service.embed_text_async = AsyncMock(side_effect=mock_embed_text)
+    service.embed_image_bytes_async = AsyncMock(return_value=[0.1] * 512)
 
     return service
 

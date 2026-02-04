@@ -82,8 +82,11 @@ class IngestionPipeline:
         self.total_ingested = 0
         self.total_failures = 0
         
-        # Track pending background tasks for graceful shutdown
+        # Track pending background tasks (reflection + indexing) for graceful shutdown
         self._pending_tasks: set[asyncio.Task] = set()
+        self._index_semaphore = asyncio.Semaphore(
+            max(1, self.settings.service.indexer_max_in_flight)
+        )
 
         if reflection_service:
             logger.info(
@@ -97,9 +100,9 @@ class IngestionPipeline:
         """
         Gracefully shutdown the ingestion pipeline.
         
-        Waits for all pending background reflection tasks to complete
-        before returning. This ensures no reflections are lost during
-        application shutdown.
+        Waits for all pending background reflection/index tasks to complete
+        before returning. This ensures no reflections are lost and index
+        updates flush during application shutdown.
         
         Args:
             timeout: Maximum seconds to wait for pending tasks.
@@ -107,10 +110,10 @@ class IngestionPipeline:
         """
         pending_count = len(self._pending_tasks)
         if pending_count == 0:
-            logger.info("No pending reflection tasks to complete")
+            logger.info("No pending background tasks to complete")
             return
             
-        logger.info(f"Waiting for {pending_count} pending reflection tasks...")
+        logger.info(f"Waiting for {pending_count} pending background tasks...")
         
         try:
             # Wait for all pending tasks with timeout
@@ -130,9 +133,15 @@ class IngestionPipeline:
                 await asyncio.gather(*pending, return_exceptions=True)
             
             logger.info(
-                f"Reflection task shutdown complete: "
+                f"Background task shutdown complete: "
                 f"{len(done)} completed, {len(pending)} cancelled"
             )
+            try:
+                from src.utils.resource_tracker import cleanup_tracked_semaphores
+
+                cleanup_tracked_semaphores()
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Error during pipeline shutdown: {e}", exc_info=True)
 
@@ -207,19 +216,19 @@ class IngestionPipeline:
 
             # Maintain the local episode index for offline jobs (clustering/decay).
             # Best-effort: do not fail ingestion if indexing fails.
-            try:
-                await db.index_episode(
+            # Offload to background to reduce tail latency under high concurrency.
+            index_task = asyncio.create_task(
+                self._index_episode_background(
+                    db=db,
                     episode_id=episode.episode_id,
                     customer_id=episode.create_data.customer_id,
                     collection="failures",
                     created_at=episode.created_at,
                     has_image=episode.image_embedding_id is not None,
                 )
-            except Exception as e:
-                logger.error(
-                    f"Episode indexing failed for {episode.episode_id}: {e}",
-                    exc_info=True,
-                )
+            )
+            self._pending_tasks.add(index_task)
+            index_task.add_done_callback(self._pending_tasks.discard)
 
             # Step 7: Queue async reflection generation (non-blocking)
             if generate_reflection and self.reflection_service:
@@ -370,10 +379,7 @@ class IngestionPipeline:
         if len(text_content) > 5000:
             text_content = text_content[:5000] + "... (truncated)"
 
-        import anyio
-        text_embedding = await anyio.to_thread.run_sync(
-            self.embedding_service.embed_text, text_content
-        )
+        text_embedding = await self.embedding_service.embed_text_async(text_content)
 
         # Image embedding if screenshot provided
         image_embedding = None
@@ -399,9 +405,7 @@ class IngestionPipeline:
                 )
 
             # Embed screenshot (must be a valid image for CLIP processor)
-            image_embedding = await anyio.to_thread.run_sync(
-                self.embedding_service.embed_image_bytes, image_bytes
-            )
+            image_embedding = await self.embedding_service.embed_image_bytes_async(image_bytes)
             logger.debug("Generated image embedding from screenshot bytes")
 
         return text_embedding, image_embedding
@@ -466,6 +470,31 @@ class IngestionPipeline:
             f"collection: {collection}, "
             f"text: {text_success}, image: {image_success})"
         )
+
+    async def _index_episode_background(
+        self,
+        *,
+        db: object,
+        episode_id: int,
+        customer_id: str,
+        collection: str,
+        created_at: datetime,
+        has_image: bool,
+    ) -> None:
+        async with self._index_semaphore:
+            try:
+                await db.index_episode(
+                    episode_id=episode_id,
+                    customer_id=customer_id,
+                    collection=collection,
+                    created_at=created_at,
+                    has_image=has_image,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Episode indexing failed for {episode_id}: {e}",
+                    exc_info=True,
+                )
 
     async def _generate_and_update_reflection(
         self, episode_id: int, episode_data: EpisodeCreate, tier_override: ReflectionTier | None = None

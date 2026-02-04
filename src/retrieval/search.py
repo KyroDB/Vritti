@@ -116,135 +116,191 @@ class SearchPipeline:
         try:
             # Stage 1: Generate query embedding (~5-10ms)
             stage_start = time.perf_counter()
-            import anyio
-            query_embedding = await anyio.to_thread.run_sync(
-                self.embedding_service.embed_text, request.goal
-            )
+            query_embedding = await self.embedding_service.embed_text_async(request.goal)
             latency_breakdown["embedding_ms"] = (time.perf_counter() - stage_start) * 1000
 
             # Optional image embedding for multimodal search
-            image_embedding = None
-            if request.image_base64:
-                b64 = request.image_base64.strip()
-                # Accept data URLs (e.g., "data:image/png;base64,...") for convenience.
-                if b64.startswith("data:"):
-                    if "," not in b64:
-                        raise ValueError("Invalid data URL: missing ',' separator")
-                    _, b64 = b64.split(",", 1)
+            image_embedding, image_ms = await self._maybe_embed_image_from_request(request)
+            if image_ms:
+                latency_breakdown["image_embedding_ms"] = image_ms
 
-                max_size = get_settings().service.max_file_upload_size
-                padding = 2 if b64.endswith("==") else 1 if b64.endswith("=") else 0
-                decoded_estimate = ((len(b64) + 3) // 4) * 3 - padding
-                if decoded_estimate > max_size:
-                    raise ValueError(
-                        f"Image too large: {decoded_estimate} bytes (max {max_size} bytes)"
-                    )
-
-                try:
-                    image_bytes = base64.b64decode(b64, validate=True)
-                except (binascii.Error, ValueError) as e:
-                    raise ValueError(f"Invalid image_base64: {e}") from e
-
-                if len(image_bytes) > max_size:
-                    raise ValueError(
-                        f"Image too large: {len(image_bytes)} bytes (max {max_size} bytes)"
-                    )
-
-                image_embedding = await anyio.to_thread.run_sync(
-                    self.embedding_service.embed_image_bytes, image_bytes
-                )
-
-            # Stage 2: KyroDB search with server-side filtering (~1-3ms)
-            stage_start = time.perf_counter()
-            metadata_filter = self._build_kyrodb_filter(request)
-            # Fetch 2x buffer: headroom for incomplete server-side filtering + precondition matching
-            # Validate fetch_k to prevent memory issues with very large k values
-            settings = get_settings()
-            max_fetch_k = settings.search.max_k * 2
-            fetch_k = min(request.k * 2, max_fetch_k)
-            
-            if request.k * 2 > max_fetch_k:
-                logger.warning(
-                    f"Requested k={request.k} would fetch {request.k * 2} candidates, "
-                    f"capping at max_fetch_k={max_fetch_k} to prevent memory issues"
-                )
-            
-            candidates = await self._fetch_candidates(
+            return await self._search_with_embeddings(
+                request=request,
                 query_embedding=query_embedding,
                 image_embedding=image_embedding,
-                customer_id=request.customer_id,
-                collection=request.collection,
-                k=fetch_k,
-                min_similarity=request.min_similarity,
-                metadata_filter=metadata_filter,
-                image_weight=request.image_weight,
+                start_time=start_time,
+                latency_breakdown=latency_breakdown,
             )
-            latency_breakdown["search_ms"] = (time.perf_counter() - stage_start) * 1000
-
-            total_candidates = len(candidates)
-            logger.debug(f"Fetched {total_candidates} candidates from KyroDB")
-
-            # Stage 3: Metadata validation (safety check)
-            stage_start = time.perf_counter()
-            filtered_candidates = self._validate_metadata_filters(candidates, request)
-            latency_breakdown["validation_ms"] = (time.perf_counter() - stage_start) * 1000
-
-            total_filtered = len(filtered_candidates)
-            if total_filtered < total_candidates:
-                logger.warning(
-                    f"Server-side filtering incomplete: {total_candidates - total_filtered} "
-                    f"candidates removed by client validation. Check KyroDB metadata filters."
-                )
-            logger.debug(f"Validated {total_filtered} candidates")
-
-            # Stage 4: Precondition matching (~5-15ms for 25 candidates)
-            stage_start = time.perf_counter()
-            precondition_results = await self._check_preconditions(filtered_candidates, request)
-            latency_breakdown["precondition_ms"] = (time.perf_counter() - stage_start) * 1000
-
-            # Stage 5: Ranking (~1-2ms)
-            stage_start = time.perf_counter()
-            ranked_results = self._rank_results(precondition_results, request)
-            latency_breakdown["ranking_ms"] = (time.perf_counter() - stage_start) * 1000
-
-            # Stage 6: Top-k selection
-            final_results = ranked_results[: request.k]
-
-            # Total latency
-            total_latency_ms = (time.perf_counter() - start_time) * 1000
-
-            # Update stats
-            self.total_searches += 1
-            self.total_latency_ms += total_latency_ms
-
-            # Build response
-            response = SearchResponse(
-                results=final_results,
-                total_candidates=total_candidates,
-                total_filtered=total_filtered,
-                total_returned=len(final_results),
-                search_latency_ms=total_latency_ms,
-                breakdown=latency_breakdown,
-                collection=request.collection,
-                query_embedding_dimension=len(query_embedding),
-                searched_at=datetime.now(UTC),
-            )
-
-            logger.info(
-                f"Search completed: {len(final_results)} results, "
-                f"{total_latency_ms:.2f}ms total "
-                f"(embed: {latency_breakdown['embedding_ms']:.2f}ms, "
-                f"search: {latency_breakdown['search_ms']:.2f}ms, "
-                f"validation: {latency_breakdown['validation_ms']:.2f}ms, "
-                f"precond: {latency_breakdown['precondition_ms']:.2f}ms, "
-                f"rank: {latency_breakdown['ranking_ms']:.2f}ms)"
-            )
-
-            return response
 
         except Exception as e:
             logger.error(f"Search failed: {e}", exc_info=True)
             raise
+
+    async def search_with_embedding(
+        self,
+        request: SearchRequest,
+        query_embedding: list[float],
+        *,
+        image_embedding: list[float] | None = None,
+        embedding_ms: float | None = None,
+    ) -> SearchResponse:
+        """
+        Execute search pipeline with a precomputed query embedding.
+
+        Use this to avoid duplicate embedding work when the caller already
+        computed the query vector (e.g., gating + skill search).
+        """
+        latency_breakdown = {"embedding_ms": embedding_ms or 0.0}
+        start_time = time.perf_counter()
+        if embedding_ms:
+            start_time -= embedding_ms / 1000.0
+
+        if image_embedding is None and request.image_base64:
+            image_embedding, image_ms = await self._maybe_embed_image_from_request(request)
+            if image_ms:
+                latency_breakdown["image_embedding_ms"] = image_ms
+
+        return await self._search_with_embeddings(
+            request=request,
+            query_embedding=query_embedding,
+            image_embedding=image_embedding,
+            start_time=start_time,
+            latency_breakdown=latency_breakdown,
+        )
+
+    async def _maybe_embed_image_from_request(
+        self, request: SearchRequest
+    ) -> tuple[list[float] | None, float]:
+        if not request.image_base64:
+            return None, 0.0
+
+        b64 = request.image_base64.strip()
+        # Accept data URLs (e.g., "data:image/png;base64,...") for convenience.
+        if b64.startswith("data:"):
+            if "," not in b64:
+                raise ValueError("Invalid data URL: missing ',' separator")
+            _, b64 = b64.split(",", 1)
+
+        max_size = get_settings().service.max_file_upload_size
+        padding = 2 if b64.endswith("==") else 1 if b64.endswith("=") else 0
+        decoded_estimate = ((len(b64) + 3) // 4) * 3 - padding
+        if decoded_estimate > max_size:
+            raise ValueError(
+                f"Image too large: {decoded_estimate} bytes (max {max_size} bytes)"
+            )
+
+        try:
+            image_bytes = base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise ValueError(f"Invalid image_base64: {e}") from e
+
+        if len(image_bytes) > max_size:
+            raise ValueError(
+                f"Image too large: {len(image_bytes)} bytes (max {max_size} bytes)"
+            )
+
+        start = time.perf_counter()
+        image_embedding = await self.embedding_service.embed_image_bytes_async(image_bytes)
+        image_ms = (time.perf_counter() - start) * 1000
+        return image_embedding, image_ms
+
+    async def _search_with_embeddings(
+        self,
+        *,
+        request: SearchRequest,
+        query_embedding: list[float],
+        image_embedding: list[float] | None,
+        start_time: float,
+        latency_breakdown: dict[str, float],
+    ) -> SearchResponse:
+        # Stage 2: KyroDB search with server-side filtering (~1-3ms)
+        stage_start = time.perf_counter()
+        metadata_filter = self._build_kyrodb_filter(request)
+        # Fetch 2x buffer: headroom for incomplete server-side filtering + precondition matching
+        # Validate fetch_k to prevent memory issues with very large k values
+        settings = get_settings()
+        max_fetch_k = settings.search.max_k * 2
+        fetch_k = min(request.k * 2, max_fetch_k)
+
+        if request.k * 2 > max_fetch_k:
+            logger.warning(
+                f"Requested k={request.k} would fetch {request.k * 2} candidates, "
+                f"capping at max_fetch_k={max_fetch_k} to prevent memory issues"
+            )
+
+        candidates = await self._fetch_candidates(
+            query_embedding=query_embedding,
+            image_embedding=image_embedding,
+            customer_id=request.customer_id,
+            collection=request.collection,
+            k=fetch_k,
+            min_similarity=request.min_similarity,
+            metadata_filter=metadata_filter,
+            image_weight=request.image_weight,
+        )
+        latency_breakdown["search_ms"] = (time.perf_counter() - stage_start) * 1000
+
+        total_candidates = len(candidates)
+        logger.debug(f"Fetched {total_candidates} candidates from KyroDB")
+
+        # Stage 3: Metadata validation (safety check)
+        stage_start = time.perf_counter()
+        filtered_candidates = self._validate_metadata_filters(candidates, request)
+        latency_breakdown["validation_ms"] = (time.perf_counter() - stage_start) * 1000
+
+        total_filtered = len(filtered_candidates)
+        if total_filtered < total_candidates:
+            logger.warning(
+                f"Server-side filtering incomplete: {total_candidates - total_filtered} "
+                f"candidates removed by client validation. Check KyroDB metadata filters."
+            )
+        logger.debug(f"Validated {total_filtered} candidates")
+
+        # Stage 4: Precondition matching (~5-15ms for 25 candidates)
+        stage_start = time.perf_counter()
+        precondition_results = await self._check_preconditions(filtered_candidates, request)
+        latency_breakdown["precondition_ms"] = (time.perf_counter() - stage_start) * 1000
+
+        # Stage 5: Ranking (~1-2ms)
+        stage_start = time.perf_counter()
+        ranked_results = self._rank_results(precondition_results, request)
+        latency_breakdown["ranking_ms"] = (time.perf_counter() - stage_start) * 1000
+
+        # Stage 6: Top-k selection
+        final_results = ranked_results[: request.k]
+
+        # Total latency
+        total_latency_ms = (time.perf_counter() - start_time) * 1000
+
+        # Update stats
+        with self._metrics_lock:
+            self.total_searches += 1
+            self.total_latency_ms += total_latency_ms
+
+        # Build response
+        response = SearchResponse(
+            results=final_results,
+            total_candidates=total_candidates,
+            total_filtered=total_filtered,
+            total_returned=len(final_results),
+            search_latency_ms=total_latency_ms,
+            breakdown=latency_breakdown,
+            collection=request.collection,
+            query_embedding_dimension=len(query_embedding),
+            searched_at=datetime.now(UTC),
+        )
+
+        logger.info(
+            f"Search completed: {len(final_results)} results, "
+            f"{total_latency_ms:.2f}ms total "
+            f"(embed: {latency_breakdown.get('embedding_ms', 0.0):.2f}ms, "
+            f"search: {latency_breakdown['search_ms']:.2f}ms, "
+            f"validation: {latency_breakdown['validation_ms']:.2f}ms, "
+            f"precond: {latency_breakdown['precondition_ms']:.2f}ms, "
+            f"rank: {latency_breakdown['ranking_ms']:.2f}ms)"
+        )
+
+        return response
 
     def _build_kyrodb_filter(self, request: SearchRequest) -> MetadataFilter | None:
         """

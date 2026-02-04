@@ -11,6 +11,8 @@ Provides a clean async interface to KyroDB operations with:
 import asyncio
 import logging
 import math
+import time
+import threading
 from pathlib import Path
 
 import grpc
@@ -41,6 +43,154 @@ from src.kyrodb.kyrodb_pb2_grpc import KyroDBServiceStub
 from src.resilience.circuit_breakers import with_kyrodb_circuit_breaker
 
 logger = logging.getLogger(__name__)
+
+
+class _AsyncInsertBatcher:
+    """Async batcher that coalesces concurrent insert requests for BulkInsert."""
+
+    def __init__(
+        self,
+        bulk_insert_fn,
+        direct_insert_fn,
+        bulk_query_fn,
+        *,
+        max_batch_size: int,
+        max_wait_ms: int,
+    ) -> None:
+        self._bulk_insert_fn = bulk_insert_fn
+        self._direct_insert_fn = direct_insert_fn
+        self._bulk_query_fn = bulk_query_fn
+        self._max_batch_size = max(1, int(max_batch_size))
+        self._max_wait_s = max(0.0, float(max_wait_ms) / 1000.0)
+        self._queue: asyncio.Queue[
+            tuple[InsertRequest, asyncio.Future[InsertResponse]] | None
+        ] = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        self._start_lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
+
+    async def _ensure_worker(self) -> None:
+        if self._worker_task and not self._worker_task.done():
+            return
+        async with self._start_lock:
+            if self._worker_task and not self._worker_task.done():
+                return
+            self._worker_task = asyncio.create_task(self._run())
+
+    async def insert(self, request: InsertRequest) -> InsertResponse:
+        await self._ensure_worker()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[InsertResponse] = loop.create_future()
+        await self._queue.put((request, future))
+        return await future
+
+    async def shutdown(self) -> None:
+        self._stop_event.set()
+        await self._queue.put(None)
+        if self._worker_task:
+            await self._worker_task
+
+    async def _run(self) -> None:
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                break
+            if self._stop_event.is_set():
+                _, future = item
+                if not future.cancelled():
+                    future.set_exception(RuntimeError("Insert batcher shut down"))
+                break
+            request, future = item
+            batch = [(request, future)]
+            start = time.monotonic()
+
+            while len(batch) < self._max_batch_size:
+                timeout = self._max_wait_s - (time.monotonic() - start)
+                if timeout <= 0:
+                    break
+                try:
+                    next_item = await asyncio.wait_for(self._queue.get(), timeout)
+                except asyncio.TimeoutError:
+                    break
+                if next_item is None:
+                    break
+                batch.append(next_item)
+
+            requests = [entry[0] for entry in batch]
+            bulk_error: Exception | None = None
+            bulk_response: InsertResponse | None = None
+            try:
+                bulk_response = await self._bulk_insert_fn(requests)
+                if (
+                    bulk_response.success
+                    and bulk_response.total_failed == 0
+                    and bulk_response.total_inserted == len(requests)
+                ):
+                    for _, fut in batch:
+                        if not fut.cancelled():
+                            fut.set_result(
+                                InsertResponse(
+                                    success=True,
+                                    error="",
+                                    inserted_at=bulk_response.inserted_at,
+                                    tier=bulk_response.tier,
+                                    total_inserted=1,
+                                    total_failed=0,
+                                )
+                            )
+                    continue
+            except Exception as exc:
+                bulk_error = exc
+
+            # BulkInsert partial or failed: reconcile via BulkQuery and insert only missing.
+            try:
+                found = await self._bulk_query_fn(requests)
+            except Exception as exc:
+                error = bulk_error or exc
+                for _, fut in batch:
+                    if not fut.cancelled():
+                        fut.set_exception(error)
+                continue
+
+            missing: list[tuple[InsertRequest, asyncio.Future[InsertResponse]]] = []
+            for req, fut in batch:
+                if fut.cancelled():
+                    continue
+                if (req.namespace, req.doc_id) in found:
+                    fut.set_result(
+                        InsertResponse(
+                            success=True,
+                            error="",
+                            inserted_at=bulk_response.inserted_at if bulk_response else 0,
+                            tier=bulk_response.tier if bulk_response else 0,
+                            total_inserted=1,
+                            total_failed=0,
+                        )
+                    )
+                else:
+                    missing.append((req, fut))
+
+            if missing:
+                direct_results = await asyncio.gather(
+                    *[self._direct_insert_fn(req) for req, _ in missing],
+                    return_exceptions=True,
+                )
+                for result, (_, fut) in zip(direct_results, missing):
+                    if fut.cancelled():
+                        continue
+                    if isinstance(result, Exception):
+                        fut.set_exception(result)
+                    else:
+                        fut.set_result(result)
+
+        # Drain remaining queued items and cancel their futures.
+        while not self._queue.empty():
+            leftover = self._queue.get_nowait()
+            if leftover is None:
+                continue
+            _, fut = leftover
+            if not fut.cancelled():
+                fut.set_exception(RuntimeError("Insert batcher shut down"))
 
 
 class KyroDBError(Exception):
@@ -82,6 +232,10 @@ class KyroDBClient:
         timeout_seconds: int = 30,
         max_retries: int = 3,
         retry_backoff_seconds: float = 0.5,
+        insert_max_in_flight: int = 64,
+        bulk_insert_enabled: bool = True,
+        bulk_insert_batch_size: int = 64,
+        bulk_insert_max_wait_ms: int = 5,
         enable_tls: bool = False,
         tls_ca_cert_path: str | None = None,
         tls_client_cert_path: str | None = None,
@@ -112,6 +266,12 @@ class KyroDBClient:
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
+        self._insert_semaphore = asyncio.Semaphore(max(1, int(insert_max_in_flight)))
+        self._bulk_insert_enabled = bool(bulk_insert_enabled)
+        self._bulk_insert_batch_size = max(1, int(bulk_insert_batch_size))
+        self._bulk_insert_max_wait_ms = max(0, int(bulk_insert_max_wait_ms))
+        self._insert_batcher: _AsyncInsertBatcher | None = None
+        self._insert_batcher_lock = asyncio.Lock()
 
         # TLS configuration
         self.enable_tls = enable_tls
@@ -284,6 +444,8 @@ class KyroDBClient:
 
     async def close(self) -> None:
         """Close connection to KyroDB."""
+        if self._insert_batcher is not None:
+            await self._insert_batcher.shutdown()
         if self._channel:
             await self._channel.close()
             self._channel = None
@@ -362,6 +524,123 @@ class KyroDBClient:
 
         raise KyroDBError(f"{operation} failed after {self.max_retries} retries")
 
+    async def _call_stream_unary_with_retry(self, rpc_func, request_factory, operation: str):
+        """
+        Execute streaming gRPC call with retry logic.
+
+        Args:
+            rpc_func: Async RPC function to call (stream-unary)
+            request_factory: Callable returning a fresh async iterator per attempt
+            operation: Operation name for logging
+
+        Returns:
+            Response from KyroDB
+
+        Raises:
+            KyroDBError: On persistent failure
+        """
+        if not self._connected:
+            await self.connect()
+
+        for attempt in range(self.max_retries):
+            try:
+                response = await asyncio.wait_for(
+                    rpc_func(request_factory()), timeout=self.timeout_seconds
+                )
+                return response
+
+            except AioRpcError as e:
+                if e.code() == StatusCode.UNAVAILABLE:
+                    if attempt < self.max_retries - 1:
+                        backoff = self.retry_backoff_seconds * (2**attempt)
+                        logger.warning(
+                            f"{operation} failed (UNAVAILABLE), "
+                            f"retrying in {backoff}s... (attempt {attempt + 1}/{self.max_retries})"
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    raise ConnectionError(f"KyroDB unavailable: {e.details()}") from e
+
+                if e.code() == StatusCode.INVALID_ARGUMENT:
+                    raise KyroDBError(f"Invalid request: {e.details()}") from e
+
+                raise KyroDBError(f"{operation} failed: {e.details()}") from e
+
+            except asyncio.TimeoutError as e:
+                if attempt < self.max_retries - 1:
+                    logger.warning(
+                        f"{operation} timed out, retrying... "
+                        f"(attempt {attempt + 1}/{self.max_retries})"
+                    )
+                    continue
+                raise RequestTimeoutError(
+                    f"{operation} exceeded {self.timeout_seconds}s timeout"
+                ) from e
+
+            except Exception as e:
+                logger.error(f"Unexpected error in {operation}: {e}")
+                raise KyroDBError(f"{operation} failed unexpectedly: {e}") from e
+
+        raise KyroDBError(f"{operation} failed after {self.max_retries} retries")
+
+    async def _get_insert_batcher(self) -> _AsyncInsertBatcher:
+        if self._insert_batcher is None:
+            async with self._insert_batcher_lock:
+                if self._insert_batcher is None:
+                    self._insert_batcher = _AsyncInsertBatcher(
+                        bulk_insert_fn=self._bulk_insert_requests,
+                        direct_insert_fn=self._insert_direct_request,
+                        bulk_query_fn=self._bulk_query_existing,
+                        max_batch_size=self._bulk_insert_batch_size,
+                        max_wait_ms=self._bulk_insert_max_wait_ms,
+                    )
+        return self._insert_batcher
+
+    async def _bulk_query_existing(
+        self, requests: list[InsertRequest]
+    ) -> set[tuple[str, int]]:
+        if not requests:
+            return set()
+
+        grouped: dict[str, list[int]] = {}
+        for req in requests:
+            grouped.setdefault(req.namespace, []).append(int(req.doc_id))
+
+        found: set[tuple[str, int]] = set()
+        for namespace, doc_ids in grouped.items():
+            response = await self._call_with_retry(
+                self._stub.BulkQuery,
+                BulkQueryRequest(
+                    doc_ids=doc_ids,
+                    include_embeddings=False,
+                    namespace=namespace,
+                ),
+                "BulkQuery",
+            )
+            if response.error:
+                raise KyroDBError(f"BulkQuery error: {response.error}")
+            for item in response.results:
+                if getattr(item, "found", False):
+                    found.add((namespace, int(getattr(item, "doc_id", 0))))
+
+        return found
+
+    async def _bulk_insert_requests(self, requests: list[InsertRequest]) -> InsertResponse:
+        if not requests:
+            return InsertResponse(success=True, total_inserted=0, total_failed=0)
+
+        async def request_iter():
+            for req in requests:
+                yield req
+
+        return await self._call_stream_unary_with_retry(
+            self._stub.BulkInsert, request_iter, "BulkInsert"
+        )
+
+    async def _insert_direct_request(self, request: InsertRequest) -> InsertResponse:
+        async with self._insert_semaphore:
+            return await self._call_with_retry(self._stub.Insert, request, "Insert")
+
     @with_kyrodb_circuit_breaker
     async def insert(
         self,
@@ -392,7 +671,10 @@ class KyroDBClient:
             namespace=namespace,
             metadata=metadata or {},
         )
-        return await self._call_with_retry(self._stub.Insert, request, "Insert")
+        if self._bulk_insert_enabled and self._bulk_insert_batch_size > 1:
+            batcher = await self._get_insert_batcher()
+            return await batcher.insert(request)
+        return await self._insert_direct_request(request)
 
     @with_kyrodb_circuit_breaker
     async def search(

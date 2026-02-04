@@ -26,12 +26,23 @@ LOAD_CUSTOMER_ID = "load-test-customer"
 
 
 def _is_port_open(host: str, port: int) -> bool:
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            return sock.connect_ex((host, port)) == 0
-    except Exception:
-        return False
+    candidates = []
+    if host == "localhost":
+        candidates = ["127.0.0.1", "::1", host]
+    else:
+        candidates = [host]
+
+    for target in dict.fromkeys(candidates):
+        try:
+            for info in socket.getaddrinfo(target, port, type=socket.SOCK_STREAM):
+                family, socktype, proto, _, sockaddr = info
+                with socket.socket(family, socktype, proto) as sock:
+                    sock.settimeout(1)
+                    if sock.connect_ex(sockaddr) == 0:
+                        return True
+        except Exception:
+            continue
+    return False
 
 
 @pytest.fixture
@@ -132,12 +143,16 @@ def embedding_service():
 
 
 @pytest.fixture
-def ingestion_pipeline(kyrodb_router: KyroDBRouter, embedding_service: EmbeddingService):
-    return IngestionPipeline(
+async def ingestion_pipeline(kyrodb_router: KyroDBRouter, embedding_service: EmbeddingService):
+    pipeline = IngestionPipeline(
         kyrodb_router=kyrodb_router,
         embedding_service=embedding_service,
         reflection_service=None,  # Keep load tests offline by default
     )
+    try:
+        yield pipeline
+    finally:
+        await pipeline.shutdown(timeout=10.0)
 
 
 @pytest.fixture

@@ -27,6 +27,7 @@ class TestTieredIntegration:
         
         embedding_service = MagicMock()
         embedding_service.embed_text = MagicMock(return_value=[0.1] * 384)
+        embedding_service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         
         # Create tiered reflection service mock
         reflection_service = AsyncMock()
@@ -84,6 +85,7 @@ class TestTieredIntegration:
         
         embedding_service = MagicMock()
         embedding_service.embed_text = MagicMock(return_value=[0.1] * 384)
+        embedding_service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         
         # Create tiered reflection service mock
         reflection_service = AsyncMock()
@@ -143,6 +145,7 @@ class TestTieredIntegration:
         
         embedding_service = MagicMock()
         embedding_service.embed_text = MagicMock(return_value=[0.1] * 384)
+        embedding_service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         
         # Create tiered reflection service mock
         reflection_service = AsyncMock()
@@ -204,6 +207,7 @@ class TestTieredIntegration:
         
         embedding_service = MagicMock()
         embedding_service.embed_text = MagicMock(return_value=[0.1] * 384)
+        embedding_service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         
         # Create tiered reflection service mock
         reflection_service = AsyncMock()

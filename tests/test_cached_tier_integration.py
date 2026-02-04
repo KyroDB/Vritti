@@ -40,6 +40,7 @@ class TestCachedTierIntegration:
         service = MagicMock()
         # Deterministic embedding for clustering match path.
         service.embed_text = MagicMock(return_value=[0.5] * 384)
+        service.embed_text_async = AsyncMock(return_value=[0.5] * 384)
         return service
 
     @pytest.fixture
@@ -281,4 +282,3 @@ class TestCachedTierIntegration:
         assert total_cost < 0.10, f"Cost with caching should be <$0.10, got ${total_cost}"
         assert costs[0] > 0.0, "First reflection should have cost (template generation)"
         assert all(c == 0.0 for c in costs[1:]), "Cached reflections should be $0"
-

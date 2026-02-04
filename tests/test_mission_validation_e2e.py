@@ -82,6 +82,10 @@ class TestMissionValidationE2E:
         # Mock search to return similar episodes
         router.text_client = MagicMock()
         router.text_client.search = MagicMock()
+        async def mock_search_text(*args, **kwargs):
+            return router.text_client.search.return_value
+        router.search_text = AsyncMock(side_effect=mock_search_text)
+        router.search_image = AsyncMock(return_value=MagicMock(results=[]))
 
         return router
 
@@ -98,7 +102,30 @@ class TestMissionValidationE2E:
             return [random.random() for _ in range(384)]
 
         service.embed_text = MagicMock(side_effect=mock_embed_text)
+
+        async def mock_embed_text_async(text: str) -> list[float]:
+            return mock_embed_text(text)
+
+        service.embed_text_async = AsyncMock(side_effect=mock_embed_text_async)
         return service
+
+    @pytest.fixture(autouse=True)
+    async def _ensure_customer(self):
+        from src.models.customer import CustomerCreate, SubscriptionTier
+        from src.storage.database import get_customer_db
+
+        db = await get_customer_db()
+        existing = await db.get_customer("test-customer")
+        if existing:
+            return
+        await db.create_customer(
+            CustomerCreate.model_construct(
+                customer_id="test-customer",
+                organization_name="Mission Test",
+                email="mission-test@vritti.local",
+                subscription_tier=SubscriptionTier.PRO,
+            )
+        )
 
     @pytest.fixture
     async def ingestion_pipeline(self, mock_kyrodb_router, mock_embedding_service):
@@ -143,7 +170,7 @@ class TestMissionValidationE2E:
         Learn: Image tag 'latest' not found, use 'v1.2.3'
         Prevent: Agent tries 'latest' again → BLOCK
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         # Step 1: Agent encounters failure
         failure = EpisodeCreate(
@@ -210,7 +237,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
 
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
@@ -237,7 +266,7 @@ class TestMissionValidationE2E:
         Learn: Need to install 'requests' package
         Prevent: Agent tries to run script again → BLOCK with suggestion
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         # Step 1: Failure
         failure = EpisodeCreate(
@@ -289,7 +318,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
 
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
@@ -312,7 +343,7 @@ class TestMissionValidationE2E:
         Learn: Need sudo for apt-get install
         Prevent: Agent tries without sudo → BLOCK
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -362,7 +393,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
 
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
@@ -384,7 +417,7 @@ class TestMissionValidationE2E:
         Learn: Default timeout too short, increase to 30s
         Prevent: Agent tries with same short timeout → REWRITE
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -434,7 +467,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -454,7 +489,7 @@ class TestMissionValidationE2E:
         Learn: Wrong path /tmp/data.csv, correct is /var/data/data.csv
         Prevent: Agent tries wrong path → BLOCK with correct path
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -504,7 +539,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE]
@@ -524,7 +561,7 @@ class TestMissionValidationE2E:
         Learn: Kill existing process first
         Prevent: Agent tries to start without killing → BLOCK
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -574,7 +611,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE]
@@ -594,7 +633,7 @@ class TestMissionValidationE2E:
         Learn: Need to pull first
         Prevent: Agent tries to push without pull → BLOCK
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -644,7 +683,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -664,7 +705,7 @@ class TestMissionValidationE2E:
         Learn: Clean temp files first
         Prevent: Agent tries to write without cleanup → BLOCK
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -714,7 +755,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -729,7 +772,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 9: Database not running."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -779,7 +822,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE]
@@ -799,7 +844,7 @@ class TestMissionValidationE2E:
         Learn: Certificate expired, needs renewal or CA bundle update
         Prevent: Agent tries HTTPS request with expired cert → BLOCK/REWRITE
         """
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -849,7 +894,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         # MISSION VALIDATION
@@ -865,7 +912,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 11: API rate limit exceeded."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -915,7 +962,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -926,7 +975,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 16: File encoding mismatch."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -976,7 +1025,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -987,7 +1038,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 12: Memory consumption grows unbounded."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -1036,7 +1087,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -1047,7 +1100,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 13: Import circular dependency."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -1096,7 +1149,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -1107,7 +1162,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 14: Race condition in concurrent access."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -1156,7 +1211,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -1167,7 +1224,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 15: Timezone conversion error."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -1216,7 +1273,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -1227,7 +1286,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 17: None value accessed without check."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -1276,7 +1335,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -1287,7 +1348,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 18: List index exceeds length."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -1336,7 +1397,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]
@@ -1347,7 +1410,7 @@ class TestMissionValidationE2E:
         self, ingestion_pipeline, gating_service, mock_kyrodb_router
     ):
         """Scenario 19: Deadlock from incorrect lock ordering."""
-        customer_id = "test_customer"
+        customer_id = "test-customer"
 
         failure = EpisodeCreate(
             episode_type=EpisodeType.FAILURE,
@@ -1396,7 +1459,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE]
@@ -1456,7 +1521,9 @@ class TestMissionValidationE2E:
             query_embedding_dimension=384,
         )
 
-        gating_service.search_pipeline.search = AsyncMock(return_value=mock_search_response)
+        gating_service.search_pipeline.search_with_embedding = AsyncMock(
+            return_value=mock_search_response
+        )
         response = await gating_service.reflect_before_action(gating_request, customer_id)
 
         assert response.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT]

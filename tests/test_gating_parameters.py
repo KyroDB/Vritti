@@ -19,6 +19,7 @@ def mock_search_pipeline():
     pipeline = MagicMock()
     pipeline.embedding_service = MagicMock()
     pipeline.embedding_service.embed_text.return_value = [0.1] * 384
+    pipeline.embedding_service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
     return pipeline
 
 
@@ -53,7 +54,7 @@ async def test_proposed_action_included_in_skill_hints(gating_service, mock_sear
     )
     
     mock_kyrodb_router.search_skills.return_value = [(skill, 0.9)]
-    mock_search_pipeline.search = AsyncMock(return_value=SearchResponse(
+    mock_search_pipeline.search_with_embedding = AsyncMock(return_value=SearchResponse(
         results=[],
         total_candidates=0,
         total_filtered=0,
@@ -111,7 +112,7 @@ async def test_environment_mismatch_warning_in_block(gating_service, mock_search
         rank=1
     )
     
-    mock_search_pipeline.search = AsyncMock(return_value=SearchResponse(
+    mock_search_pipeline.search_with_embedding = AsyncMock(return_value=SearchResponse(
         results=[search_result],
         total_candidates=1,
         total_filtered=1,
@@ -168,7 +169,7 @@ async def test_environment_match_in_rewrite(gating_service, mock_search_pipeline
         rank=1
     )
     
-    mock_search_pipeline.search = AsyncMock(return_value=SearchResponse(
+    mock_search_pipeline.search_with_embedding = AsyncMock(return_value=SearchResponse(
         results=[search_result],
         total_candidates=1,
         total_filtered=1,

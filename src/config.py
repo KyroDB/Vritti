@@ -44,6 +44,28 @@ class KyroDBConfig(BaseSettings):
     max_workers: int = Field(default=10, ge=1, le=100)
     connection_timeout_seconds: int = Field(default=30, ge=1)
     request_timeout_seconds: int = Field(default=60, ge=1)
+    insert_max_in_flight: int = Field(
+        default=64,
+        ge=1,
+        le=2048,
+        description="Max concurrent KyroDB insert operations per instance",
+    )
+    bulk_insert_enabled: bool = Field(
+        default=True,
+        description="Enable KyroDB BulkInsert batching for higher insert throughput",
+    )
+    bulk_insert_batch_size: int = Field(
+        default=64,
+        ge=1,
+        le=2048,
+        description="Max number of inserts per BulkInsert batch",
+    )
+    bulk_insert_max_wait_ms: int = Field(
+        default=5,
+        ge=0,
+        le=100,
+        description="Max wait (ms) to form a BulkInsert batch",
+    )
 
     # TLS/SSL configuration
     enable_tls: bool = Field(
@@ -98,6 +120,24 @@ class EmbeddingConfig(BaseSettings):
     text_model_name: str = Field(default="all-MiniLM-L6-v2")
     text_dimension: int = Field(default=384, ge=1)
     text_batch_size: int = Field(default=32, ge=1)
+    text_batcher_max_wait_ms: int = Field(
+        default=5,
+        ge=0,
+        le=100,
+        description="Max wait (ms) to form a batch for text embeddings",
+    )
+    text_cache_size: int = Field(
+        default=2048,
+        ge=0,
+        le=100000,
+        description="Max entries in text embedding cache (0 disables cache)",
+    )
+    text_cache_ttl_seconds: int = Field(
+        default=3600,
+        ge=0,
+        le=86400,
+        description="TTL for text embedding cache (0 disables cache)",
+    )
 
     # Image embeddings (CLIP)
     image_model_name: str = Field(default="openai/clip-vit-base-patch32")
@@ -426,6 +466,12 @@ class ServiceConfig(BaseSettings):
     request_timeout_seconds: int = Field(
         default=30, ge=1, le=300, description="Global request timeout in seconds"
     )
+    indexer_max_in_flight: int = Field(
+        default=16,
+        ge=1,
+        le=1024,
+        description="Max concurrent background episode index updates",
+    )
 
     # Storage paths
     archive_storage_path: str = Field(default="./data/archive")
@@ -451,6 +497,12 @@ class StorageConfig(BaseSettings):
     customer_db_path: str = Field(
         default="./data/customers.db",
         description="Path to the customer SQLite database file",
+    )
+    doc_id_block_size: int = Field(
+        default=256,
+        ge=1,
+        le=100_000,
+        description="Number of KyroDB doc_ids to reserve per DB allocation",
     )
 
 

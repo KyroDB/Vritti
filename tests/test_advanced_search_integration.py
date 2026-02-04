@@ -30,6 +30,7 @@ class TestSearchPipelineBasic:
         """Create mock embedding service."""
         service = MagicMock()
         service.embed_text = MagicMock(return_value=[0.1] * 384)
+        service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         return service
     
     @pytest.fixture
@@ -115,6 +116,7 @@ class TestSearchPipelineLLMIntegration:
         """Create mock embedding service."""
         service = MagicMock()
         service.embed_text = MagicMock(return_value=[0.1] * 384)
+        service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         return service
     
     def _mock_openrouter_response(self, content: str):
@@ -230,6 +232,7 @@ class TestTwoStageValidation:
         """Create mock embedding service."""
         service = MagicMock()
         service.embed_text = MagicMock(return_value=[0.1] * 384)
+        service.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         return service
     
     @pytest.mark.asyncio
@@ -283,6 +286,7 @@ class TestPerformanceMetrics:
         
         embedding = MagicMock()
         embedding.embed_text = MagicMock(return_value=[0.1] * 384)
+        embedding.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         
         pipeline = SearchPipeline(
             kyrodb_router=router,
@@ -311,6 +315,7 @@ class TestPerformanceMetrics:
         
         embedding = MagicMock()
         embedding.embed_text = MagicMock(return_value=[0.1] * 384)
+        embedding.embed_text_async = AsyncMock(return_value=[0.1] * 384)
         
         advanced_matcher = AdvancedPreconditionMatcher(
             openrouter_api_key="test",

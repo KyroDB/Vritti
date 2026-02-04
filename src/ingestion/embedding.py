@@ -9,13 +9,17 @@ Handles:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
+import time
+import os
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from PIL import Image
+from cachetools import TTLCache
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -23,7 +27,136 @@ if TYPE_CHECKING:
 
 from src.config import EmbeddingConfig
 
+os.environ.setdefault("PYTORCH_NO_SHARED_MEMORY", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 logger = logging.getLogger(__name__)
+_TORCH_SHARING_CONFIGURED = False
+_TORCH_SHARING_LOCK = threading.Lock()
+
+
+def _configure_torch_sharing() -> None:
+    """
+    Configure torch multiprocessing sharing strategy to avoid leaked semaphore warnings.
+
+    This is safe to call multiple times; configuration is applied once.
+    """
+    global _TORCH_SHARING_CONFIGURED
+    if _TORCH_SHARING_CONFIGURED:
+        return
+    with _TORCH_SHARING_LOCK:
+        if _TORCH_SHARING_CONFIGURED:
+            return
+        try:
+            import multiprocessing as py_mp
+            import torch.multiprocessing as torch_mp
+
+            try:
+                py_mp.set_start_method("spawn", force=False)
+            except RuntimeError:
+                pass
+
+            torch_mp.set_sharing_strategy("file_system")
+            logger.info("Torch multiprocessing sharing strategy set to file_system")
+        except Exception as e:
+            logger.debug(f"Skipping torch sharing strategy config: {e}")
+        finally:
+            _TORCH_SHARING_CONFIGURED = True
+
+
+class _AsyncTextEmbeddingBatcher:
+    """Async batcher that coalesces concurrent text-embedding requests."""
+
+    def __init__(
+        self,
+        embed_batch_fn: Callable[[list[str]], list[list[float]]],
+        *,
+        max_batch_size: int,
+        max_wait_ms: int,
+    ) -> None:
+        self._embed_batch_fn = embed_batch_fn
+        self._max_batch_size = max(1, int(max_batch_size))
+        self._max_wait_s = max(0.0, float(max_wait_ms) / 1000.0)
+        self._queue: asyncio.Queue[
+            tuple[str, asyncio.Future[list[float]]] | None
+        ] = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        self._start_lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
+
+    async def _ensure_worker(self) -> None:
+        if self._worker_task and not self._worker_task.done():
+            return
+        async with self._start_lock:
+            if self._worker_task and not self._worker_task.done():
+                return
+            self._worker_task = asyncio.create_task(self._run())
+
+    async def embed(self, text: str) -> list[float]:
+        await self._ensure_worker()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[list[float]] = loop.create_future()
+        await self._queue.put((text, future))
+        return await future
+
+    async def shutdown(self) -> None:
+        self._stop_event.set()
+        await self._queue.put(None)
+        if self._worker_task:
+            await self._worker_task
+
+    async def _run(self) -> None:
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                break
+            if self._stop_event.is_set():
+                _, future = item
+                if not future.cancelled():
+                    future.set_exception(RuntimeError("Embedding batcher shut down"))
+                break
+            text, future = item
+            batch = [(text, future)]
+            start = time.monotonic()
+
+            while len(batch) < self._max_batch_size:
+                timeout = self._max_wait_s - (time.monotonic() - start)
+                if timeout <= 0:
+                    break
+                try:
+                    next_item = await asyncio.wait_for(self._queue.get(), timeout)
+                except asyncio.TimeoutError:
+                    break
+                if next_item is None:
+                    break
+                batch.append(next_item)
+
+            texts = [entry[0] for entry in batch]
+            try:
+                embeddings = await asyncio.to_thread(self._embed_batch_fn, texts)
+                if len(embeddings) != len(batch):
+                    raise ValueError(
+                        "Text embedding batch size mismatch: "
+                        f"{len(embeddings)} != {len(batch)}"
+                    )
+            except Exception as exc:
+                for _, fut in batch:
+                    if not fut.cancelled():
+                        fut.set_exception(exc)
+                continue
+
+            for embedding, (_, fut) in zip(embeddings, batch):
+                if not fut.cancelled():
+                    fut.set_result(embedding)
+
+        # Drain remaining queued items and cancel their futures.
+        while not self._queue.empty():
+            leftover = self._queue.get_nowait()
+            if leftover is None:
+                continue
+            _, fut = leftover
+            if not fut.cancelled():
+                fut.set_exception(RuntimeError("Embedding batcher shut down"))
 
 
 class EmbeddingService:
@@ -41,6 +174,7 @@ class EmbeddingService:
         Args:
             config: Embedding configuration
         """
+        _configure_torch_sharing()
         self.config = config
         self._text_model: SentenceTransformer | None = None
         self._clip_model: CLIPModel | None = None
@@ -48,8 +182,64 @@ class EmbeddingService:
         self._device = self._get_device()
         self._text_lock = threading.Lock()
         self._clip_lock = threading.Lock()
+        self._text_batcher: _AsyncTextEmbeddingBatcher | None = None
+        self._text_batcher_lock = threading.Lock()
+        self._text_cache_lock = threading.Lock()
+        self._text_cache: TTLCache[str, list[float]] | None = None
+
+        if self.config.text_cache_size > 0 and self.config.text_cache_ttl_seconds > 0:
+            self._text_cache = TTLCache(
+                maxsize=self.config.text_cache_size,
+                ttl=self.config.text_cache_ttl_seconds,
+            )
 
         logger.info(f"EmbeddingService initialized (device: {self._device})")
+
+    def _get_cached_text_embedding(self, text: str) -> list[float] | None:
+        if not self._text_cache:
+            return None
+        with self._text_cache_lock:
+            return self._text_cache.get(text)
+
+    def _set_cached_text_embedding(self, text: str, embedding: list[float]) -> None:
+        if not self._text_cache:
+            return
+        with self._text_cache_lock:
+            self._text_cache[text] = embedding
+
+    def _get_text_batcher(self) -> _AsyncTextEmbeddingBatcher:
+        if self._text_batcher is None:
+            with self._text_batcher_lock:
+                if self._text_batcher is None:
+                    self._text_batcher = _AsyncTextEmbeddingBatcher(
+                        self.embed_texts_batch,
+                        max_batch_size=self.config.text_batch_size,
+                        max_wait_ms=self.config.text_batcher_max_wait_ms,
+                    )
+        return self._text_batcher
+
+    async def shutdown(self) -> None:
+        if self._text_batcher is not None:
+            await self._text_batcher.shutdown()
+
+    def _embed_text_direct(self, text: str) -> list[float]:
+        # SentenceTransformer encode is not guaranteed to be thread-safe across concurrent calls.
+        # Guard both lazy init and inference to avoid crashes under load.
+        with self._text_lock:
+            model = self._load_text_model()
+
+            import torch
+
+            with torch.no_grad():
+                embedding = model.encode(
+                    text,
+                    convert_to_tensor=True,
+                    show_progress_bar=False,
+                    normalize_embeddings=True,  # L2 normalization for cosine similarity
+                )
+
+        # Convert to list
+        return embedding.cpu().tolist()
 
     def _get_device(self) -> str:
         """
@@ -137,23 +327,33 @@ class EmbeddingService:
         if not text or not text.strip():
             raise ValueError("Cannot embed empty text")
 
-        # SentenceTransformer encode is not guaranteed to be thread-safe across concurrent calls.
-        # Guard both lazy init and inference to avoid crashes under load.
-        with self._text_lock:
-            model = self._load_text_model()
+        cached = self._get_cached_text_embedding(text)
+        if cached is not None:
+            return cached
 
-            import torch
+        embedding = self._embed_text_direct(text)
+        self._set_cached_text_embedding(text, embedding)
+        return embedding
 
-            with torch.no_grad():
-                embedding = model.encode(
-                    text,
-                    convert_to_tensor=True,
-                    show_progress_bar=False,
-                    normalize_embeddings=True,  # L2 normalization for cosine similarity
-                )
+    async def embed_text_async(self, text: str) -> list[float]:
+        """
+        Async wrapper for text embeddings (batch-aware).
+        """
+        if not text or not text.strip():
+            raise ValueError("Cannot embed empty text")
 
-        # Convert to list
-        return embedding.cpu().tolist()
+        cached = self._get_cached_text_embedding(text)
+        if cached is not None:
+            return cached
+
+        if self.config.text_batch_size > 1:
+            embedding = await self._get_text_batcher().embed(text)
+            self._set_cached_text_embedding(text, embedding)
+            return embedding
+
+        embedding = await asyncio.to_thread(self._embed_text_direct, text)
+        self._set_cached_text_embedding(text, embedding)
+        return embedding
 
     def embed_texts_batch(self, texts: list[str]) -> list[list[float]]:
         """
@@ -175,22 +375,49 @@ class EmbeddingService:
         if any(not t or not t.strip() for t in texts):
             raise ValueError("Cannot embed empty texts in batch")
 
-        with self._text_lock:
-            model = self._load_text_model()
+        cached_embeddings: list[list[float] | None] = []
+        missing_texts: list[str] = []
+        missing_indices: list[int] = []
 
-            import torch
+        for idx, text in enumerate(texts):
+            cached = self._get_cached_text_embedding(text)
+            if cached is None:
+                cached_embeddings.append(None)
+                missing_texts.append(text)
+                missing_indices.append(idx)
+            else:
+                cached_embeddings.append(cached)
 
-            with torch.no_grad():
-                embeddings = model.encode(
-                    texts,
-                    batch_size=self.config.text_batch_size,
-                    convert_to_tensor=True,
-                    show_progress_bar=len(texts) > 100,  # Show progress for large batches
-                    normalize_embeddings=True,
+        if missing_texts:
+            with self._text_lock:
+                model = self._load_text_model()
+
+                import torch
+
+                with torch.no_grad():
+                    embeddings = model.encode(
+                        missing_texts,
+                        batch_size=self.config.text_batch_size,
+                        convert_to_tensor=True,
+                        show_progress_bar=len(texts) > 100,  # Show progress for large batches
+                        normalize_embeddings=True,
+                    )
+
+            new_embeddings = embeddings.cpu().tolist()
+            if len(new_embeddings) != len(missing_indices):
+                raise ValueError(
+                    "Text embedding batch size mismatch: "
+                    f"{len(new_embeddings)} != {len(missing_indices)}"
                 )
-
-        # Convert to list of lists
-        return embeddings.cpu().tolist()
+            for idx, embedding in zip(missing_indices, new_embeddings):
+                cached_embeddings[idx] = embedding
+                self._set_cached_text_embedding(texts[idx], embedding)
+        results: list[list[float]] = []
+        for embedding in cached_embeddings:
+            if embedding is None:
+                raise ValueError("Text embedding batch missing result")
+            results.append(embedding)
+        return results
 
     def embed_code(self, code: str) -> list[float]:
         """
@@ -304,6 +531,10 @@ class EmbeddingService:
             )
 
         return embedding
+
+    async def embed_image_bytes_async(self, image_bytes: bytes) -> list[float]:
+        """Async wrapper for image embeddings."""
+        return await asyncio.to_thread(self.embed_image_bytes, image_bytes)
 
     def embed_images_batch(self, image_paths: list[str | Path]) -> list[list[float]]:
         """

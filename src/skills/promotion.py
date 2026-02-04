@@ -15,7 +15,6 @@ Security:
 import logging
 import re
 
-import anyio
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
@@ -259,9 +258,7 @@ class SkillPromotionService:
         try:
             # Generate embedding for episode goal
             query_text = f"{episode.create_data.goal}\n\n{episode.create_data.error_trace[:500]}"
-            query_embedding = await anyio.to_thread.run_sync(
-                self.embedding_service.embed_text, query_text
-            )
+            query_embedding = await self.embedding_service.embed_text_async(query_text)
 
             # Search for similar episodes
             response = await self.kyrodb_router.text_client.search(
@@ -451,9 +448,7 @@ class SkillPromotionService:
             )
 
         embedding_text = "\n\n".join(embedding_parts)
-        skill_embedding = await anyio.to_thread.run_sync(
-            self.embedding_service.embed_text, embedding_text
-        )
+        skill_embedding = await self.embedding_service.embed_text_async(embedding_text)
 
         # Store in KyroDB
         success = await self.kyrodb_router.insert_skill(skill, skill_embedding)

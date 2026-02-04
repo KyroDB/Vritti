@@ -61,17 +61,21 @@ class CustomerDatabase:
     - O(1) API key validation via indexed digest lookup
     """
 
-    def __init__(self, db_path: str = "./data/customers.db"):
+    def __init__(self, db_path: str = "./data/customers.db", *, doc_id_block_size: int = 256):
         """
         Initialize customer database.
 
         Args:
             db_path: Path to SQLite database file
+            doc_id_block_size: Number of doc_ids to allocate per DB round trip
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._initialized = False
+        self._doc_id_block_size = max(1, int(doc_id_block_size))
+        self._doc_id_cache: dict[str, tuple[int, int]] = {}
+        self._doc_id_cache_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         """
@@ -593,38 +597,53 @@ class CustomerDatabase:
         if len(scope) > 100:
             raise ValueError("Invalid scope")
 
-        now = datetime.now(UTC).isoformat()
+        async with self._doc_id_cache_lock:
+            cached = self._doc_id_cache.get(scope)
+            if cached is not None:
+                next_id, max_id = cached
+                if next_id <= max_id:
+                    self._doc_id_cache[scope] = (next_id + 1, max_id)
+                    return next_id
 
-        max_attempts = 6
-        for attempt in range(max_attempts):
-            try:
-                async with self._connect() as conn:
-                    cursor = await conn.execute(
-                        """
-                        INSERT INTO doc_id_counters (scope, next_doc_id, updated_at)
-                        VALUES (?, 2, ?)
-                        ON CONFLICT(scope) DO UPDATE SET
-                            next_doc_id = doc_id_counters.next_doc_id + 1,
-                            updated_at = excluded.updated_at
-                        RETURNING (next_doc_id - 1) AS allocated
-                        """,
-                        (scope, now),
-                    )
-                    row = await cursor.fetchone()
-                    await cursor.close()
-                    await conn.commit()
+            block_size = self._doc_id_block_size
+            now = datetime.now(UTC).isoformat()
 
-                allocated = int(row["allocated"]) if row else 0
-                if allocated < 1:
-                    raise RuntimeError("Allocated doc_id is invalid")
-                return allocated
-            except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
-                message = str(e).lower()
-                if "database is locked" not in message and "database is busy" not in message:
-                    raise
-                if attempt >= max_attempts - 1:
-                    raise
-                await asyncio.sleep(0.05 * (2**attempt))
+            max_attempts = 6
+            for attempt in range(max_attempts):
+                try:
+                    async with self._connect() as conn:
+                        cursor = await conn.execute(
+                            """
+                            INSERT INTO doc_id_counters (scope, next_doc_id, updated_at)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(scope) DO UPDATE SET
+                                next_doc_id = doc_id_counters.next_doc_id + ?,
+                                updated_at = excluded.updated_at
+                            RETURNING
+                                (next_doc_id - ?) AS start_id,
+                                (next_doc_id - 1) AS end_id
+                            """,
+                            (scope, block_size + 1, now, block_size, block_size),
+                        )
+                        row = await cursor.fetchone()
+                        await cursor.close()
+                        await conn.commit()
+
+                    start_id = int(row["start_id"]) if row else 0
+                    end_id = int(row["end_id"]) if row else 0
+                    if start_id < 1 or end_id < start_id:
+                        raise RuntimeError("Allocated doc_id range is invalid")
+
+                    # Cache remaining range (exclusive of start_id, which we return).
+                    self._doc_id_cache[scope] = (start_id + 1, end_id)
+                    return start_id
+                except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+                    message = str(e).lower()
+                    if "database is locked" not in message and "database is busy" not in message:
+                        raise
+                    if attempt >= max_attempts - 1:
+                        raise
+                    await asyncio.sleep(0.05 * (2**attempt))
 
     async def index_episode(
         self,
@@ -1207,7 +1226,10 @@ async def get_customer_db() -> CustomerDatabase:
         with _DB_CREATE_LOCK:
             if _db is None:
                 settings = get_settings()
-                _db = CustomerDatabase(db_path=settings.storage.customer_db_path)
+                _db = CustomerDatabase(
+                    db_path=settings.storage.customer_db_path,
+                    doc_id_block_size=settings.storage.doc_id_block_size,
+                )
 
     await _db.initialize()
     return _db

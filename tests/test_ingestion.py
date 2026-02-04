@@ -51,7 +51,7 @@ class TestIngestionPipeline:
         mock_kyrodb_router.insert_episode.assert_called_once()
 
         # Verify embedding generation was called
-        mock_embedding_service.embed_text.assert_called_once()
+        mock_embedding_service.embed_text_async.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_pii_redaction(
@@ -154,8 +154,8 @@ class TestIngestionPipeline:
         )
 
         # Verify both text and image embeddings were generated
-        mock_embedding_service.embed_text.assert_called_once()
-        mock_embedding_service.embed_image_bytes.assert_called_once()
+        mock_embedding_service.embed_text_async.assert_called_once()
+        mock_embedding_service.embed_image_bytes_async.assert_called_once()
 
         # Verify KyroDB insert was called with both embeddings
         call_args = mock_kyrodb_router.insert_episode.call_args
