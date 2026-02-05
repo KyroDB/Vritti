@@ -319,6 +319,26 @@ class TestReflectionModels:
             )
         assert "consensus_method" in str(exc_info.value)
 
+    def test_fallback_reflection_handles_empty_tool_chain(self, llm_config):
+        """Fallback reflection should not crash when tool_chain is empty."""
+        service = MultiPerspectiveReflectionService(config=llm_config)
+        episode = EpisodeCreate.model_construct(
+            customer_id="test-customer",
+            episode_type=EpisodeType.FAILURE,
+            goal="Investigate deployment failure in staging",
+            tool_chain=[],
+            actions_taken=["attempted deploy"],
+            error_trace="Deployment failed with unknown error",
+            error_class=ErrorClass.UNKNOWN,
+            environment_info={},
+            tags=[],
+            severity=3,
+        )
+
+        reflection = service._create_fallback_reflection(episode)
+        assert reflection.root_cause
+        assert reflection.preconditions.get("tool") == "unknown"
+
     def test_reflection_consensus_prevents_duplicate_models(self):
         """Test anti-spoofing: duplicate model names not allowed."""
         perspective1 = LLMPerspective(
@@ -472,28 +492,26 @@ class TestConsensusReconciliation:
         )
 
     def test_reconcile_merges_preconditions(self, mock_perspective_1, mock_perspective_2):
-        """Test that preconditions are merged with semantic deduplication."""
+        """Test that structured preconditions are merged across perspectives."""
         mock_perspective_1.root_cause = "Same root cause"
         mock_perspective_2.root_cause = "Same root cause"
-        mock_perspective_1.preconditions = [
-            "Using Docker containers",
-            "Running on Kubernetes",
-            "Image in registry",
-        ]
-        mock_perspective_2.preconditions = [
-            "Docker container deployment",
-            "Kubernetes cluster",
-            "New precondition",
-        ]
+        mock_perspective_1.preconditions = {
+            "tool": "docker",
+            "platform": "kubernetes",
+            "artifact": "container_registry",
+        }
+        mock_perspective_2.preconditions = {
+            "tool": "docker",
+            "platform": "kubernetes",
+            "extra": "new_precondition",
+        }
 
         service = MultiPerspectiveReflectionService(config=LLMConfig(openrouter_api_key="test"))
         consensus = service._reconcile_perspectives([mock_perspective_1, mock_perspective_2])
 
-        # Semantic deduplication may merge similar preconditions
-        # At minimum, we should have some preconditions
+        # Union of keys across perspectives.
         assert len(consensus.agreed_preconditions) >= 2
-        # "New precondition" should definitely be included
-        assert any("new" in p.lower() for p in consensus.agreed_preconditions)
+        assert consensus.agreed_preconditions.get("extra") == "new_precondition"
 
     def test_reconcile_selects_best_resolution(self, mock_perspective_1, mock_perspective_2):
         """Test that resolution from highest-confidence model is selected."""

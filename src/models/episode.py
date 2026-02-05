@@ -9,38 +9,155 @@ Design Decision: This system stores ONLY failures in episodic memory.
 - This prevents memory bloat and keeps the system focused on its core value
 """
 
+import re
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+_PRECONDITION_KEY_MAX_LEN = 64
+_PRECONDITION_VALUE_MAX_LEN = 256
+_PRECONDITION_MAX_ITEMS = 10
+PRECONDITION_MAX_ITEMS = _PRECONDITION_MAX_ITEMS
+_PRECONDITION_KEY_ALLOWED = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
-def _normalize_preconditions_input(value: Any) -> list[str]:
+
+def _canonicalize_precondition_key(raw_key: Any) -> str:
+    key = str(raw_key).strip().lower()
+    if not key:
+        return ""
+    # Common prompt/LLM variants.
+    key = key.removeprefix("using ").strip()
+    key = key.replace("operating system", "os")
+    key = key.replace("error class", "error_class")
+    key = key.replace("image tag", "image_tag")
+    # Normalize to snake_case-ish.
+    key = re.sub(r"[^a-z0-9_-]+", "_", key)
+    key = re.sub(r"_+", "_", key).strip("_")
+    if not key:
+        return ""
+    if len(key) > _PRECONDITION_KEY_MAX_LEN:
+        key = key[:_PRECONDITION_KEY_MAX_LEN]
+    if not _PRECONDITION_KEY_ALLOWED.match(key):
+        return ""
+    return key
+
+
+def _sanitize_precondition_value(raw_val: Any) -> str:
+    val = str(raw_val).replace("\x00", "").strip()
+    if not val:
+        return ""
+    if len(val) > _PRECONDITION_VALUE_MAX_LEN:
+        val = val[:_PRECONDITION_VALUE_MAX_LEN]
+    return val
+
+
+def _parse_precondition_item(item: str) -> tuple[str, str] | None:
     """
-    Normalize preconditions payload into canonical `key=value` string list.
+    Parse a single precondition string into (key, value).
 
-    Accepted inputs:
-    - dict[str, str]: converted to `["key=value", ...]`
-    - list[str]: passed through (trimmed later by validators)
-    - None: converted to []
+    Supports common patterns from LLM output:
+    - "Using tool: kubectl"
+    - "tool=kubectl"
+    - "OS: Linux"
+    - "Error class: dependency_error"
+    """
+    text = (item or "").replace("\x00", "").strip()
+    if not text:
+        return None
+
+    # Common boolean-ish statements (LLM output tends to be terse):
+    # - "python3 installed"
+    # - "python not available"
+    m = re.match(
+        r"^(?P<name>[A-Za-z0-9_.-]+)\s+(?P<negation>not\s+)?(?P<state>installed|available|present)$",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+    if m:
+        name = m.group("name") or ""
+        neg = bool(m.group("negation"))
+        # Normalize "available/present" -> installed semantics for matcher keys.
+        key = _canonicalize_precondition_key(f"{name}_installed")
+        if key:
+            return key, "false" if neg else "true"
+
+    # "Using kubectl" (without ":"/"=") -> tool=kubectl
+    m = re.match(r"^using\s+(?P<tool>[A-Za-z0-9_.-]+)$", text.strip(), flags=re.IGNORECASE)
+    if m:
+        tool = _sanitize_precondition_value(m.group("tool"))
+        if tool:
+            return "tool", tool
+
+    delimiter = ":" if ":" in text else "=" if "=" in text else None
+    if delimiter is None:
+        return None
+
+    raw_key, raw_val = text.split(delimiter, 1)
+    key = _canonicalize_precondition_key(raw_key)
+    val = _sanitize_precondition_value(raw_val)
+    if not key or not val:
+        return None
+    return key, val
+
+
+def _normalize_preconditions_input(value: Any) -> dict[str, str]:
+    """
+    Normalize preconditions payload into a canonical dict[str, str].
+
+    Accepted inputs (robustness for LLM outputs):
+    - dict[str, Any]: keys/values are coerced to strings and sanitized
+    - list[str]: parsed via common "key: value" / "key=value" patterns
+    - None: converted to {}
     """
     if value is None:
-        return []
+        return {}
+
+    normalized: dict[str, str] = {}
+
+    def _merge_key_value(key: str, val: str) -> None:
+        existing = normalized.get(key)
+        if not existing:
+            normalized[key] = val
+            return
+        if val == existing:
+            return
+        # Preserve multiple values for a key in a bounded, readable form.
+        parts = [p.strip() for p in existing.split("|") if p.strip()]
+        if val not in parts:
+            parts.append(val)
+            joined = "|".join(parts)
+            normalized[key] = joined[:_PRECONDITION_VALUE_MAX_LEN]
 
     if isinstance(value, dict):
-        normalized: list[str] = []
         for raw_key, raw_val in value.items():
-            key = str(raw_key).strip()
-            val = str(raw_val).strip()
+            key = _canonicalize_precondition_key(raw_key)
+            val = _sanitize_precondition_value(raw_val)
             if key and val:
-                normalized.append(f"{key}={val}")
-        return normalized
+                _merge_key_value(key, val)
+        return dict(list(normalized.items())[:_PRECONDITION_MAX_ITEMS])
 
     if isinstance(value, list):
-        return cast(list[str], value)
+        freeform: list[str] = []
+        for raw_item in cast(list[Any], value):
+            item = str(raw_item)
+            parsed = _parse_precondition_item(item)
+            if parsed is None:
+                freeform.append(item.strip())
+                continue
+            key, val = parsed
+            _merge_key_value(key, val)
 
-    raise TypeError("preconditions must be a list[str], dict[str, str], or null")
+        # Keep any leftover freeform items under a single bounded key.
+        freeform = [s for s in freeform if s]
+        if freeform:
+            compact = "; ".join(dict.fromkeys(freeform))[:_PRECONDITION_VALUE_MAX_LEN]
+            _merge_key_value("requires", compact)
+
+        return dict(list(normalized.items())[:_PRECONDITION_MAX_ITEMS])
+
+    raise TypeError("preconditions must be a dict[str, str], list[str], or null")
 
 
 class EpisodeType(str, Enum):
@@ -96,10 +213,9 @@ class LLMPerspective(BaseModel):
         description="Fundamental reason for failure (not symptoms)",
     )
 
-    preconditions: list[str] = Field(
-        default_factory=list,
-        max_length=20,
-        description="Specific conditions required for relevance",
+    preconditions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Structured key/value context required for relevance",
     )
 
     resolution_strategy: str = Field(
@@ -127,7 +243,7 @@ class LLMPerspective(BaseModel):
         default="", max_length=1000, description="Why this model reached this conclusion"
     )
 
-    @field_validator("preconditions", "environment_factors", "affected_components")
+    @field_validator("environment_factors", "affected_components")
     @classmethod
     def validate_list_items_not_empty(cls, v: list[str]) -> list[str]:
         """Security: Prevent empty strings in lists."""
@@ -138,10 +254,24 @@ class LLMPerspective(BaseModel):
     @field_validator("preconditions", mode="before")
     @classmethod
     def normalize_preconditions(cls, v: Any) -> Any:
-        """Accept dict preconditions and normalize to canonical list form."""
+        """Normalize preconditions into canonical dict form (robust to LLM output)."""
         return _normalize_preconditions_input(v)
 
-    @field_validator("preconditions", "environment_factors", "affected_components")
+    @field_validator("preconditions")
+    @classmethod
+    def validate_preconditions(cls, v: dict[str, str]) -> dict[str, str]:
+        if len(v) > _PRECONDITION_MAX_ITEMS:
+            raise ValueError(f"preconditions cannot exceed {_PRECONDITION_MAX_ITEMS} items")
+        for k, val in v.items():
+            if not k or not _PRECONDITION_KEY_ALLOWED.match(k):
+                raise ValueError("preconditions contains invalid key")
+            if not val:
+                raise ValueError("preconditions values cannot be empty")
+            if len(k) > _PRECONDITION_KEY_MAX_LEN or len(val) > _PRECONDITION_VALUE_MAX_LEN:
+                raise ValueError("preconditions key/value too long")
+        return v
+
+    @field_validator("environment_factors", "affected_components")
     @classmethod
     def validate_list_item_length(cls, v: list[str]) -> list[str]:
         """Security: Prevent excessively long list items."""
@@ -182,8 +312,8 @@ class ReflectionConsensus(BaseModel):
         ..., min_length=1, max_length=2000, description="Consensus root cause"
     )
 
-    agreed_preconditions: list[str] = Field(
-        default_factory=list, max_length=20, description="Union of all preconditions"
+    agreed_preconditions: dict[str, str] = Field(
+        default_factory=dict, description="Union of all structured preconditions"
     )
 
     agreed_resolution: str = Field(
@@ -232,6 +362,25 @@ class ReflectionConsensus(BaseModel):
             raise ValueError("Duplicate model names in perspectives")
         return v
 
+    @field_validator("agreed_preconditions", mode="before")
+    @classmethod
+    def normalize_agreed_preconditions(cls, v: Any) -> Any:
+        return _normalize_preconditions_input(v)
+
+    @field_validator("agreed_preconditions")
+    @classmethod
+    def validate_agreed_preconditions(cls, v: dict[str, str]) -> dict[str, str]:
+        if len(v) > _PRECONDITION_MAX_ITEMS:
+            raise ValueError(f"agreed_preconditions cannot exceed {_PRECONDITION_MAX_ITEMS} items")
+        for k, val in v.items():
+            if not k or not _PRECONDITION_KEY_ALLOWED.match(k):
+                raise ValueError("agreed_preconditions contains invalid key")
+            if not val:
+                raise ValueError("agreed_preconditions values cannot be empty")
+            if len(k) > _PRECONDITION_KEY_MAX_LEN or len(val) > _PRECONDITION_VALUE_MAX_LEN:
+                raise ValueError("agreed_preconditions key/value too long")
+        return v
+
 
 class Reflection(BaseModel):
     """
@@ -256,10 +405,9 @@ class Reflection(BaseModel):
         ..., min_length=1, max_length=2000, description="Identified root cause of the issue"
     )
 
-    preconditions: list[str] = Field(
-        default_factory=list,
-        max_length=20,
-        description="Required state/context for this episode to be relevant",
+    preconditions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Required state/context for this episode to be relevant (structured key/value)",
     )
 
     resolution_strategy: str = Field(
@@ -311,7 +459,7 @@ class Reflection(BaseModel):
         default=None, description="Reflection tier used (cheap/cached/premium)"
     )
 
-    @field_validator("preconditions", "environment_factors", "affected_components")
+    @field_validator("environment_factors", "affected_components")
     @classmethod
     def validate_list_items(cls, v: list[str]) -> list[str]:
         """Security: Validate list items."""
@@ -326,8 +474,22 @@ class Reflection(BaseModel):
     @field_validator("preconditions", mode="before")
     @classmethod
     def normalize_preconditions(cls, v: Any) -> Any:
-        """Accept dict preconditions and normalize to canonical list form."""
+        """Normalize preconditions into canonical dict form (robust to LLM output)."""
         return _normalize_preconditions_input(v)
+
+    @field_validator("preconditions")
+    @classmethod
+    def validate_preconditions(cls, v: dict[str, str]) -> dict[str, str]:
+        if len(v) > _PRECONDITION_MAX_ITEMS:
+            raise ValueError(f"preconditions cannot exceed {_PRECONDITION_MAX_ITEMS} items")
+        for k, val in v.items():
+            if not k or not _PRECONDITION_KEY_ALLOWED.match(k):
+                raise ValueError("preconditions contains invalid key")
+            if not val:
+                raise ValueError("preconditions values cannot be empty")
+            if len(k) > _PRECONDITION_KEY_MAX_LEN or len(val) > _PRECONDITION_VALUE_MAX_LEN:
+                raise ValueError("preconditions key/value too long")
+        return v
 
     @field_validator("root_cause", "resolution_strategy")
     @classmethod

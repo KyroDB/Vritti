@@ -282,7 +282,7 @@ class TestIntegration:
                         "content": """```json
             {
                 "root_cause": "Insufficient memory in container",
-                "preconditions": ["Using Docker", "Memory limit set"],
+                "preconditions": {"tool": "docker", "memory_limit": "set"},
                 "resolution_strategy": "Increase memory limit in docker-compose.yml to 2GB",
                 "environment_factors": ["Docker", "Linux"],
                 "affected_components": ["docker", "kubectl"],

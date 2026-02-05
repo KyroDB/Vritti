@@ -126,6 +126,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("=== Episodic Memory Service Starting ===")
 
     try:
+        # Best-effort cleanup for known multiprocessing semaphore leaks (e.g., PyTorch).
+        try:
+            from src.utils.resource_tracker import install_resource_tracker_cleanup
+
+            install_resource_tracker_cleanup()
+        except Exception as e:
+            logger.warning("Resource tracker cleanup unavailable: %s", e)
+
         # Initialize KyroDB router
         logger.info("Initializing KyroDB router...")
         kyrodb_router = KyroDBRouter(config=settings.kyrodb)

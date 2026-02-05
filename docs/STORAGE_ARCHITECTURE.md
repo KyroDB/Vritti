@@ -63,10 +63,7 @@ confidence_score: float        # Reliability (0-1)
   "confidence_score": 0.95
 }
 ```
-
-Compatibility note:
-- Readers/writers should accept both structured dict form and legacy `["key=value"]` lists.
-- Normalize internally to a canonical representation before matching/ranking.
+Preconditions are a structured mapping so matching/ranking can be deterministic and fast.
 
 ## Storage Backend: KyroDB
 

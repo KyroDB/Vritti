@@ -260,7 +260,9 @@ async def test_cached_tier_clustering_end_to_end(skip_if_no_kyrodb, tmp_path, mo
             templates_ns = get_namespaced_collection(customer_id, "cluster_templates")
             if episode_ids:
                 with suppress(Exception):
-                    await router.text_client.batch_delete(doc_ids=episode_ids, namespace=failures_ns)
+                    await router.text_client.batch_delete(
+                        doc_ids=episode_ids, namespace=failures_ns
+                    )
             if template_ids:
                 with suppress(Exception):
                     await router.text_client.batch_delete(

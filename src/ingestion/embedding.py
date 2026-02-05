@@ -417,14 +417,21 @@ class EmbeddingService:
 
             logger.info(f"Loading CLIP model: {self.config.image_model_name}")
 
-            self._clip_processor = CLIPProcessor.from_pretrained(self.config.image_model_name)
-            self._clip_model = CLIPModel.from_pretrained(self.config.image_model_name)
-            self._clip_model.to(self._device)
-            self._clip_model.eval()  # Inference mode
+            clip_processor = CLIPProcessor.from_pretrained(self.config.image_model_name)
+            clip_model = CLIPModel.from_pretrained(self.config.image_model_name)
+            clip_model.to(self._device)
+            clip_model.eval()  # Inference mode
+
+            self._clip_processor = clip_processor
+            self._clip_model = clip_model
 
             logger.info(f"CLIP model loaded (device: {self._device})")
 
-        return self._clip_model, self._clip_processor
+        clip_model = self._clip_model
+        clip_processor = self._clip_processor
+        assert clip_model is not None
+        assert clip_processor is not None
+        return clip_model, clip_processor
 
     def embed_text(self, text: str) -> list[float]:
         """

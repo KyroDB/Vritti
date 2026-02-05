@@ -30,7 +30,7 @@ class KyroDBConfig(BaseSettings):
     """KyroDB dual-instance configuration for multi-modal embeddings."""
 
     model_config = SettingsConfigDict(
-        env_prefix="KYRODB_", env_file=".env", env_file_encoding="utf-8"
+        env_prefix="KYRODB_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
     text_host: str = Field(default="localhost")
@@ -109,7 +109,7 @@ class EmbeddingConfig(BaseSettings):
     """Embedding model configuration."""
 
     model_config = SettingsConfigDict(
-        env_prefix="EMBEDDING_", env_file=".env", env_file_encoding="utf-8"
+        env_prefix="EMBEDDING_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
     # Text/code embeddings (sentence-transformers)
@@ -171,7 +171,9 @@ class LLMConfig(BaseSettings):
     Security: API keys are never logged or exposed in errors.
     """
 
-    model_config = SettingsConfigDict(env_prefix="LLM_", env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_prefix="LLM_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     # OpenRouter configuration (primary)
     openrouter_api_key: str = Field(
@@ -277,7 +279,7 @@ class LLMConfig(BaseSettings):
 class HygieneConfig(BaseSettings):
     """Hygiene policy configuration for decay and promotion."""
 
-    model_config = SettingsConfigDict(env_prefix="HYGIENE_")
+    model_config = SettingsConfigDict(env_prefix="HYGIENE_", extra="ignore")
 
     # Decay policies
     decay_check_interval_hours: int = Field(default=168, ge=1)  # Weekly
@@ -295,7 +297,7 @@ class HygieneConfig(BaseSettings):
 class ClusteringConfig(BaseSettings):
     """Clustering configuration for cached-tier reflection templates."""
 
-    model_config = SettingsConfigDict(env_prefix="CLUSTERING_")
+    model_config = SettingsConfigDict(env_prefix="CLUSTERING_", extra="ignore")
 
     enabled: bool = Field(
         default=False,
@@ -344,7 +346,7 @@ class ClusteringConfig(BaseSettings):
 class SearchConfig(BaseSettings):
     """Search and retrieval configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="SEARCH_")
+    model_config = SettingsConfigDict(env_prefix="SEARCH_", extra="ignore")
 
     default_k: int = Field(default=20, ge=1, le=1000)
     max_k: int = Field(default=100, ge=1, le=1000)
@@ -396,7 +398,7 @@ class SearchConfig(BaseSettings):
 class AuthConfig(BaseSettings):
     """Authentication configuration (API key cache, headers)."""
 
-    model_config = SettingsConfigDict(env_prefix="AUTH_")
+    model_config = SettingsConfigDict(env_prefix="AUTH_", extra="ignore")
 
     api_key_cache_ttl_seconds: int = Field(
         default=300,
@@ -415,7 +417,7 @@ class AuthConfig(BaseSettings):
 class ServiceConfig(BaseSettings):
     """FastAPI service configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="SERVICE_")
+    model_config = SettingsConfigDict(env_prefix="SERVICE_", extra="ignore")
 
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000, ge=1, le=65535)
@@ -470,7 +472,7 @@ class ServiceConfig(BaseSettings):
 class StorageConfig(BaseSettings):
     """Local storage configuration (SQLite paths, archival paths)."""
 
-    model_config = SettingsConfigDict(env_prefix="STORAGE_")
+    model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore")
 
     customer_db_path: str = Field(
         default="./data/customers.db",
@@ -487,7 +489,7 @@ class StorageConfig(BaseSettings):
 class CORSConfig(BaseSettings):
     """CORS configuration for API security."""
 
-    model_config = SettingsConfigDict(env_prefix="CORS_")
+    model_config = SettingsConfigDict(env_prefix="CORS_", extra="ignore")
 
     # Allowed origins (comma-separated for multiple origins)
     allowed_origins: str = Field(
@@ -528,7 +530,7 @@ class CORSConfig(BaseSettings):
 class LoggingConfig(BaseSettings):
     """Structured logging configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="LOGGING_")
+    model_config = SettingsConfigDict(env_prefix="LOGGING_", extra="ignore")
 
     # Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
@@ -566,7 +568,7 @@ class LoggingConfig(BaseSettings):
 class HealthCheckConfig(BaseSettings):
     """Health check configuration with degraded state thresholds."""
 
-    model_config = SettingsConfigDict(env_prefix="HEALTH_")
+    model_config = SettingsConfigDict(env_prefix="HEALTH_", extra="ignore")
 
     # KyroDB latency thresholds (for degraded state detection)
     kyrodb_latency_warning_ms: float = Field(
@@ -634,7 +636,7 @@ class HealthCheckConfig(BaseSettings):
 class ReflectionConfig(BaseSettings):
     """Reflection generation configuration for cost optimization."""
 
-    model_config = SettingsConfigDict(env_prefix="REFLECTION_")
+    model_config = SettingsConfigDict(env_prefix="REFLECTION_", extra="ignore")
 
     # Tier defaults
     default_tier: Literal["auto", "cheap", "premium"] = Field(

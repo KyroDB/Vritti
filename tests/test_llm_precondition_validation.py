@@ -626,10 +626,8 @@ class TestPythonCommandEdgeCase:
                 similarity_score=0.95,
             )
 
-            # Heuristic rejects this before LLM sees it (score 0.4 < 0.7)
-            # This is safe behavior (better false negative than false positive)
-            assert result.matched is False
-            # assert matcher.stats["llm_calls"] >= 1  # LLM not called
+            assert result.matched is True
+            assert matcher.stats["llm_calls"] >= 1
 
     @pytest.mark.asyncio
     async def test_python_without_llm_cannot_detect_context_change(self):

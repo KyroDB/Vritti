@@ -32,7 +32,7 @@ def sample_reflection_with_consensus():
     perspective1 = LLMPerspective(
         model_name="gpt-4-turbo-preview",
         root_cause="Configuration error in deployment manifest",
-        preconditions=["Kubernetes deployment", "Docker registry"],
+        preconditions={"tool": "kubectl", "platform": "kubernetes"},
         resolution_strategy="Update image tag and reapply manifest",
         environment_factors=["Kubernetes 1.28"],
         affected_components=["deployment", "pod"],
@@ -44,7 +44,11 @@ def sample_reflection_with_consensus():
     perspective2 = LLMPerspective(
         model_name="claude-3-5-sonnet-20241022",
         root_cause="Configuration error in deployment manifest",
-        preconditions=["Kubernetes", "Image in registry"],
+        preconditions={
+            "tool": "kubectl",
+            "platform": "kubernetes",
+            "artifact": "container_registry",
+        },
         resolution_strategy="Fix deployment configuration",
         environment_factors=["K8s cluster"],
         affected_components=["deployment"],
@@ -57,7 +61,11 @@ def sample_reflection_with_consensus():
         perspectives=[perspective1, perspective2],
         consensus_method="unanimous",
         agreed_root_cause="Configuration error in deployment manifest",
-        agreed_preconditions=["Kubernetes deployment", "Docker registry", "Image in registry"],
+        agreed_preconditions={
+            "tool": "kubectl",
+            "platform": "kubernetes",
+            "artifact": "container_registry",
+        },
         agreed_resolution="Update image tag and reapply manifest",
         consensus_confidence=1.0,
         disagreement_points=[],
@@ -86,7 +94,7 @@ def sample_reflection_single_llm():
     return Reflection(
         consensus=None,  # No consensus
         root_cause="Network timeout connecting to external API",
-        preconditions=["External API dependency", "Network connectivity"],
+        preconditions={"dependency": "external_api", "network": "required"},
         resolution_strategy="Add retry logic with exponential backoff",
         environment_factors=["Production network"],
         affected_components=["API client"],
@@ -108,7 +116,7 @@ class TestReflectionSerialization:
     """Test reflection serialization to KyroDB metadata format."""
 
     def test_reflection_accepts_structured_preconditions_dict(self):
-        """Structured preconditions dict is normalized to canonical list form."""
+        """Structured preconditions dict is preserved (canonical dict form)."""
         reflection = Reflection(
             root_cause="Missing image tag in deployment spec",
             preconditions={"tool": "kubectl", "image_tag": "latest"},
@@ -123,7 +131,7 @@ class TestReflectionSerialization:
             generation_latency_ms=10.0,
         )
 
-        assert reflection.preconditions == ["tool=kubectl", "image_tag=latest"]
+        assert reflection.preconditions == {"tool": "kubectl", "image_tag": "latest"}
 
     def test_serialize_reflection_with_consensus(self, sample_reflection_with_consensus):
         """Test serialization of multi-perspective reflection."""
@@ -142,7 +150,7 @@ class TestReflectionSerialization:
 
         # Lists are JSON-encoded
         preconditions = json.loads(metadata["reflection_preconditions"])
-        assert isinstance(preconditions, list)
+        assert isinstance(preconditions, dict)
         assert len(preconditions) > 0
 
         # Consensus metadata

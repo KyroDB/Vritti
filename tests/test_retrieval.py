@@ -43,7 +43,7 @@ class TestPreconditionMatcher:
 
         assert result.matched is True
         assert result.match_score >= 0.5
-        assert "Using tool: kubectl" in result.matched_preconditions
+        assert "tool=kubectl" in result.matched_preconditions
 
     def test_error_class_match(self, sample_episode: Episode):
         """Test error class matching."""
@@ -61,7 +61,7 @@ class TestPreconditionMatcher:
         )
 
         assert result.matched is True
-        assert "Error class: ImagePullBackOff" in result.matched_preconditions
+        assert "error_class=ImagePullBackOff" in result.matched_preconditions
 
     def test_component_match(self, sample_episode: Episode):
         """Test component name matching."""

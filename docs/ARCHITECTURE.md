@@ -130,15 +130,18 @@ All customer data is isolated using namespace prefixes:
 
 ```
 Collection: {customer_id}:failures
-Document ID: tenant-safe identifier strategy (UUIDv4 or tenant-scoped sequence)
+Document ID (KyroDB doc_id): dense integer allocator (see below)
 ```
 
-**Recommended identifier strategy**:
-- Use UUIDv4 (or equivalent cryptographically-random IDs) for externally visible identifiers.
-- If dense integer `doc_id` is required by the vector engine, derive it from a tenant-scoped allocator
-  (e.g., `{customer_id}:{local_sequence}` mapping), not a single global shared counter.
-- Collection namespace isolation alone is not sufficient for multi-tenancy; IDs must avoid sequential
-  leakage and single-writer bottlenecks across tenants.
+**Identifier strategy (current implementation + production guidance)**:
+- **Default (current)**: Vritti allocates **per-tenant** dense integer IDs via the local Customer DB
+  (`doc_id_counters`). These doc_id values are **scoped to `customer_id`** and can repeat across
+  namespaces; isolation is enforced by the KyroDB namespace metadata filter.
+- **External identifiers (recommended)**: If you need to expose stable IDs outside the service boundary,
+  prefer **opaque IDs** (UUIDv4 or equivalent) and store a mapping to the internal KyroDB doc_id.
+  This prevents sequential leakage and makes enumeration attacks harder.
+- **Mapping-enabled mode**: When KyroDB runs with **tenant/auth doc_id mapping enabled**, Vritti can keep
+  per-tenant local sequences while KyroDB remaps them to **global storage IDs** internally.
 
 **Security guarantees**:
 - Customer A cannot access Customer B's data
@@ -213,10 +216,10 @@ higher than isolated DB query P99.
 
 ### Benchmark Snapshot
 
-Recent KyroDB-backed load runs (`30s`, `200` concurrent workers) produced:
-- Overall throughput: ~`899 RPS`
-- Overall P99 latency: ~`357ms`
-- Search/Gating/Ingestion P99: ~`351-362ms`
+Recent KyroDB-backed sustained load runs (`30s`, `200` concurrent workers) produced:
+- Overall throughput: ~`963 RPS`
+- Overall latency: ~`184ms` P50, ~`274ms` P99
+- Per-operation P99: Search ~`267ms`, Gating ~`278ms`, Ingestion ~`279ms`
 
 Reproduce end-to-end measurements with:
 - `tests/load/test_load.py`

@@ -39,13 +39,19 @@ from src.ingestion.multi_perspective_reflection import (
     PromptInjectionDefense,
 )
 from src.models.clustering import ClusterTemplate
-from src.models.episode import EpisodeCreate, Reflection, ReflectionTier
+from src.models.episode import (
+    PRECONDITION_MAX_ITEMS,
+    EpisodeCreate,
+    Reflection,
+    ReflectionTier,
+)
 
 if TYPE_CHECKING:
     from src.ingestion.embedding import EmbeddingService
     from src.kyrodb.router import KyroDBRouter
 
 logger = logging.getLogger(__name__)
+MAX_PRECONDITIONS = PRECONDITION_MAX_ITEMS
 
 _cached_cluster_template_var: ContextVar[ClusterTemplate | None] = ContextVar(
     "cached_cluster_template", default=None
@@ -66,12 +72,12 @@ class CheapReflectionService:
     """
 
     # Same system prompt as multi-perspective for consistency
-    SYSTEM_PROMPT = """You are an expert AI assistant analyzing software development failures.
+    SYSTEM_PROMPT_TEMPLATE = """You are an expert AI assistant analyzing software development failures.
 
 Extract the following in valid JSON format:
 {
   "root_cause": "Fundamental reason for failure (not symptoms) - be concise",
-  "preconditions": ["Specific condition 1", "Specific condition 2", ...],
+  "preconditions": {"key": "value", "...": "..."},
   "resolution_strategy": "Step-by-step resolution (be specific and actionable)",
   "environment_factors": ["OS/version/tool that matters"],
   "affected_components": ["Component 1", "Component 2"],
@@ -84,11 +90,14 @@ IMPORTANT RULES:
 - Be concise and actionable
 - Focus on root cause, not symptoms
 - Resolution should be step-by-step
+- Preconditions MUST be structured key/value context (snake_case keys), max __MAX_PRECONDITIONS__ entries
 - Generalization: 0.0 = very specific, 1.0 = universal pattern
 - Confidence: how certain you are about this analysis
 - Keep reasoning under 200 words
 
 Return ONLY valid JSON, no markdown."""
+
+    SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.replace("__MAX_PRECONDITIONS__", str(MAX_PRECONDITIONS))
 
     # OpenRouter configuration
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -161,12 +170,23 @@ Return ONLY valid JSON, no markdown."""
                     # Security: Validate JSON
                     data = json.loads(content.strip())
 
+                    preconditions = data.get("preconditions", {})
+                    if isinstance(preconditions, dict) and len(preconditions) > MAX_PRECONDITIONS:
+                        logger.warning(
+                            "Preconditions exceeded limit; truncating to %d entries",
+                            MAX_PRECONDITIONS,
+                        )
+                        preconditions = dict(list(preconditions.items())[:MAX_PRECONDITIONS])
+                    elif not isinstance(preconditions, dict):
+                        logger.warning("Preconditions is not a mapping; ignoring value")
+                        preconditions = {}
+
                     # Create reflection
                     latency_ms = (time.perf_counter() - start_time) * 1000
 
                     reflection = Reflection(
                         root_cause=data.get("root_cause", "Unknown"),
-                        preconditions=data.get("preconditions", []),
+                        preconditions=preconditions,
                         resolution_strategy=data.get("resolution_strategy", ""),
                         environment_factors=data.get("environment_factors", []),
                         affected_components=data.get("affected_components", []),
@@ -333,10 +353,10 @@ Return ONLY valid JSON, no markdown."""
 
         root_cause = f"{episode.error_class.value} in {episode.tool_chain[0] if episode.tool_chain else 'unknown tool'}"
 
-        preconditions = [
-            f"Using tool: {episode.tool_chain[0]}" if episode.tool_chain else "Tool unknown",
-            f"Error class: {episode.error_class.value}",
-        ]
+        preconditions = {
+            "tool": episode.tool_chain[0] if episode.tool_chain else "unknown",
+            "error_class": episode.error_class.value,
+        }
 
         resolution_strategy = (
             episode.resolution

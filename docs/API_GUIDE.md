@@ -14,7 +14,8 @@ X-API-Key: em_live_your_api_key
 ### 1. Capture Failure
 `POST /api/v1/capture`
 
-When your agent fails, capture it. Reflection is generated asynchronously for every accepted capture:
+When your agent fails, capture it. Reflection is generated asynchronously when LLM reflection is enabled
+(recommended; set `SERVICE_REQUIRE_LLM_REFLECTION=true` to fail fast if LLM config is missing):
 ```json
 {
   "episode_type": "failure",

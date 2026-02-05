@@ -75,19 +75,27 @@ class PreconditionMatcher:
                 explanation="No specific preconditions (universal relevance)",
             )
 
-        preconditions = episode.reflection.preconditions
+        preconditions = self._normalize_preconditions(episode.reflection.preconditions)
+        if not preconditions:
+            return PreconditionCheckResult(
+                matched=True,
+                match_score=1.0,
+                matched_preconditions=[],
+                missing_preconditions=[],
+                explanation="No specific preconditions (universal relevance)",
+            )
         matched_preconds = []
         missing_preconds = []
         scores = []
 
-        for precond in preconditions:
-            score = self._match_single_precondition(precond, current_state)
+        for key, expected in preconditions.items():
+            score = self._match_single_precondition(key, expected, current_state)
             scores.append(score)
 
             if score >= 0.7:  # Consider matched if score >= 0.7
-                matched_preconds.append(precond)
+                matched_preconds.append(f"{key}={expected}")
             else:
-                missing_preconds.append(precond)
+                missing_preconds.append(f"{key}={expected}")
 
         # Overall score: average of individual precondition scores
         overall_score = sum(scores) / len(scores) if scores else 0.0
@@ -114,121 +122,195 @@ class PreconditionMatcher:
             explanation=explanation,
         )
 
-    def _match_single_precondition(self, precondition: str, current_state: dict[str, Any]) -> float:
+    def _match_single_precondition(
+        self, key: str, expected_value: str, current_state: dict[str, Any]
+    ) -> float:
         """
-        Match a single precondition against current state.
+        Match a single structured precondition against current state.
 
         Uses heuristic rules:
-        - "Using tool: X" → check current_state["tool"]
-        - "Error class: X" → check current_state["error_class"]
-        - "OS: X" → check current_state["environment"]["os"]
-        - "Version: X" → fuzzy version matching
-        - Component names → check current_state["components"]
+        - Direct key match (top-level or current_state["environment"])
+        - Fuzzy substring match for tool/error strings
+        - Version compatibility checks for "*version*" keys
+        - Freeform fallback for "requires" key
 
         Args:
-            precondition: Single precondition string
+            key: Canonical precondition key (snake_case)
+            expected_value: Expected value (may contain '|' to indicate alternatives)
             current_state: Current execution context
 
         Returns:
             float: Match score (0.0-1.0)
         """
-        precond_lower = precondition.lower()
+        key_clean = str(key or "").strip().lower()
+        expected_clean = str(expected_value or "").replace("\x00", "").strip()
+        if not key_clean or not expected_clean:
+            return 0.0
 
-        # Pattern 1: "Using tool: X"
-        if "using tool:" in precond_lower or "tool:" in precond_lower:
-            tool_in_precond = self._extract_value_after_colon(precondition)
-            current_tool = current_state.get("tool", "").lower()
+        # Allow bounded multi-values from merge step (e.g., "linux|darwin").
+        expected_candidates = [s.strip() for s in expected_clean.split("|") if s.strip()]
+        if not expected_candidates:
+            return 0.0
 
-            if tool_in_precond and current_tool:
-                if tool_in_precond in current_tool or current_tool in tool_in_precond:
-                    return 1.0  # Exact match
-                else:
-                    return 0.0  # Tool mismatch
+        # Extract candidate current values from common locations.
+        values: list[str] = []
+        if key_clean in current_state:
+            values.extend(self._stringify_state_value(current_state[key_clean]))
 
-        # Pattern 2: "Error class: X"
-        if "error class:" in precond_lower or "error:" in precond_lower:
-            error_in_precond = self._extract_value_after_colon(precondition).lower()
-            current_error = current_state.get("error_class", "").lower()
+        env = current_state.get("environment")
+        if isinstance(env, dict) and key_clean in env:
+            values.extend(self._stringify_state_value(env[key_clean]))
 
-            if error_in_precond and current_error:
-                if error_in_precond in current_error or current_error in error_in_precond:
+        # Common aliases for convenience.
+        if key_clean == "os" and isinstance(env, dict) and "operating_system" in env:
+            values.extend(self._stringify_state_value(env["operating_system"]))
+
+        if not values and key_clean in {"component", "components"}:
+            values.extend(self._stringify_state_value(current_state.get("components")))
+
+        values = [v.strip() for v in values if v and v.strip()]
+        values_lower = [v.lower() for v in values]
+
+        # Freeform requirements: attempt keyword overlap against the full state blob.
+        if key_clean == "requires":
+            blob = json.dumps(current_state, default=str).lower()
+            tokens = set(re.findall(r"[a-z0-9_.-]+", expected_clean.lower()))
+            if not tokens:
+                return 0.0
+            overlap = sum(1 for t in tokens if t in blob)
+            return min(0.8, 0.2 + (overlap / max(1, len(tokens))))
+
+        # Version requirements: compare extracted versions.
+        if "version" in key_clean:
+            expected_versions: list[str] = []
+            for v in expected_candidates:
+                parsed = self._extract_version(v)
+                if parsed is not None:
+                    expected_versions.append(parsed)
+
+            current_versions: list[str] = []
+            for v in values:
+                parsed = self._extract_version(v)
+                if parsed is not None:
+                    current_versions.append(parsed)
+            if expected_versions and current_versions:
+                for exp in expected_versions:
+                    for curr in current_versions:
+                        if self._versions_compatible(exp, curr):
+                            return 0.9
+                return 0.2
+            # No parsable version in either: fall back to substring matching.
+
+        # No current value present for this key: hard miss.
+        if not values_lower:
+            return 0.4
+
+        def _score_one(expected: str) -> float:
+            exp = expected.lower()
+            # Exact / substring matches.
+            for curr in values_lower:
+                if exp == curr:
                     return 1.0
-                else:
-                    return 0.2  # Error class mismatch (partial credit)
-
-        # Pattern 3: "OS: X" or environment checks
-        if "os:" in precond_lower or "operating system:" in precond_lower:
-            os_in_precond = self._extract_value_after_colon(precondition).lower()
-            current_env = current_state.get("environment", {})
-            current_os = current_env.get("os", "").lower()
-
-            if os_in_precond and current_os:
-                if os_in_precond in current_os or current_os in os_in_precond:
-                    return 1.0
-                else:
-                    return 0.3  # OS mismatch (some credit - may still be relevant)
-
-        # Pattern 4: Version requirements (fuzzy matching)
-        if "version" in precond_lower:
-            # Extract version numbers from precondition and current state
-            precond_version = self._extract_version(precondition)
-            current_versions = self._extract_versions_from_env(current_state)
-
-            if precond_version and current_versions:
-                for curr_ver in current_versions:
-                    # Fuzzy version matching: major.minor match is good enough
-                    if self._versions_compatible(precond_version, curr_ver):
+                if exp in curr or curr in exp:
+                    shorter_len = min(len(exp), len(curr))
+                    longer_len = max(len(exp), len(curr))
+                    if shorter_len >= 3 and (shorter_len / max(1, longer_len)) >= 0.5:
                         return 0.9
-                return 0.4  # Version present but doesn't match
-            else:
-                return 0.5  # Can't determine version, neutral
 
-        # Pattern 5: Component/service names
-        current_components = {c.lower() for c in current_state.get("components", [])}
+            # Token overlap fallback (bounded).
+            exp_tokens = set(re.findall(r"[a-z0-9_.-]+", exp))
+            if not exp_tokens:
+                return 0.0
+            best = 0.0
+            for curr in values_lower:
+                curr_tokens = set(re.findall(r"[a-z0-9_.-]+", curr))
+                if not curr_tokens:
+                    continue
+                overlap = len(exp_tokens & curr_tokens)
+                if overlap:
+                    best = max(best, min(0.7, overlap / max(1, len(exp_tokens))))
+            return best
 
-        if current_components:
-            # Check if any component mentioned in precondition
-            for component in current_components:
-                if component in precond_lower or precond_lower in component:
-                    return 0.9
+        return max(_score_one(cand) for cand in expected_candidates)
 
-        # Pattern 6: Keyword matching in goal
-        goal_keywords = {kw.lower() for kw in current_state.get("goal_keywords", [])}
+    def _normalize_preconditions(self, preconditions: Any) -> dict[str, str]:
+        """Normalize legacy precondition formats into a key/value mapping."""
+        normalized: dict[str, str] = {}
+        if isinstance(preconditions, dict):
+            for key, val in preconditions.items():
+                key_str = str(key).strip()
+                if not key_str:
+                    continue
+                val_str = str(val).strip()
+                if not val_str:
+                    val_str = "true"
+                normalized[key_str] = val_str
+            return normalized
 
-        if goal_keywords:
-            precond_words = set(re.findall(r"\w+", precond_lower))
-            overlap = goal_keywords & precond_words
+        if isinstance(preconditions, list | tuple):
+            for item in preconditions:
+                if isinstance(item, dict):
+                    for key, val in item.items():
+                        key_str = str(key).strip()
+                        if not key_str:
+                            continue
+                        val_str = str(val).strip()
+                        if not val_str:
+                            val_str = "true"
+                        normalized[key_str] = val_str
+                    continue
 
-            if overlap:
-                # Partial credit based on keyword overlap
-                return min(0.8, len(overlap) / len(goal_keywords))
+                if isinstance(item, list | tuple) and len(item) == 2:
+                    key_str = str(item[0]).strip()
+                    if not key_str:
+                        continue
+                    val_str = str(item[1]).strip() or "true"
+                    normalized[key_str] = val_str
+                    continue
 
-        # Default: partial credit for unrecognized patterns
-        return 0.4
+                if isinstance(item, str):
+                    text = item.strip()
+                    if not text:
+                        continue
+                    if "=" in text:
+                        key_str, val_str = text.split("=", 1)
+                    elif ":" in text:
+                        key_str, val_str = text.split(":", 1)
+                    else:
+                        key_str, val_str = text, "true"
+                    key_str = key_str.strip()
+                    val_str = val_str.strip() or "true"
+                    if key_str:
+                        normalized[key_str] = val_str
+                    continue
 
-    def _extract_value_after_colon(self, text: str) -> str:
-        """Extract value after colon in 'Key: Value' pattern."""
-        if ":" in text:
-            return text.split(":", 1)[1].strip().strip("\"'")
-        return ""
+        return normalized
+
+    def _stringify_state_value(self, value: Any) -> list[str]:
+        """Convert a current_state value into comparable strings."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, int | float | bool):
+            return [str(value)]
+        if isinstance(value, list):
+            out: list[str] = []
+            for item in value:
+                out.extend(self._stringify_state_value(item))
+            return out
+        if isinstance(value, dict):
+            # For dicts, compare against a compact serialized representation.
+            try:
+                return [json.dumps(value, sort_keys=True, default=str)]
+            except Exception:
+                return [str(value)]
+        return [str(value)]
 
     def _extract_version(self, text: str) -> str | None:
         """Extract version number from text (e.g., '1.28.0')."""
         match = re.search(r"\d+\.\d+(?:\.\d+)?", text)
         return match.group(0) if match else None
-
-    def _extract_versions_from_env(self, current_state: dict[str, Any]) -> list[str]:
-        """Extract all version numbers from environment."""
-        env = current_state.get("environment", {})
-        versions = []
-
-        for key, value in env.items():
-            if "version" in key.lower():
-                ver = self._extract_version(str(value))
-                if ver:
-                    versions.append(ver)
-
-        return versions
 
     def _versions_compatible(self, ver1: str, ver2: str) -> bool:
         """Check if two versions are compatible (major.minor match)."""

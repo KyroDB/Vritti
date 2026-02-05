@@ -39,6 +39,7 @@ from pydantic import ValidationError
 
 from src.config import LLMConfig
 from src.models.episode import (
+    PRECONDITION_MAX_ITEMS,
     EpisodeCreate,
     LLMPerspective,
     Reflection,
@@ -56,6 +57,7 @@ except ImportError:
     OpenAIAsyncClient = None
 
 logger = logging.getLogger(__name__)
+MAX_PRECONDITIONS = PRECONDITION_MAX_ITEMS
 
 
 class PromptInjectionDefense:
@@ -177,12 +179,12 @@ class MultiPerspectiveReflectionService:
     SEMANTIC_MATCH_THRESHOLD = 0.85  # Strong semantic agreement
     SEMANTIC_PARTIAL_THRESHOLD = 0.70  # Partial agreement (weighted voting)
 
-    SYSTEM_PROMPT = """You are an expert AI assistant analyzing software development failures.
+    SYSTEM_PROMPT_TEMPLATE = """You are an expert AI assistant analyzing software development failures.
 
 Extract the following in valid JSON format:
 {
   "root_cause": "Fundamental reason for failure (not symptoms) - be concise",
-  "preconditions": ["Specific condition 1", "Specific condition 2", ...],
+  "preconditions": {"key": "value", "...": "..."},
   "resolution_strategy": "Step-by-step resolution (be specific and actionable)",
   "environment_factors": ["OS/version/tool that matters"],
   "affected_components": ["Component 1", "Component 2"],
@@ -195,11 +197,14 @@ IMPORTANT RULES:
 - Be concise and actionable
 - Focus on root cause, not symptoms
 - Resolution should be step-by-step
+- Preconditions MUST be structured key/value context (snake_case keys), max __MAX_PRECONDITIONS__ entries
 - Generalization: 0.0 = very specific, 1.0 = universal pattern
 - Confidence: how certain you are about this analysis
 - Keep reasoning under 200 words
 
 Return ONLY valid JSON, no markdown."""
+
+    SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.replace("__MAX_PRECONDITIONS__", str(MAX_PRECONDITIONS))
 
     def __init__(self, config: LLMConfig):
         """
@@ -827,10 +832,8 @@ Return ONLY valid JSON, no markdown."""
                 f"Disagreement: {disagreement_points}"
             )
 
-        # Merge preconditions (union, deduplicate by semantic similarity)
-        agreed_preconditions = self._merge_preconditions_semantic(
-            [p.preconditions for p in perspectives]
-        )
+        # Merge structured preconditions across perspectives.
+        agreed_preconditions = self._merge_preconditions(perspectives)
 
         # Select best resolution (highest confidence-weighted)
         if p1.confidence_score >= p2.confidence_score:
@@ -909,10 +912,8 @@ Return ONLY valid JSON, no markdown."""
             f"confidence={consensus_confidence:.3f}"
         )
 
-        # Merge preconditions from all perspectives
-        agreed_preconditions = self._merge_preconditions_semantic(
-            [p.preconditions for p in perspectives]
-        )
+        # Merge structured preconditions across perspectives.
+        agreed_preconditions = self._merge_preconditions(perspectives)
 
         # Use resolution from highest-confidence perspective
         best_resolution_perspective = max(perspectives, key=lambda p: p.confidence_score)
@@ -995,50 +996,52 @@ Return ONLY valid JSON, no markdown."""
             self._similarity_model = SentenceTransformer(model_name, device="cpu")
             return self._similarity_model
 
-    def _merge_preconditions_semantic(self, precondition_lists: list[list[str]]) -> list[str]:
+    def _merge_preconditions(self, perspectives: list[LLMPerspective]) -> dict[str, str]:
         """
-        Merge preconditions from multiple perspectives with semantic deduplication.
+        Merge structured preconditions across perspectives.
 
-        Removes preconditions that are semantically similar (>0.85 cosine similarity)
-        to avoid redundancy while preserving unique insights.
-
-        Args:
-            precondition_lists: List of precondition lists from each perspective
-
-        Returns:
-            Merged and deduplicated list of preconditions
+        Strategy:
+        - Union keys across models
+        - For key collisions, choose the most frequent normalized value
+          (tie-breaker: highest confidence_score among perspectives)
         """
-        # Flatten all preconditions
-        all_preconditions = []
-        for plist in precondition_lists:
-            all_preconditions.extend(plist)
+        values_by_key: dict[str, list[tuple[str, float]]] = {}
+        for p in perspectives:
+            try:
+                items = p.preconditions.items()
+            except Exception:
+                continue
+            for key, val in items:
+                key_clean = str(key).strip().lower()
+                val_clean = str(val).replace("\x00", "").strip()
+                if not key_clean or not val_clean:
+                    continue
+                values_by_key.setdefault(key_clean, []).append(
+                    (val_clean, float(p.confidence_score))
+                )
 
-        if not all_preconditions:
-            return []
+        merged: dict[str, str] = {}
+        for key, candidates in values_by_key.items():
+            groups: dict[str, dict[str, float | int | str]] = {}
+            for val, conf in candidates:
+                norm = " ".join(val.lower().split())
+                group = groups.get(norm)
+                if group is None:
+                    groups[norm] = {"count": 1, "best_conf": conf, "best_val": val}
+                    continue
+                group["count"] = int(group["count"]) + 1
+                if conf > float(group["best_conf"]):
+                    group["best_conf"] = conf
+                    group["best_val"] = val
 
-        if len(all_preconditions) == 1:
-            return all_preconditions
+            best = max(groups.values(), key=lambda g: (int(g["count"]), float(g["best_conf"])))
+            merged[key] = str(best["best_val"])
 
-        try:
-            similarity = self._compute_semantic_similarity_matrix(all_preconditions)
+        # Bound output for safety (model validators enforce hard limits too).
+        if len(merged) > MAX_PRECONDITIONS:
+            merged = dict(list(merged.items())[:MAX_PRECONDITIONS])
 
-            # Greedy deduplication: keep precondition if not similar to any kept one
-            kept_indices: list[int] = []
-            for i in range(len(all_preconditions)):
-                if all(similarity[i, j] < self.SEMANTIC_MATCH_THRESHOLD for j in kept_indices):
-                    kept_indices.append(i)
-
-            merged = [all_preconditions[i] for i in kept_indices]
-            logger.debug(
-                f"Merged {len(all_preconditions)} preconditions to {len(merged)} "
-                f"(removed {len(all_preconditions) - len(merged)} duplicates)"
-            )
-            return merged
-
-        except Exception as e:
-            logger.warning(f"Semantic precondition merge failed: {e}. Using simple deduplication.")
-            # Fallback: simple string deduplication
-            return list(dict.fromkeys(all_preconditions))
+        return merged
 
     def _merge_list_fields(self, lists: list[list[str]]) -> list[str]:
         """Merge multiple lists, deduplicate, preserve order."""
@@ -1059,12 +1062,12 @@ Return ONLY valid JSON, no markdown."""
         """
         logger.warning("Creating fallback reflection (LLM-free heuristic)")
 
-        root_cause = f"{episode.error_class.value} in {episode.tool_chain[0]}"
+        tool_name = episode.tool_chain[0] if episode.tool_chain else "unknown"
+        root_cause = f"{episode.error_class.value} in {tool_name}"
 
-        preconditions = [
-            f"Using tool: {episode.tool_chain[0]}",
-            f"Error class: {episode.error_class.value}",
-        ]
+        preconditions = {"error_class": episode.error_class.value}
+        if tool_name:
+            preconditions["tool"] = tool_name
 
         resolution_strategy = (
             episode.resolution

@@ -83,7 +83,7 @@ First production-ready release of Vritti - episodic memory system for AI agents.
 - API key authentication (em_live_ prefix)
 - Automatic PII redaction
 - Customer namespace isolation
-- SHA-256 API key digest lookup with in-memory TTL cache
+- API key auth via key_id lookup + adaptive scrypt hash verification + TTL cache
 - Request validation and sanitization
 
 

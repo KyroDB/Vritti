@@ -14,6 +14,7 @@ Security:
 
 import logging
 import re
+from collections.abc import Mapping
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
@@ -179,14 +180,25 @@ class SkillPromotionService:
             if raw_metadata:
                 if isinstance(raw_metadata, dict):
                     metadata = raw_metadata
+                elif isinstance(raw_metadata, Mapping):
+                    metadata = dict(raw_metadata)
                 else:
-                    try:
-                        if hasattr(raw_metadata, "items"):
-                            metadata = dict(raw_metadata.items())
+                    items_attr = getattr(raw_metadata, "items", None)
+                    if callable(items_attr):
+                        import asyncio
+
+                        if asyncio.iscoroutinefunction(items_attr):
+                            metadata = {}
                         else:
+                            try:
+                                metadata = dict(items_attr())
+                            except (TypeError, ValueError):
+                                metadata = {}
+                    else:
+                        try:
                             metadata = dict(raw_metadata)
-                    except (TypeError, ValueError, AttributeError):
-                        metadata = {}
+                        except (TypeError, ValueError):
+                            metadata = {}
 
             episode = Episode.from_metadata_dict(episode_id, metadata)
             return episode
